@@ -1,0 +1,15 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Package.resolved is committed on purpose — this package ships executables, and
+# pinning resolved dependency versions keeps CI and local builds reproducible.
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+xcuserdata/
+
+# macOS
+.DS_Store

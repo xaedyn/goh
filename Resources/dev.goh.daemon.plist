@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Reference LaunchAgent layout for gohd.
+
+  This file is documentation. `brew services start goh` generates the operative
+  plist from the `service` block in Formula/goh.rb. The program path below is a
+  placeholder for the Homebrew-installed binary.
+
+  KeepAlive is crash-only: the daemon is restarted only on an unsuccessful exit,
+  not when the user stops it deliberately.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.goh.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/opt/goh/bin/gohd</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/opt/homebrew/var/log/goh.log</string>
+    <key>StandardErrorPath</key>
+    <string>/opt/homebrew/var/log/goh.log</string>
+</dict>
+</plist>

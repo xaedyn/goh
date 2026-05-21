@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & test
+    # Pinned to macos-26 (GA February 2026, native Apple Silicon). macos-latest
+    # still resolves to macOS 15 until a migration that begins 2026-06-15, and
+    # macOS 15 lacks the macOS 26 SDK and Swift 6.2+. The runner's default Xcode
+    # (26.2, stable) is used deliberately — no beta toolchain.
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain version
+        run: swift --version
+
+      - name: Build (warnings as errors)
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test
