@@ -27,15 +27,47 @@ complete strict-concurrency checking, so no upcoming-feature flag is set.
 - `swift-tools-version` is pinned at the **6.2 floor** — the minimum that provides
   the `.defaultIsolation` SwiftSetting. The repo builds with the current Swift
   6.3.x toolchain.
-- The SwiftPM platform floor is **macOS 26.0**, while the *supported* OS is
-  **macOS 26.5+**. These are deliberately different. The manifest floor only needs
-  to be as high as the oldest SDK that compiles the code; the macOS 26.5 SDK
-  currently ships only inside a beta Xcode on GitHub's CI runners, and tying CI
-  green-ness to a beta toolchain is fragile. The floor rises to 26.5 the first
-  time code calls a 26.5-only API — at which point the manifest and the support
-  policy converge.
 - CI pins the `macos-26` runner (GA, native arm64) rather than `macos-latest`,
   which still resolves to macOS 15 until a migration beginning 2026-06-15.
+- The SwiftPM platform floor and the supported-OS policy are covered in
+  **Platform support** below.
+
+## Platform support
+
+**Supported OS:** macOS 26.5+ (Tahoe), Apple Silicon.
+**SwiftPM manifest floor:** `platforms: [.macOS("26.0")]`.
+
+These two numbers are deliberately different, and the gap is intentional.
+
+### Why the manifest floor is macOS 26.0, not 26.5
+
+The manifest floor only needs to be as high as the oldest SDK that can compile
+the code. Building a package that declares a 26.5 floor requires the macOS 26.5
+SDK on the build machine — and on GitHub's `macos-26` runner, the only hosted
+runner carrying a macOS 26 SDK, the 26.5 SDK is bundled with a beta Xcode.
+
+Verified against the runner image manifest on 2026-05-21 — `actions/runner-images`
+image `20260427.0026.1`
+([macos-26-arm64 readme](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)):
+
+| Xcode on `macos-26` | Default? |
+| ------------------- | -------- |
+| 26.5 (beta)         | no       |
+| 26.4.1              | no       |
+| 26.3                | no       |
+| 26.2                | **yes**  |
+| 26.1.1              | no       |
+| 26.0.1              | no       |
+
+Installed macOS SDKs: 26.0, 26.1, 26.2, 26.4, 26.5. The newest **stable** Xcode
+is 26.4.1, which bundles the 26.4 SDK; the 26.5 SDK pairs with the beta Xcode 26.5.
+
+A 26.5 manifest floor would therefore force CI onto a beta toolchain. GitHub
+rotates and removes beta Xcodes from runner images without notice, so CI could
+turn red with no change to our code. Under the "no beta toolchains" constraint, a
+26.0 floor is the only value that builds on a stable Xcode today — and it costs
+nothing: v0.1 code calls no API newer than macOS 26.0 yet, and the manifest floor
+is a build-time minimum, not a runtime support promise.
 
 ## Transport
 
