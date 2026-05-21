@@ -69,6 +69,22 @@ turn red with no change to our code. Under the "no beta toolchains" constraint, 
 nothing: v0.1 code calls no API newer than macOS 26.0 yet, and the manifest floor
 is a build-time minimum, not a runtime support promise.
 
+### Floor-bump policy
+
+The manifest floor rises to macOS 26.5 the first time code depends on a
+macOS 26.5-only API. When that happens:
+
+- Bump `platforms:` to `.macOS("26.5")` **in the same PR** as the dependent
+  code — never speculatively, ahead of need.
+- Do **not** introduce `#available` ladders or version-gated branches. The
+  project targets a single OS floor: the floor moves as a whole, the code does
+  not fork. Once the floor is 26.5, every 26.5 API is unconditionally available.
+
+At that point the manifest floor and the supported-OS policy converge and the
+gap documented above closes. The string form `.macOS("26.5")` is used
+deliberately — SwiftPM's `MacOSVersion` exposes `.v26` but no `.v26_5` symbol,
+and the string form matches the manifest's existing style.
+
 ## Transport
 
 _TBD — HTTP/2 and HTTP/1.1 over `NetworkConnection` with ALPN negotiation;
