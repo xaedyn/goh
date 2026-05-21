@@ -2,6 +2,9 @@
 
 > **v0.1 — in development.** Not yet usable. The package skeleton builds and the
 > CI is green; the features described below do not exist yet.
+>
+> Manifest floor: macOS 26.0 (rises to 26.5 on first dependent API).
+> Supported: macOS 26.5+.
 
 A daemon-backed terminal download manager for Apple Silicon macOS.
 
