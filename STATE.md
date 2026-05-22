@@ -27,7 +27,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Slice 3b — range-parallel orchestration (PR #14, draft)
 
-Built, tested (95 tests), pushed:
+Built, tested (97 tests), pushed:
 
 - `DownloadFile` reworked to pure positioned I/O (`pwrite`/`pread`, `Sendable`).
 - `ChunkAssembler` — in-order hashing of out-of-order bytes via the
@@ -36,11 +36,14 @@ Built, tested (95 tests), pushed:
 - The `HEAD` capability probe, `fetchRanged` with N writers in a `TaskGroup`,
   per-range failure cancelling siblings, the single-connection fallback,
   `actualConnectionCount` recorded and kept on completion.
+- A default `User-Agent` — `goh/0.1 (+repo)` — on every download request, set
+  via `GohCore.downloadSessionConfiguration()`.
 - The `Benchmarks/` suite — `goh-bench` driver, `competitive.sh`, the hashing
-  benchmark wired into CI.
+  benchmark wired into CI. Default workloads rotated to Range-honoring URLs
+  (amenable → an archive.org item; saturated → a `dl.google.com` asset, the
+  synthetic Cloudflare endpoint having 403'd on `Range`).
 
-The PR is **draft**, holding on two things: GitHub Actions billing (CI cannot
-run) and the competitive benchmark run.
+The PR is **draft**, holding on the competitive benchmark run; CI is green.
 
 ## Roadmap from here
 
@@ -58,18 +61,22 @@ run) and the competitive benchmark run.
 
 ## Pending questions for the user
 
-- **Competitive benchmark.** Run `Benchmarks/competitive.sh` on a real network
-  and post the numbers to PR #14; once they confirm the targets (amenable —
-  beat `aria2c` by ≥10%; saturated — parity), #14 can be marked ready and
-  merged.
+- **Competitive benchmark re-run.** Run `Benchmarks/competitive.sh` on a real
+  network against the rotated defaults and post the numbers to PR #14. A prior
+  indicative run measured ~17% over `aria2c` on the amenable workload, but the
+  amenability check WARNed — it is not a validated measurement. Once the re-run
+  confirms the targets (amenable — amenability check passes AND beats `aria2c`
+  by ≥10%; saturated — parity), #14 can be marked ready and merged.
+- **Previous-run raw numbers.** The indicative numbers are not yet on PR #14;
+  posting them needs the previous run's raw output.
 
 ## Next-session handoff
 
 Slice 3b (range-parallel orchestration + the benchmark suite) is complete,
-tested — 95 tests — and pushed; PR #14 is open in **draft** with CI green. The
-`macos-26` hashing benchmark measured the unified read-back path at −9.6% vs
-inline — it costs nothing, slightly faster if anything. #14 holds only on the
-competitive benchmark run (the one Pending question). Once those numbers land
-and confirm the targets, mark #14 ready — CodeRabbit reviews on un-draft, since
-it skips drafts — and merge. Next slice after 3b: 3c — error / retry /
-cancellation.
+tested — 97 tests — and pushed; PR #14 is open in **draft** with CI green. The
+benchmark default workloads were rotated to Range-honoring URLs and a default
+`User-Agent` was added (commits on `feat/download-range-parallel`). #14 holds
+only on the competitive benchmark *re-run* against the new defaults (see the
+Pending questions). Once those numbers land and confirm the targets, mark #14
+ready — CodeRabbit reviews on un-draft, since it skips drafts — and merge. Next
+slice after 3b: 3c — error / retry / cancellation.
