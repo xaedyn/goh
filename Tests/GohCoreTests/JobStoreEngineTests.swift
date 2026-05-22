@@ -50,7 +50,7 @@ struct JobStoreEngineTests {
         let done = try store.complete(id: job.id)
         #expect(done.state == .completed)
         #expect(done.completedAt != nil)
-        #expect(done.actualConnectionCount == 0)
+        #expect(done.actualConnectionCount == 1)  // kept — the count the download used
     }
 
     @Test("fail moves an active job to failed, recording the error")
