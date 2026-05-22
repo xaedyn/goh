@@ -40,8 +40,12 @@ struct XPCEnvelopeCodecTests {
         }
         if let payload {
             let bytes = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+            // Unwrap to a non-optional pointer — `xpc_dictionary_set_data`'s
+            // parameter is non-optional under some SDKs (see cross-SDK skew).
             bytes.withUnsafeBytes { raw in
-                xpc_dictionary_set_data(dictionary, "payload", raw.baseAddress, raw.count)
+                if let base = raw.baseAddress {
+                    xpc_dictionary_set_data(dictionary, "payload", base, raw.count)
+                }
             }
         }
         return dictionary
