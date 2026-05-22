@@ -64,21 +64,31 @@ The PR is **draft**, holding on the competitive benchmark run; CI is green.
 ## Pending questions for the user
 
 - **Competitive benchmark re-run.** Run `Benchmarks/competitive.sh` on a real
-  network against the rotated defaults and post the numbers to PR #14. A prior
-  indicative run measured ~17% over `aria2c` on the amenable workload, but the
-  amenability check WARNed — it is not a validated measurement. Once the re-run
-  confirms the targets (amenable — amenability check passes AND beats `aria2c`
-  by ≥10%; saturated — parity), #14 can be marked ready and merged.
-- **Previous-run raw numbers.** The indicative numbers are not yet on PR #14;
-  posting them needs the previous run's raw output.
+  network against the rotated defaults and post the numbers to PR #14. The prior
+  indicative run (~17% over `aria2c` on amenable, but the amenability check
+  WARNed — not validated) is already posted to #14 for the record. The re-run
+  has three possible outcomes:
+  1. Both checks PASS and `goh` beats `aria2c` by ≥10% on amenable — the
+     validated 3b measurement; mark #14 ready, CodeRabbit reviews, merge.
+  2. Both checks PASS but `goh` misses ≥10% — a real finding; surface what
+     bottlenecked (likely a profiling pass), decide tune-in-3b vs accept
+     parity for v0.1. No moved goalpost.
+  3. Either check WARNs — rotate that workload's URL again (the README's
+     ranked fallback list), commit, re-run.
+  #14 stays in draft until one of the three lands.
 
 ## Next-session handoff
 
-Slice 3b (range-parallel orchestration + the benchmark suite) is complete,
-tested — 97 tests — and pushed; PR #14 is open in **draft** with CI green. The
-benchmark default workloads were rotated to Range-honoring URLs and a default
-`User-Agent` was added (commits on `feat/download-range-parallel`). #14 holds
-only on the competitive benchmark *re-run* against the new defaults (see the
-Pending questions). Once those numbers land and confirm the targets, mark #14
-ready — CodeRabbit reviews on un-draft, since it skips drafts — and merge. Next
-slice after 3b: 3c — error / retry / cancellation.
+Slice 3b is complete, tested — 97 tests — and pushed; PR #14 is open in
+**draft** with CI green. The orchestration code and the hashing measurement are
+settled. This round rotated the benchmark default workloads to Range-honoring
+URLs, added a default `User-Agent`, and gave the saturated workload a run-time
+self-check to match the amenable one — both workloads now validate their
+structural assumption at run time. The prior indicative numbers are posted to
+PR #14, honestly framed.
+
+The competitive benchmark *re-run* against the rotated defaults is the only
+outstanding piece — see the three outcomes under Pending questions. #14 stays
+draft until one of them lands; then mark it ready (CodeRabbit reviews on
+un-draft, since it skips drafts) and merge. Next slice after 3b: 3c — error /
+retry / cancellation.
