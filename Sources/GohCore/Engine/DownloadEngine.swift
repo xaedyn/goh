@@ -83,8 +83,8 @@ public struct DownloadEngine: Sendable {
     }
 
     /// A `HEAD` capability probe. Anything inconclusive — a non-2xx status, no
-    /// `Accept-Ranges: bytes`, no `Content-Length` — falls back to a single
-    /// connection; the real download then surfaces any genuine error.
+    /// `Accept-Ranges: bytes`, no parseable `Content-Length` — falls back to a
+    /// single connection; the real download then surfaces any genuine error.
     private func probe(_ url: URL) async -> ProbeOutcome {
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
@@ -94,11 +94,30 @@ public struct DownloadEngine: Sendable {
             (200..<300).contains(http.statusCode),
             (http.value(forHTTPHeaderField: "Accept-Ranges") ?? "")
                 .lowercased().contains("bytes"),
-            http.expectedContentLength > 0
+            let total = Self.contentLength(from: http)
         else {
             return .single
         }
-        return .ranged(total: UInt64(http.expectedContentLength))
+        return .ranged(total: total)
+    }
+
+    /// Reads `Content-Length` from `response`. URLSession populates
+    /// `URLResponse.expectedContentLength` from `Content-Length` for `GET`
+    /// responses but returns `-1` (`NSURLResponseUnknownLength`) for `HEAD`
+    /// responses, even when the server sent the header — empirically verified
+    /// on macOS 26. The probe is a `HEAD`, so the literal header value is the
+    /// only reliable source for the total. Returns `nil` if the header is
+    /// absent, unparseable, or zero — in any of those cases the engine falls
+    /// back to a single connection.
+    private static func contentLength(from response: HTTPURLResponse) -> UInt64? {
+        guard
+            let raw = response.value(forHTTPHeaderField: "Content-Length"),
+            let length = UInt64(raw.trimmingCharacters(in: .whitespaces)),
+            length > 0
+        else {
+            return nil
+        }
+        return length
     }
 
     // MARK: Single connection
