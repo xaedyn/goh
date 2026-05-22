@@ -1,42 +1,36 @@
-import CryptoKit
 import Darwin
 import Foundation
+import Synchronization
 
-/// A failure writing a download to disk.
+/// A failure reading or writing a download on disk.
 public enum DownloadFileError: Error {
     case openFailed(path: String, errno: Int32)
     case writeFailed(errno: Int32)
+    case readFailed(errno: Int32)
     case syncFailed(errno: Int32)
 }
 
-/// The disk side of a download (`DESIGN.md` §Persistence).
+/// The disk side of a download — positioned reads and writes over one file
+/// descriptor (`DESIGN.md` §Persistence).
 ///
-/// Bytes are written with `pwrite(2)` at an explicit offset; a streaming
-/// SHA-256 is folded over them as they land; the file is fsynced roughly every
-/// 1 MiB, so a crash loses at most one checkpoint interval of progress. When the
-/// total size is known up front, the file's extents are preallocated
-/// (`F_PREALLOCATE`) for contiguity — best-effort.
-///
-/// Single-connection in this slice: appends are sequential and the offset
-/// advances by itself. The explicit-offset `pwrite` is what 3b's concurrent
-/// range writers will build on.
-public final class DownloadFile {
+/// `pwrite(2)` and `pread(2)` are offset-addressed, so range writers and the
+/// hash assembler share one descriptor with no cursor contention; `DownloadFile`
+/// is therefore `Sendable`. The file is fsynced roughly every 1 MiB of writes —
+/// the checkpoint. When the total size is known up front, the extents are
+/// preallocated (`F_PREALLOCATE`) for contiguity. Hashing is not `DownloadFile`'s
+/// concern — the ``ChunkAssembler`` owns it.
+public final class DownloadFile: Sendable {
 
     /// The fsync cadence — the 1 MiB checkpoint.
     private static let checkpointInterval: UInt64 = 1 << 20
 
     private let descriptor: Int32
-    private var offset: UInt64 = 0
-    private var bytesSinceSync: UInt64 = 0
-    private var hasher = SHA256()
-
-    /// The number of bytes appended so far.
-    public var bytesWritten: UInt64 { offset }
+    private let bytesSinceSync = Mutex<UInt64>(0)
 
     /// Opens — creating and truncating — the file at `path`. When `expectedSize`
     /// is known, the file's extents are preallocated for contiguity.
     public init(path: String, expectedSize: UInt64?) throws {
-        descriptor = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        descriptor = open(path, O_RDWR | O_CREAT | O_TRUNC, 0o644)
         guard descriptor >= 0 else {
             throw DownloadFileError.openFailed(path: path, errno: errno)
         }
@@ -45,37 +39,56 @@ public final class DownloadFile {
         }
     }
 
-    /// Writes `data` at the current offset, folds it into the running digest,
-    /// and fsyncs once a checkpoint interval has accumulated.
-    public func append(_ data: Data) throws {
+    /// Writes `data` at `offset`, and fsyncs once a checkpoint interval of
+    /// writes has accumulated across all callers.
+    public func write(_ data: Data, at offset: UInt64) throws {
         try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
-            var written = 0
-            while written < raw.count {
+            var done = 0
+            while done < raw.count {
                 let count = pwrite(
-                    descriptor, base + written, raw.count - written,
-                    off_t(offset) + off_t(written))
+                    descriptor, base + done, raw.count - done,
+                    off_t(offset) + off_t(done))
                 guard count > 0 else { throw DownloadFileError.writeFailed(errno: errno) }
-                written += count
+                done += count
             }
         }
-        hasher.update(data: data)
-        offset += UInt64(data.count)
-        bytesSinceSync += UInt64(data.count)
-        if bytesSinceSync >= Self.checkpointInterval {
-            _ = fsync(descriptor)
-            bytesSinceSync = 0
+        let shouldSync = bytesSinceSync.withLock { accumulated -> Bool in
+            accumulated += UInt64(data.count)
+            if accumulated >= Self.checkpointInterval {
+                accumulated = 0
+                return true
+            }
+            return false
         }
+        if shouldSync { _ = fsync(descriptor) }
     }
 
-    /// fsyncs, closes the file, and returns the lowercase-hex SHA-256 of every
-    /// appended byte.
-    public func finalize() throws -> String {
+    /// Reads up to `count` bytes from `offset` — fewer only at end of file.
+    public func read(at offset: UInt64, count: Int) throws -> Data {
+        guard count > 0 else { return Data() }
+        var buffer = Data(count: count)
+        let got = try buffer.withUnsafeMutableBytes {
+            (raw: UnsafeMutableRawBufferPointer) -> Int in
+            guard let base = raw.baseAddress else { return 0 }
+            var done = 0
+            while done < count {
+                let n = pread(descriptor, base + done, count - done, off_t(offset) + off_t(done))
+                if n == 0 { break }  // end of file
+                guard n > 0 else { throw DownloadFileError.readFailed(errno: errno) }
+                done += n
+            }
+            return done
+        }
+        return Data(buffer.prefix(got))
+    }
+
+    /// fsyncs and closes the file.
+    public func finish() throws {
         guard fsync(descriptor) == 0 else {
             throw DownloadFileError.syncFailed(errno: errno)
         }
         close(descriptor)
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Best-effort extent preallocation; failure is ignored — it is an

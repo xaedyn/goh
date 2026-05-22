@@ -54,30 +54,54 @@ public struct DownloadEngine: Sendable {
         let total: UInt64? = http.expectedContentLength > 0
             ? UInt64(http.expectedContentLength) : nil
         let file = try DownloadFile(path: job.destination, expectedSize: total)
+
+        // Single connection: one range, hashed through the assembler — the same
+        // path range-parallel uses, with N = 1. Range-parallel orchestration of
+        // N writers over this same `file` and assembler is slice 3b's next step.
+        let range = ByteRange(start: 0, length: total ?? UInt64.max)
+        let assembler = ChunkAssembler(file: file, ranges: [range])
+        async let assembled = assembler.hashToCompletion()
+
         let clock = ContinuousClock()
         let started = clock.now
-
         var buffer = Data()
         buffer.reserveCapacity(Self.bufferSize)
         var completed: UInt64 = 0
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= Self.bufferSize {
-                try file.append(buffer)
-                completed += UInt64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-                _ = try store.recordProgress(
-                    id: job.id,
-                    Self.progress(completed: completed, total: total,
-                                  elapsed: clock.now - started))
-            }
-        }
-        if !buffer.isEmpty {
-            try file.append(buffer)
+
+        func flush() throws {
+            guard !buffer.isEmpty else { return }
+            try file.write(buffer, at: completed)
             completed += UInt64(buffer.count)
+            buffer.removeAll(keepingCapacity: true)
+            assembler.advance(range: 0, writtenBytes: completed)
         }
-        // 3a computes the SHA-256; it has no JobSummary field yet (see the PR).
-        _ = try file.finalize()
+
+        do {
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= Self.bufferSize {
+                    try flush()
+                    _ = try store.recordProgress(
+                        id: job.id,
+                        Self.progress(completed: completed, total: total,
+                                      elapsed: clock.now - started))
+                }
+            }
+            try flush()
+        } catch {
+            assembler.recordFailure(Self.mapError(error))
+            _ = await assembled
+            try? file.finish()
+            throw error
+        }
+
+        assembler.finish()
+        // 3b computes the SHA-256; it has no JobSummary field yet (see the PR).
+        if case .failed(let assemblerError) = await assembled {
+            try? file.finish()
+            throw assemblerError
+        }
+        try file.finish()
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: completed, total: total, elapsed: clock.now - started))
