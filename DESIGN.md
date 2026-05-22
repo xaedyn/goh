@@ -630,7 +630,7 @@ fields are ISO-8601 strings (§4).
 | `createdAt` | `Date` | always | when `add` created the job |
 | `lastProgressAt` | `Date?` | always; `null` if never | when `progress` last advanced — the staleness signal |
 | `requestedConnectionCount` | `Int` | always | the connection count `add` was given |
-| `actualConnectionCount` | `Int` | always | connections in use; `< requested` ⇒ single-connection fallback |
+| `actualConnectionCount` | `Int` | always | connections currently in use; `0` when not downloading, below `requestedConnectionCount` on a single-connection fallback |
 | `pauseReason` | `PauseReason?` | iff `state == paused` | — |
 | `completedAt` | `Date?` | iff `state == completed` | when the download finished |
 | `error` | `GohError?` | iff `state == failed` | the failure |
