@@ -41,7 +41,9 @@ Built, tested (97 tests), pushed:
 - The `Benchmarks/` suite — `goh-bench` driver, `competitive.sh`, the hashing
   benchmark wired into CI. Default workloads rotated to Range-honoring URLs
   (amenable → an archive.org item; saturated → a `dl.google.com` asset, the
-  synthetic Cloudflare endpoint having 403'd on `Range`).
+  synthetic Cloudflare endpoint having 403'd on `Range`). Each workload now
+  self-checks its structural assumption at run time — the amenability WARN
+  joined by a saturation WARN.
 
 The PR is **draft**, holding on the competitive benchmark run; CI is green.
 
