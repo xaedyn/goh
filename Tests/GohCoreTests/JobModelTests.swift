@@ -32,14 +32,14 @@ struct JobModelTests {
         #expect(try wire(Priority.high) == "\"high\"")
     }
 
-    @Test("ErrorCode is exactly the fifteen frozen cases, in table order")
+    @Test("ErrorCode is exactly the sixteen frozen cases, in table order")
     func errorCodeCases() {
         #expect(ErrorCode.allCases.map(\.rawValue) == [
             "dnsResolutionFailed", "connectionFailed", "tlsFailure", "timedOut",
             "httpStatus", "diskFull", "destinationUnwritable",
             "destinationPermissionDenied", "checksumMismatch", "unauthorized",
             "unsupportedURL", "jobNotFound", "queueFull", "protocolVersionMismatch",
-            "cancelled",
+            "cancelled", "invalidArgument",
         ])
     }
 

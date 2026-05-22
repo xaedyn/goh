@@ -111,6 +111,20 @@ struct XPCEnvelopeCodecTests {
         }
     }
 
+    @Test("the invalidArgument error code round-trips at protocolVersion 1")
+    func invalidArgumentErrorCodeRoundTrips() throws {
+        let fixture = try fixtureData("envelope-v1-error-invalid-argument")
+        let decoded = try JSONDecoder().decode(GohEnvelope<GohError>.self, from: fixture)
+        #expect(decoded.protocolVersion == 1)
+        #expect(decoded.messageType == .error)
+        #expect(decoded.payload.code == .invalidArgument)
+
+        // Round-trip the decoded envelope through the XPC codec.
+        let restored = try GohEnvelope<GohError>(xpcDictionary: decoded.xpcDictionary())
+        #expect(restored == decoded)
+        #expect(restored.payload.code == .invalidArgument)
+    }
+
     @Test("a Date-bearing payload encodes its dates as ISO-8601 strings (§4)")
     func payloadDatesAreISO8601() throws {
         let summary = JobSummary(
