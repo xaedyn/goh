@@ -11,7 +11,8 @@ The smallest slice that already beats the category for ~80% of real use.
    daemon job.
 3. `goh add <url>` — background download, returns immediately.
 4. `goh ls`, `goh pause`, `goh resume`, `goh rm`, `goh top`.
-5. HTTP/2 and HTTP/1.1 over `NetworkConnection` with ALPN negotiation.
+5. HTTP fetch via `URLSession` — it negotiates HTTP/1.1, HTTP/2, and HTTP/3
+   internally; goh does not select the protocol.
 6. Single-source download with range-based parallelism (8 connections default,
    tunable).
 7. Resume after interrupt, with checkpoint to disk every 1 MB.
@@ -26,18 +27,15 @@ The smallest slice that already beats the category for ~80% of real use.
 
 ### Out of scope for v0.1
 
-HTTP/3; mirror racing; plugin system / dynamic library loading; Chrome and
-Firefox cookie import; yt-dlp integration; calendar-aware bandwidth scheduling;
-per-host bandwidth budgets; hashes beyond SHA-256.
+Mirror racing; plugin system / dynamic library loading; Chrome and Firefox
+cookie import; yt-dlp integration; calendar-aware bandwidth scheduling; per-host
+bandwidth budgets; hashes beyond SHA-256.
 
 ## v0.2 — backlog
 
-- **HTTP/3.** A deliberate design pass. `Network.framework` exposes QUIC
-  (`NWProtocolQUIC`) but not HTTP/3 — that is RFC 9114 framing plus RFC 9204
-  QPACK header compression, neither shipped as public API. Three options on the
-  table: (a) bridge to `URLSession` behind a transport-abstraction protocol;
-  (b) hand-roll H3 framing + QPACK on `NWProtocolQUIC`; (c) wait for an official
-  `swift-nio-http3` if one materializes. Pick one at the design pass, not before.
+- **HTTP/3.** Resolved by the Slice 3a `URLSession` transport revision — HTTP/3
+  works transparently wherever servers offer it; no dedicated v0.2 design pass
+  is needed.
 - **Mirror racing.** The headline v0.2 feature. Needs its own design pass.
 - **Plugin system** / dynamic library loading.
 - **Multi-browser auth.** Chrome (keychain-encrypted SQLite) and Firefox
