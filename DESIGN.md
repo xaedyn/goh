@@ -629,20 +629,22 @@ fields are ISO-8601 strings (§4).
 | `progress` | `JobProgress` | always | — |
 | `createdAt` | `Date` | always | when `add` created the job |
 | `lastProgressAt` | `Date?` | always; `null` if never | when `progress` last advanced — the staleness signal |
-| `requestedConnectionCount` | `Int` | always | the connection count `add` was given |
-| `actualConnectionCount` | `Int` | always | connections currently in use; `0` when not downloading, below `requestedConnectionCount` on a single-connection fallback |
+| `requestedConnectionCount` | `UInt8` | always | the connection count `add` was given; `1`–`16` |
+| `actualConnectionCount` | `UInt8` | always | connections currently in use; `0` when not downloading, below `requestedConnectionCount` on a single-connection fallback |
 | `pauseReason` | `PauseReason?` | iff `state == paused` | — |
 | `completedAt` | `Date?` | iff `state == completed` | when the download finished |
 | `error` | `GohError?` | iff `state == failed` | the failure |
 | `retryEligible` | `Bool?` | iff `state == failed` | the daemon's judgement that a retry could succeed |
 | `failedAt` | `Date?` | iff `state == failed` | when the job failed |
-| `retryCount` | `Int?` | iff `state == failed` | retries attempted before failing |
+| `retryCount` | `UInt32?` | iff `state == failed` | retries attempted before failing |
+
+Every `Date` field in `JobSummary` is encoded as an ISO-8601 string — see §4.
 
 **Commands** — request payload and success reply:
 
 | Command | Request | Success reply |
 |---|---|---|
-| `add` | `url: String`; `destination: String?`; `connectionCount: Int?`; `useImportedCookies: Bool?`; `priority: Priority?` | `JobSummary` (`state == queued`) |
+| `add` | `url: String`; `destination: String?`; `connectionCount: UInt8?`; `useImportedCookies: Bool?`; `priority: Priority?` | `JobSummary` (`state == queued`) |
 | `ls` | *(empty)* | `{ jobs: [JobSummary] }` |
 | `pause` | `jobID: UInt64` | `JobSummary` |
 | `resume` | `jobID: UInt64` | `JobSummary` |
@@ -754,7 +756,7 @@ Three boundaries fix what `GohError` is *not*:
 - **Daemon shutdown is not a `GohError`** — a request in flight when the daemon
   stops surfaces as an XPC *transport* error (the connection invalidates), not a
   `reply`-envelope `.failure`. `GohError` is reply-level; connection lifecycle,
-  including a dropped daemon, is the IPC contract's §2 (§2.2 reconnect).
+  including a dropped daemon, is the IPC contract's §2.2 (reconnect).
 
 **Considered alternatives.**
 - *An untyped human-readable error string* — rejected: the CLI must branch on
@@ -763,6 +765,13 @@ Three boundaries fix what `GohError` is *not*:
 - *Deriving retry-eligibility from `code`* — rejected: `code` alone cannot
   separate a retryable 503 from a fatal 404 (both are `httpStatus`); the daemon,
   which holds the response, decides and states it.
+- *A single collapsed `networkUnreachable` code* — rejected: DNS resolution
+  failure, TCP connection failure, and TLS negotiation failure have distinct
+  remedies — DNS suggests checking the URL or local network; connect suggests the
+  host is unreachable or down; TLS suggests a certificate or protocol mismatch. A
+  consumer branching on cause needs them separable; a single collapsed code would
+  force every consumer to parse the `message` string to recover the distinction
+  the three separate codes preserve structurally.
 
 ### 3 · Commands — rationale
 
@@ -779,6 +788,13 @@ store and attaches cookies whose domain matches the URL; `add` carries no cookie
 identifier. `useImportedCookies: false` (CLI `--no-cookies`) opts out, and `add`
 prints a one-line note when cookies were matched, so the attachment is not
 silent. `priority` is a `Priority` enum — `low`, `normal`, `high`.
+
+`connectionCount` is a `UInt8` constrained to `1`–`16`: `1` is a legitimate
+single-connection download, `16` a ceiling past which parallel range-request
+benefit saturates on real CDNs. The daemon **caps** a request above `16` at `16`
+— the accepted value becomes `requestedConnectionCount`, the live count
+`actualConnectionCount` (§1) — and **rejects** a request of `0` with an error,
+since zero connections is nonsense, not a defaultable value.
 
 **Considered alternatives.**
 - *A cookie-import id — `goh auth import` returns an id `add` passes* — rejected:
