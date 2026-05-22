@@ -110,4 +110,31 @@ struct XPCEnvelopeCodecTests {
             try GohEnvelope<TestPayload>(xpcDictionary: dictionary)
         }
     }
+
+    @Test("a Date-bearing payload encodes its dates as ISO-8601 strings (§4)")
+    func payloadDatesAreISO8601() throws {
+        let summary = JobSummary(
+            id: 1,
+            url: "https://example.com/f",
+            destination: "/tmp/f",
+            state: .queued,
+            progress: JobProgress(bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            lastProgressAt: nil,
+            requestedConnectionCount: 8,
+            actualConnectionCount: 0)
+        let envelope = GohEnvelope(
+            protocolVersion: 1,
+            requestID: try #require(UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F")),
+            messageType: .reply,
+            payload: summary)
+
+        let dictionary = try envelope.xpcDictionary()
+        var length = 0
+        let bytes = try #require(xpc_dictionary_get_data(dictionary, "payload", &length))
+        let payloadJSON = String(decoding: Data(bytes: bytes, count: length), as: UTF8.self)
+
+        // createdAt must be a quoted ISO-8601 string, not the numeric default.
+        #expect(payloadJSON.contains("\"createdAt\":\"2023-11-14T"))
+    }
 }

@@ -99,9 +99,9 @@ extension GohEnvelope {
         xpc_dictionary_set_string(
             dictionary, XPCEnvelope.messageTypeKey, messageType.rawValue)
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let payloadBytes = try encoder.encode(payload)
+        // `CommandCoding` is the canonical payload codec — ISO-8601 dates
+        // (`DESIGN.md` §4) and sorted keys (§5.1).
+        let payloadBytes = try CommandCoding.encoder.encode(payload)
         // `payload` is a `Codable` value, so its JSON encoding is never empty
         // and the buffer always has a base address. Unwrapping it here passes a
         // non-optional pointer, which `xpc_dictionary_set_data` accepts whether
@@ -138,7 +138,7 @@ extension GohEnvelope {
         let payloadBytes = try XPCEnvelope.data(dictionary, XPCEnvelope.payloadKey)
         let payload: Payload
         do {
-            payload = try JSONDecoder().decode(Payload.self, from: payloadBytes)
+            payload = try CommandCoding.decoder.decode(Payload.self, from: payloadBytes)
         } catch {
             throw XPCEnvelopeError.payloadDecodingFailed(underlying: error)
         }
