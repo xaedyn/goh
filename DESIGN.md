@@ -473,13 +473,20 @@ backward-compatible and does not bump the version.
 
 #### 5.1 Codable for message bodies
 
-Message bodies are `Codable`, via the Swift XPC API's `Codable` support — it
-matches the envelope-plus-`Command`-enum model, gives compiler-checked
-exhaustiveness, and adds no third-party dependency. Downloaded file content
-**never crosses XPC**: the daemon `pwrite`s bytes straight to disk, and the CLI
-receives only small control messages and progress events, so there is no
-bulk-payload pressure. `Codable` covers the `payload`; the envelope itself is the
-fixed-key XPC dictionary of §4.3, and file descriptors are handled per §5.2.
+Message bodies are `Codable` — it matches the envelope-plus-`Command`-enum model,
+gives compiler-checked exhaustiveness, and adds no third-party dependency.
+Downloaded file content **never crosses XPC**: the daemon `pwrite`s bytes straight
+to disk, and the CLI receives only small control messages and progress events, so
+there is no bulk-payload pressure.
+
+Made precise — the envelope is **not** sent as one opaque `Codable` message, which
+would defeat §4.3's primitive-accessor reads. `payload` is encoded by a Foundation
+`Codable` encoder (JSON, deterministic key ordering) to bytes, carried as an XPC
+`data` value beside the primitive-typed envelope keys. `protocolVersion` is
+carried as an XPC `uint64` — the only unsigned-integer XPC primitive — holding a
+value validated to fit in `UInt32` on both encode and decode. `requestID` and
+`messageType` are XPC strings. The four keys form the fixed-key XPC dictionary of
+§4.3; file descriptors are handled per §5.2.
 
 **Considered alternatives.**
 - *Hand-built `xpc_dictionary` messages* — verbose and error-prone for no gain
