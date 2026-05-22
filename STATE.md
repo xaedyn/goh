@@ -9,8 +9,10 @@ session; update at the start of every PR and at the end of every session.
 - **Last merged:** PR #12 — Slice 3a, single-connection HTTP download — `main`
   at `a051819`.
 - **Current slice:** 3b — range-parallel orchestration — **PR #14 open in
-  draft**, blocked (see Pending questions).
+  draft**, CI green; holding for the competitive benchmark run.
 - **Last merged before #14:** PR #13 — the `actualConnectionCount` §1 amendment.
+- **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
+  also made GitHub Actions free on the `macos-26` runner.
 
 ## Slice 3a — shipped (the milestone: `goh` moves bytes to disk)
 
@@ -56,19 +58,18 @@ run) and the competitive benchmark run.
 
 ## Pending questions for the user
 
-- **GitHub Actions billing.** CI on PR #14 did not run — "recent account
-  payments have failed or your spending limit needs to be increased" (GitHub
-  Settings → Billing & plans). CI cannot pass until this is resolved; once it
-  is, re-run with `gh run rerun` or a push.
 - **Competitive benchmark.** Run `Benchmarks/competitive.sh` on a real network
-  and post the numbers to PR #14; then it can be marked ready and merged.
+  and post the numbers to PR #14; once they confirm the targets (amenable —
+  beat `aria2c` by ≥10%; saturated — parity), #14 can be marked ready and
+  merged.
 
 ## Next-session handoff
 
 Slice 3b (range-parallel orchestration + the benchmark suite) is complete,
-tested — 95 tests — and pushed; PR #14 is open in **draft**. It holds on the
-two Pending questions above: GitHub Actions billing (CI blocked) and the
-competitive benchmark run. Local hash-overhead preview: ~−2% (within noise —
-the read-back is free). Once CI is green and the competitive numbers land,
-mark #14 ready and merge. Next slice after 3b: 3c — error / retry /
+tested — 95 tests — and pushed; PR #14 is open in **draft** with CI green. The
+`macos-26` hashing benchmark measured the unified read-back path at −9.6% vs
+inline — it costs nothing, slightly faster if anything. #14 holds only on the
+competitive benchmark run (the one Pending question). Once those numbers land
+and confirm the targets, mark #14 ready — CodeRabbit reviews on un-draft, since
+it skips drafts — and merge. Next slice after 3b: 3c — error / retry /
 cancellation.
