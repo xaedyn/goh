@@ -22,8 +22,8 @@ public struct DownloadEngine: Sendable {
     /// throws — every failure is recorded on the job as a ``GohError``.
     public func run(jobID: UInt64, in store: JobStore) async {
         guard let job = store.job(id: jobID) else { return }
-        // start() is a no-op unless the job is queued; only proceed if it took.
-        guard (try? store.start(id: jobID))?.state == .active else { return }
+        // Claim the job atomically; only proceed if this call won the claim.
+        guard (try? store.start(id: jobID)) == true else { return }
         do {
             try await fetch(job: job, store: store)
         } catch let error as GohError {

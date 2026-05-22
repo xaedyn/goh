@@ -92,12 +92,21 @@ public final class JobStore: Sendable {
     // transition is guarded by ``JobLifecycle``; a call on a job in the wrong
     // state is a no-op (the engine is expected to call these in order).
 
-    /// Marks a `queued` job `active` — the engine has begun downloading it.
-    public func start(id: UInt64) throws -> JobSummary {
-        try mutateJob(id: id) { job in
-            guard JobLifecycle.isLegal(from: job.state, to: .active) else { return }
-            job.state = .active
-            job.actualConnectionCount = 1  // single-connection in this slice
+    /// Atomically claims a `queued` job for the engine: transitions it to
+    /// `active` and returns `true`. Returns `false` when the job exists but is
+    /// not `queued` — already claimed, or terminal — so a second caller cannot
+    /// also start downloading it. Throws `jobNotFound` if no such job exists.
+    public func start(id: UInt64) throws -> Bool {
+        try withMutation { state in
+            guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
+                throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+            }
+            guard JobLifecycle.isLegal(from: state.jobs[index].state, to: .active) else {
+                return false
+            }
+            state.jobs[index].state = .active
+            state.jobs[index].actualConnectionCount = 1  // single-connection in this slice
+            return true
         }
     }
 

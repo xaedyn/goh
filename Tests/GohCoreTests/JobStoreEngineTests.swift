@@ -11,22 +11,23 @@ struct JobStoreEngineTests {
             url: "https://example.com/f", destination: "/tmp/f", requestedConnectionCount: 8)
     }
 
-    @Test("start moves a queued job to active")
-    func startActivatesQueuedJob() throws {
+    @Test("start claims a queued job and moves it to active")
+    func startClaimsQueuedJob() throws {
         let store = JobStore()
         let job = queuedJob(store)
-        let active = try store.start(id: job.id)
-        #expect(active.state == .active)
-        #expect(active.actualConnectionCount == 1)
+        #expect(try store.start(id: job.id) == true)
+        let active = store.job(id: job.id)
+        #expect(active?.state == .active)
+        #expect(active?.actualConnectionCount == 1)
     }
 
-    @Test("start is a no-op on a job that is not queued")
-    func startNoOpOnNonQueued() throws {
+    @Test("start returns false for a job that is not queued")
+    func startReturnsFalseForNonQueued() throws {
         let store = JobStore()
         let job = queuedJob(store)
-        _ = try store.start(id: job.id)
-        let again = try store.start(id: job.id)
-        #expect(again.state == .active)
+        #expect(try store.start(id: job.id) == true)   // queued → active, claimed
+        #expect(try store.start(id: job.id) == false)  // active → not claimable again
+        #expect(store.job(id: job.id)?.state == .active)
     }
 
     @Test("recordProgress updates an active job's progress and lastProgressAt")

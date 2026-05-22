@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 import GohCore
@@ -81,5 +82,29 @@ struct DownloadEngineTests {
         #expect(final?.state == .failed)
         #expect(final?.error?.code == .timedOut)
         #expect(final?.retryEligible == true)
+    }
+
+    @Test("a dispatched add drives the engine to completion")
+    func dispatchedAddDrivesEngine() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<120_000).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+
+        let store = JobStore()
+        let engine = DownloadEngine(session: mockSession())
+        let engineTask = Mutex<Task<Void, Never>?>(nil)
+        let dispatcher = CommandDispatcher(store: store, onJobQueued: { id in
+            engineTask.withLock { $0 = Task { await engine.run(jobID: id, in: store) } }
+        })
+
+        let destination = directory.appending(path: "out.bin").path
+        _ = dispatcher.reply(to: .add(request: AddRequest(url: url, destination: destination)))
+        await engineTask.withLock { $0 }?.value
+
+        #expect(store.job(id: 1)?.state == .completed)
+        #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
     }
 }

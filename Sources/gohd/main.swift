@@ -5,10 +5,11 @@ import Foundation
 import GohCore
 
 // gohd — the download daemon. Runs under launchd as a LaunchAgent; owns the job
-// model, persists it across restarts, and serves commands from `goh` over XPC.
+// model, persists it across restarts, runs the download engine, and serves
+// commands from `goh` over XPC.
 //
-// This slice has no download engine: a created job rests in `queued`. The
-// HTTP-transport slice replaces that with real downloading.
+// Single-connection downloads in this slice; range-parallel orchestration is
+// slice 3b.
 
 /// The daemon's catalog file —
 /// `~/Library/Application Support/dev.goh.daemon/catalog.plist`. The containing
@@ -36,7 +37,19 @@ do {
     }
     let writer = CatalogWriter(store: catalogStore)
     let store = JobStore(catalog: loaded.catalog, writer: writer)
-    let service = CommandService(dispatcher: CommandDispatcher(store: store))
+
+    // The download engine runs a job whenever a command leaves it `queued` —
+    // a fresh `add`, or a `resume`. Each run is its own detached task.
+    let engine = DownloadEngine(session: URLSession(configuration: .ephemeral))
+    let dispatcher = CommandDispatcher(store: store, onJobQueued: { jobID in
+        Task { await engine.run(jobID: jobID, in: store) }
+    })
+    let service = CommandService(dispatcher: dispatcher)
+
+    // Resume any jobs that were still `queued` when the daemon last stopped.
+    for job in store.allJobs() where job.state == .queued {
+        Task { await engine.run(jobID: job.id, in: store) }
+    }
 
     let validationMode = GohXPCService.peerValidationMode(
         environment: ProcessInfo.processInfo.environment)
