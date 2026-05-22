@@ -616,29 +616,47 @@ CLI presentation choice, not a wire concern — the wire carries the integer.
   is the natural counter width and persistence makes wraparound moot either way.
 
 #### 1.2 Job state
-**Question.** What are a job's states, and what does each carry?
+**Question.** What are a job's states, and how are they carried on the wire?
 
 **Options considered.**
-- (a) A flat enum (`queued`, `active`, `paused`, `completed`, `failed`) plus
-  separate optional fields for pause reason and failure detail.
+- (a) A flat enum on `JobSummary`, with state-specific detail in sibling
+  top-level fields.
 - (b) An enum whose `paused` and `failed` cases carry associated values.
 
-**Proposed answer.** (b). `JobState`: `queued`, `active`, `paused(PauseReason)`,
-`completed`, `failed(GohError)`. Associated values make invalid states
-unrepresentable — a flat enum admits `state: active, pauseReason: network`,
-which is nonsense. On the wire it is a `Codable` discriminated union.
-- `PauseReason` is `user` or `network`. The distinction is load-bearing, not
-  cosmetic: a network-paused job (cellular, ROADMAP §12) auto-resumes when Wi-Fi
-  returns; a user-paused job must not. The daemon needs the reason to make that
-  call, and `goh ls` surfaces it ("paused — cellular").
-- `failed` carries the structured error (§1.4). Retry-eligibility is a property
-  of the error category, not a separate field (see §1.4).
+**Proposed answer.** (a) — settled by the first-round audit (A3.1). `JobState`
+is a flat enum — `queued`, `active`, `paused`, `completed`, `failed` — carried
+as `JobSummary.state`. State-specific detail rides in sibling top-level fields of
+`JobSummary`, present only in the state they belong to:
+- `pauseReason` — present when `state == paused`; a `PauseReason`, which is
+  `user` or `network`. A job *waiting for a connection slot* is `queued`, not
+  `paused` — `queued` is a state, not a pause reason. (`system` / sleep is not a
+  distinct reason: on macOS, sleep drops the network and `nw_path_monitor`
+  reports it as a `network` pause. Deferred to v0.2 if a future macOS makes the
+  distinction real.)
+- `error`, `retryEligible`, `failedAt`, `retryCount` — present when
+  `state == failed`; their types are in §2's `JobSummary` and `error`'s shape in
+  §1.4. Failure metadata is top-level, so it needs no wrapping struct and each
+  field evolves additively under §3.
+
+**Internal invariant, wire flexibility.** The wire schema permits a nonsensical
+combination — `state: active` with a populated `error` — but the daemon, which
+owns the job model, never emits one: a sibling field is populated *if and only
+if* `state` is the state it belongs to, and consumers may rely on that. The
+invariant is enforced in the daemon, not expressed in the wire type — a
+deliberate trade: the flat shape carries a representable-but-never-emitted
+invalid state, and in exchange gives clean `jq` access and additive evolution.
+
+**Considered alternatives.**
+- *(b) Associated-value enum (`paused(PauseReason)`, `failed(GohError)`)* —
+  rejected. Swift's synthesised `Codable` for associated-value enums nests the
+  payload (`{"failed":{"_0":{…}}}`), hostile to `goh ls --json | jq`; and
+  changing a case's associated type is a wire-incompatible change (§4.3),
+  whereas a flat enum gains cases additively and sibling fields evolve under §3.
+  Its one gain — unrepresentable invalid states — is recovered by the
+  daemon-side invariant above, without the wire cost.
 
 **Open.**
-- An associated-value enum is a tagged union on the wire; changing a case's
-  associated type is a wire-incompatible change (§4.3) — adding a `PauseReason`
-  or error category is additive. Confirm the team accepts the tighter evolution
-  rule that buys the stronger type.
+- None — the first-round audit (A3.1) settled this.
 
 #### 1.3 Progress
 **Question.** What does a job's progress look like in `ls`'s reply?
@@ -655,6 +673,12 @@ UInt64`. `goh ls` is a status list; the 8-connection breakdown belongs to
 connection states in every `ls` row would bloat the common case for a view that
 does not show them.
 
+**ETA is deliberately not a field.** ETA is `(bytesTotal - bytesCompleted) /
+bytesPerSecond` — a value the consumer computes trivially from the three fields
+above. Carrying a derived value on the wire only invites encoder/consumer
+disagreement; the CLI computes it. When `bytesTotal` is nil, ETA is unknowable
+and the consumer renders an indeterminate state.
+
 **Open.**
 - Whether `goh ls --verbose` ever wants per-connection detail — if so it is an
   additive optional field later, not a v1 obligation.
@@ -662,29 +686,52 @@ does not show them.
   state gracefully when it is nil.
 
 #### 1.4 Error shape
-**Question.** What is a `GohError`'s shape on the wire? (The XPC contract
-deferred this; this round locks it.)
+**Question.** What is a `GohError`'s shape, and which `ErrorCode` categories must
+it cover?
 
-**Options considered.**
-- (a) An untyped human string.
-- (b) A typed `code` enum plus an optional human `message`.
+**Proposed answer.** `GohError` is `{ code: ErrorCode, message: String? }` — a
+typed `code` the CLI branches on (exit codes, retry prompts) without parsing
+prose, plus optional human-readable `message`. `ErrorCode` is a closed enum of
+fifteen categories, each with a remedy path:
 
-**Proposed answer.** (b). `GohError` is `{ code: ErrorCode, message: String?,
-httpStatusCode: Int? }`. `ErrorCode` is a closed enum of categories —
-`networkUnreachable`, `httpStatus`, `timedOut`, `diskFull`,
-`destinationUnwritable`, `checksumMismatch`, `unauthorized`, `unsupportedURL`,
-`jobNotFound`, `protocolVersionMismatch`, `cancelled`, … — so the CLI branches on
-cause (exit codes, retry prompts) without parsing prose. `message` is
-human-readable detail; `httpStatusCode` is set only for `httpStatus`.
-Retry-eligibility is **derived** — `ErrorCode` exposes an `isRetryable` property
-(`networkUnreachable` / `timedOut` yes; `unauthorized` / `unsupportedURL` no) —
-not a separate wire bit, so it cannot disagree with the code.
+| `ErrorCode` | Meaning | Remedy |
+|---|---|---|
+| `dnsResolutionFailed` | the host name did not resolve | check the URL / connectivity |
+| `connectionFailed` | TCP connection refused or unreachable | retryable — check connectivity |
+| `tlsFailure` | TLS handshake or certificate failure | not retryable — the host's TLS is broken |
+| `timedOut` | the connection or transfer timed out | retryable |
+| `httpStatus` | the server returned a 4xx / 5xx status | depends — see `message` |
+| `diskFull` | no space left on the destination volume | free space, then retry |
+| `destinationUnwritable` | the destination path is invalid or read-only | correct the path |
+| `destinationPermissionDenied` | macOS (TCC) denied access to the destination | grant access in System Settings |
+| `checksumMismatch` | the finished file's SHA-256 did not match | the file is corrupt — retry |
+| `unauthorized` | the server rejected the request's credentials | re-import cookies (`goh auth import`) |
+| `unsupportedURL` | the URL's scheme or form is not supported | not retryable |
+| `jobNotFound` | no job has the given identifier | — |
+| `queueFull` | the daemon's job queue is at capacity | retry later |
+| `protocolVersionMismatch` | the CLI and daemon disagree on `protocolVersion` | upgrade the older component |
+| `cancelled` | the operation was cancelled (`rm`, shutdown) | — |
+
+Three deliberate exclusions:
+- **Retry-eligibility is not derived from `code`.** It is the explicit
+  `retryEligible: Bool` field on a failed `JobSummary` (§1.2). The daemon decides
+  it — an `httpStatus` 503 is retryable, a 404 is not, and `code` alone cannot
+  tell them apart — so the daemon states it rather than the consumer inferring it.
+- **`rangeNotSupported` is not an `ErrorCode`.** A server that does not honour
+  `Range` is not a failure — the daemon falls back to a single connection and the
+  download proceeds. The downgrade is observable as
+  `JobSummary.actualConnectionCount` (§2), not as an error.
+- **Daemon shutdown is not a `GohError`.** A request in flight when the daemon
+  stops surfaces as an XPC *transport* error — the connection invalidates — not a
+  `reply`-envelope `.failure`. `GohError` is reply-level; the transport layer is
+  the IPC contract's §3.
+
+The numeric HTTP status for an `httpStatus` error is carried in `message` (e.g.
+"HTTP 404 — Not Found"). If a machine-readable status is wanted, an additive
+`httpStatusCode: Int?` is a §3-compatible later addition.
 
 **Open.**
-- Derived vs explicit `isRetryable`: derived keeps the wire minimal and
-  internally consistent; a future case might want per-instance retryability.
-  Confirm derived for v1.
-- The `ErrorCode` case list above is a first cut — the review should complete it.
+- Confirm the fifteen-case list is complete for v0.1.
 
 ### 2 · Commands
 
@@ -694,12 +741,22 @@ A mutating command returns the **resulting `JobSummary`** so the CLI need not
 issue a follow-up `ls`.
 
 `JobSummary` — the job's public surface, returned by every job-bearing reply:
-`{ id: UInt64, url: String, destination: String, state: JobState,
-progress: JobProgress }`.
+- `id: UInt64`, `url: String`, `destination: String`
+- `state: JobState`, `progress: JobProgress`
+- `createdAt: Date` — when `add` created the job
+- `lastProgressAt: Date?` — when `progress` last advanced (nil if it never has).
+  The *consumer* judges staleness from it (e.g. "no progress for 60 s"); the
+  daemon does not decide what "stale" means.
+- `actualConnectionCount: Int` — connections currently in use (0 when not
+  actively downloading); below the requested `connectionCount` when the server
+  forced a single-connection fallback (§1.4).
+- `pauseReason: PauseReason?` — present iff `state == paused`.
+- `error: GohError?`, `retryEligible: Bool?`, `failedAt: Date?`,
+  `retryCount: Int?` — present iff `state == failed`.
 
 #### 2.1 `add`
-**Question.** What are `add`'s request and reply payloads, and how does it
-reference imported Safari cookies?
+**Question.** What are `add`'s request and reply payloads, how does it reference
+imported Safari cookies, and how is a job's priority expressed?
 
 **Options considered (cookie reference).**
 - (a) A cookie-import id — `goh auth import` returns an id; `add` passes it.
@@ -708,10 +765,10 @@ reference imported Safari cookies?
 - (c) Both.
 
 **Proposed answer.** Request: `{ url: String, destination: String?,
-connectionCount: Int?, useImportedCookies: Bool? }` — `destination` nil → the
-daemon derives a filename in the default downloads directory; `connectionCount`
-nil → 8 (the contract default); `useImportedCookies` nil → true. Reply: the new
-job's `JobSummary`, state `queued`.
+connectionCount: Int?, useImportedCookies: Bool?, priority: Int? }`. Reply: the
+new job's `JobSummary`, state `queued`. Defaults for absent fields are frozen
+(§3): `destination` → derived from the URL; `connectionCount` → 8;
+`useImportedCookies` → true; `priority` → TBD (see Open).
 Cookie reference: **(b), with opt-out**. `add` carries no cookie id; the daemon
 matches cookies by domain. `useImportedCookies: false` (CLI `--no-cookies`) opts
 out. The v0.1 UX is "import once, then it just works" — making the user carry an
@@ -719,6 +776,12 @@ id from a prior command is friction a download manager should not impose; the
 opt-out covers "do not send my cookies to this host."
 
 **Open.**
+- **Priority scale — sub-question for this round.** `priority: Int?` needs a
+  defined scale: `0`–`9`, `-5`–`+5`, or a `low` / `normal` / `high` string enum.
+  A string enum reads best at the CLI and on the wire and resists the "what does
+  `4` mean?" problem; an integer is finer-grained but opaque. Leaning the string
+  enum. The frozen default (§3) follows from the choice — `normal`, or the
+  scale's midpoint.
 - (b) is implicit — the user may not see that cookies were attached. Mitigation:
   `add` prints a one-line note when cookies matched ("attached cookies for
   example.com"). Confirm that disclosure is enough.
@@ -746,7 +809,7 @@ optional request field if ever wanted. The CLI sorts/filters client-side.
 chunk?
 
 **Proposed answer.** Request: `{ jobID: UInt64 }`. Reply: the updated
-`JobSummary`, state `paused(.user)`.
+`JobSummary` — `state` `paused`, `pauseReason` `user`.
 **Boundary behavior.** `pause` is **graceful**: the daemon lets the in-flight
 chunk's `pwrite` complete (a ≤1 MB write — sub-millisecond, bounded), writes the
 checkpoint, then transitions to `paused`. It never interrupts mid-write, so the
@@ -798,38 +861,56 @@ daemon's added field does not break an older CLI. The reply shape is therefore
 frozen against breaking changes, open to additive optional fields — not frozen
 exactly.
 
+**Frozen request defaults.** The default value applied to an *absent* optional
+request field is itself part of the frozen contract. Changing a default across a
+point release is wire-compatible at the type level — no field changed type — but
+it silently changes behaviour for every client that relied on the old default,
+which is a real-world break. **A default change therefore requires a
+`protocolVersion` bump.** The frozen v1 defaults: `add.destination` → derive from
+the URL; `add.connectionCount` → 8; `add.useImportedCookies` → true;
+`add.priority` → TBD (§2.1); `rm.keepPartialFile` → false.
+
 **Open.**
-- None — this is the §4.3 rule applied to replies, stated here so it is explicit
-  for the command schemas rather than re-litigated.
+- None — the §4.3 rule applied to replies, plus the request-default corollary,
+  stated here so neither is re-litigated.
 
 ### 4 · Adversarial stress-test
 
 Each schema, walked against what the brief and `ROADMAP.md` say the v0.1 engine
-must do — designed to the *specified* engine, not a guessed one. The review
-rounds audit this section per command.
+must do — designed to the *specified* engine, not a guessed one.
+
+**Completeness rule.** A per-command walk must check *every* field in the
+relevant schema and every field a documented engine capability will produce —
+not only the obvious progress fields. For `ls` specifically that means: creation
+timestamp, staleness indicator, ETA (or its derivation justification),
+retry-eligibility presentation, and a remedy path for every `ErrorCode`. The
+first-round audit found this section had skipped exactly those; the rule exists
+so the next completeness gap is caught here, not in review.
 
 - **`add`** — the engine needs a URL, a destination, a connection count (8
-  default, tunable — ROADMAP §6), and cookie auth (§9). The request carries all
-  four. SHA-256 verification (§8) is *computed during* the download, not
-  user-supplied, so no request field is needed. **Gap check: none.**
-- **`ls` reply / `JobSummary`** — range-parallel, resumable downloads (§6, §7)
-  produce: overall progress ✓ (`JobProgress`), state including paused and failed
-  ✓ (`JobState`), structured failure ✓ (`GohError`). **Deliberately not in `ls`:**
-  per-connection (8-way) progress, the 1 MB checkpoint offset, and per-connection
-  retry counts — those are `goh top` / the subscription slice. **Gap check:**
-  confirm `ls` needs none of them — "resuming from 42 %" is conveyed by
-  `bytesCompleted`; if `goh ls` must show retry counts, that is a missing
-  `JobSummary` field. Surfaced for the review.
+  default, tunable — ROADMAP §6), cookie auth (§9), and a queue priority. The
+  request carries all five. SHA-256 verification (§8) is *computed during* the
+  download, not user-supplied, so no request field is needed. **Gap check: none.**
+- **`ls` reply / `JobSummary`** — walked field by field. `id` / `url` /
+  `destination` ✓; `state` (flat enum) ✓; `progress` —
+  `bytesCompleted` / `bytesTotal` / `bytesPerSecond` ✓, ETA derived by the CLI
+  (§1.3) ✓; `createdAt` ✓; `lastProgressAt` ✓ (the staleness signal, consumer-
+  judged); `actualConnectionCount` ✓ (a single-connection fallback is visible);
+  `pauseReason` ✓; `error` / `retryEligible` / `failedAt` / `retryCount` ✓
+  (failure cause, retry-eligibility, and failure metadata all present). Every
+  `ErrorCode` has a remedy path in §1.4's table. **Deliberately not in `ls`:**
+  per-connection (8-way) progress and the 1 MB checkpoint offset — `goh top` /
+  the subscription slice. **Gap check: none.**
 - **`pause` / `resume`** — the engine needs the job ID and must distinguish user
-  from network pause (§12 cellular auto-pause). Schema: `jobID` ✓, `PauseReason`
+  from network pause (§12 cellular auto-pause). Schema: `jobID` ✓, `pauseReason`
   ✓. **Gap check: none.**
 - **`rm`** — the engine needs the job ID and the keep-or-delete choice for the
   partial (§1.4 cancellation). Schema: `jobID` ✓, `keepPartialFile` ✓. **Gap
   check: none.**
 - **Cross-cutting** — the 1 MB checkpoint (§7) is engine-internal; it surfaces to
-  the user only as `bytesCompleted`, confirmed not a separate `JobSummary` field.
-  Spotlight tagging, the sleep assertion, and `nw_path_monitor` (§10–§12) are
-  daemon behaviors with no command-schema surface.
+  the user as `bytesCompleted` and `lastProgressAt`, confirmed needing no
+  separate field. Spotlight tagging, the sleep assertion, and `nw_path_monitor`
+  (§10–§12) are daemon behaviors with no command-schema surface.
 
 ## Scheduling
 
