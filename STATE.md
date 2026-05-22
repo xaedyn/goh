@@ -27,7 +27,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Slice 3b — range-parallel orchestration (PR #14, draft)
 
-Built, tested (97 tests), pushed:
+Built, tested (100 tests), pushed:
 
 - `DownloadFile` reworked to pure positioned I/O (`pwrite`/`pread`, `Sendable`).
 - `ChunkAssembler` — in-order hashing of out-of-order bytes via the
@@ -41,11 +41,19 @@ Built, tested (97 tests), pushed:
 - The `Benchmarks/` suite — `goh-bench` driver, `competitive.sh`, the hashing
   benchmark wired into CI. Default workloads rotated to Range-honoring URLs
   (amenable → an archive.org item; saturated → a `dl.google.com` asset, the
-  synthetic Cloudflare endpoint having 403'd on `Range`). Each workload now
+  synthetic Cloudflare endpoint having 403'd on `Range`). Each workload
   self-checks its structural assumption at run time — the amenability WARN
   joined by a saturation WARN.
+- Engine diagnostics — `Benchmarks/diagnose.sh` plus `GOH_ENGINE_TRACE=1` emit
+  per-range start / first-byte / completion timestamps, peak concurrent range
+  count, and per-range critical-section time split between the `pwrite`+fsync
+  phase and the assembler/progress/store mutex phase. Off in normal runs;
+  release builds flip it on without recompiling.
 
-The PR is **draft**, holding on the competitive benchmark run; CI is green.
+The PR is **draft**, holding on engine investigation (see Pending questions).
+CI on the code-correctness path is green; the competitive re-run reproduced
+engine regressions (~2× slower than `curl` saturated, ~7× slower than `aria2c`
+amenable — three runs in tight agreement, structural not noise).
 
 ## Roadmap from here
 
@@ -63,32 +71,38 @@ The PR is **draft**, holding on the competitive benchmark run; CI is green.
 
 ## Pending questions for the user
 
-- **Competitive benchmark re-run.** Run `Benchmarks/competitive.sh` on a real
-  network against the rotated defaults and post the numbers to PR #14. The prior
-  indicative run (~17% over `aria2c` on amenable, but the amenability check
-  WARNed — not validated) is already posted to #14 for the record. The re-run
-  has three possible outcomes:
-  1. Both checks PASS and `goh` beats `aria2c` by ≥10% on amenable — the
-     validated 3b measurement; mark #14 ready, CodeRabbit reviews, merge.
-  2. Both checks PASS but `goh` misses ≥10% — a real finding; surface what
-     bottlenecked (likely a profiling pass), decide tune-in-3b vs accept
-     parity for v0.1. No moved goalpost.
-  3. Either check WARNs — rotate that workload's URL again (the README's
-     ranked fallback list), commit, re-run.
-  #14 stays in draft until one of the three lands.
+- **Engine regression — diagnose, fix, re-run.** The competitive re-run
+  produced outcome 2 with magnitude: saturated `goh` 13.148s vs `curl` 6.661s
+  (~2× slower) vs `aria2c` 7.648s (72% slower); amenable `goh` 267.415s vs
+  `aria2c` 37.365s (~7× slower) vs `curl` 0.309s. Saturation check PASSed
+  (workload structurally valid); amenability check WARNed because the file
+  was clearly cached for `curl`. Three runs each in tight agreement. The
+  benchmark gate working — caught before merge.
+
+  The cap hypothesis is falsified (`GohCore.downloadSessionConfiguration()`
+  already sets `httpMaximumConnectionsPerHost = 16`). Diagnostics ship this
+  round. Next: run `Benchmarks/diagnose.sh` against the saturated workload,
+  post the trace to PR #14, form a hypothesis from the evidence, fix one
+  thing, re-run. As many rounds as it takes. #14 stays in draft until the
+  engine produces competitive numbers — no moved goalpost.
 
 ## Next-session handoff
 
-Slice 3b is complete, tested — 97 tests — and pushed; PR #14 is open in
-**draft** with CI green. The orchestration code and the hashing measurement are
-settled. This round rotated the benchmark default workloads to Range-honoring
-URLs, added a default `User-Agent`, and gave the saturated workload a run-time
-self-check to match the amenable one — both workloads now validate their
-structural assumption at run time. The prior indicative numbers are posted to
-PR #14, honestly framed.
+Slice 3b is paused on a real engine finding. The competitive re-run against
+the rotated defaults reproduced ~2× slower than `curl` saturated and ~7×
+slower than `aria2c` amenable — three runs each in tight agreement, structural
+not noise. The benchmark discipline working — caught it before merge.
 
-The competitive benchmark *re-run* against the rotated defaults is the only
-outstanding piece — see the three outcomes under Pending questions. #14 stays
-draft until one of them lands; then mark it ready (CodeRabbit reviews on
-un-draft, since it skips drafts) and merge. Next slice after 3b: 3c — error /
-retry / cancellation.
+This round shipped diagnostic instrumentation: `Benchmarks/diagnose.sh` plus
+`GOH_ENGINE_TRACE=1` emit per-range start/first-byte/completion timestamps,
+peak concurrent ranges, and per-range critical-section time split between the
+`pwrite`+fsync phase and the assembler/progress/store mutex phase. Off by
+default; release-build benchmarks flip it on via the env var. 100 tests
+(diagnostics adds 3); CI green on the code-correctness path.
+
+Next: run `Benchmarks/diagnose.sh` against the saturated workload, post the
+trace to PR #14, form a hypothesis from the evidence, fix one thing, re-run.
+As many rounds as it takes. The slice's definition of done explicitly
+required parity on saturated and ≥10% beat on amenable; we have neither, and
+#14 stays in draft until the engine produces competitive numbers. Next slice
+after 3b: 3c — error / retry / cancellation.
