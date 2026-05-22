@@ -33,15 +33,15 @@ func seconds(_ duration: Duration) -> Double {
 /// Times a goh-engine download; prints wall-clock seconds on success, exits
 /// non-zero on failure.
 func downloadBenchmark(url: String, destination: String, connections: UInt8) async {
-    let configuration = URLSessionConfiguration.ephemeral
-    configuration.httpMaximumConnectionsPerHost = 16
+    // Use GohCore's factory so the benchmark exercises exactly the daemon's
+    // session config — same connection cap, same default User-Agent.
     let store = JobStore()
     let job = store.create(
         url: url, destination: destination, requestedConnectionCount: connections)
     let clock = ContinuousClock()
     let start = clock.now
-    await DownloadEngine(session: URLSession(configuration: configuration))
-        .run(jobID: job.id, in: store)
+    let session = URLSession(configuration: GohCore.downloadSessionConfiguration())
+    await DownloadEngine(session: session).run(jobID: job.id, in: store)
     let elapsed = clock.now - start
     let final = store.job(id: job.id)
     guard final?.state == .completed else {

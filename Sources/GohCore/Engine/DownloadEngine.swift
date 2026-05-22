@@ -49,7 +49,7 @@ public struct DownloadEngine: Sendable {
         guard (try? store.start(id: jobID)) == true else { return }
         guard let job = store.job(id: jobID) else { return }
         do {
-            try await download(job: job, store: store)
+            try await download(job: job, store: store, trace: EngineDiagnostics())
         } catch let error as GohError {
             _ = try? store.fail(
                 id: jobID, error: error, retryEligible: Self.retryEligible(for: error))
@@ -65,14 +65,19 @@ public struct DownloadEngine: Sendable {
         case single
     }
 
-    private func download(job: JobSummary, store: JobStore) async throws {
+    private func download(
+        job: JobSummary, store: JobStore, trace: EngineDiagnostics
+    ) async throws {
         guard let url = URL(string: job.url) else {
             throw GohError(code: .unsupportedURL, message: "could not parse URL: \(job.url)")
         }
         switch await probe(url) {
         case .ranged(let total):
-            try await fetchRanged(job: job, store: store, url: url, total: total)
+            try await fetchRanged(
+                job: job, store: store, url: url, total: total, trace: trace)
         case .single:
+            // The single-connection fallback is untouched in this round; the
+            // diagnostics target the range-parallel path the benchmarks hit.
             try await fetchSingle(job: job, store: store, url: url)
         }
     }
@@ -165,7 +170,8 @@ public struct DownloadEngine: Sendable {
     // MARK: Range-parallel
 
     private func fetchRanged(
-        job: JobSummary, store: JobStore, url: URL, total: UInt64
+        job: JobSummary, store: JobStore, url: URL, total: UInt64,
+        trace: EngineDiagnostics
     ) async throws {
         let ranges = ByteRange.split(
             total: total, requested: job.requestedConnectionCount, minChunk: Self.minChunk)
@@ -187,7 +193,7 @@ public struct DownloadEngine: Sendable {
                             index: index, range: range, url: url, file: file,
                             assembler: assembler, progress: progress,
                             job: job, store: store, total: total,
-                            clock: clock, started: started)
+                            clock: clock, started: started, trace: trace)
                     }
                 }
                 try await group.waitForAll()
@@ -211,14 +217,17 @@ public struct DownloadEngine: Sendable {
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
         _ = try store.complete(id: job.id)
+        trace.summary()
     }
 
     private func downloadRange(
         index: Int, range: ByteRange, url: URL, file: DownloadFile,
         assembler: ChunkAssembler, progress: RangeProgress,
         job: JobSummary, store: JobStore, total: UInt64,
-        clock: ContinuousClock, started: ContinuousClock.Instant
+        clock: ContinuousClock, started: ContinuousClock.Instant,
+        trace: EngineDiagnostics
     ) async throws {
+        trace.rangeStarted(index, bytes: range.length)
         var request = URLRequest(url: url)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
@@ -239,21 +248,31 @@ public struct DownloadEngine: Sendable {
 
         func flush() throws {
             guard !buffer.isEmpty else { return }
-            try file.write(buffer, at: range.start + written)
+            try trace.timed(index, .write) {
+                try file.write(buffer, at: range.start + written)
+            }
             written += UInt64(buffer.count)
             buffer.removeAll(keepingCapacity: true)
-            assembler.advance(range: index, writtenBytes: written)
-            let overall = progress.report(index: index, written: written)
-            _ = try? store.recordProgress(
-                id: job.id,
-                Self.progress(completed: overall, total: total, elapsed: clock.now - started))
+            trace.timed(index, .report) {
+                assembler.advance(range: index, writtenBytes: written)
+                let overall = progress.report(index: index, written: written)
+                _ = try? store.recordProgress(
+                    id: job.id,
+                    Self.progress(completed: overall, total: total, elapsed: clock.now - started))
+            }
         }
 
+        var firstByteSeen = false
         for try await byte in bytes {
+            if !firstByteSeen {
+                firstByteSeen = true
+                trace.rangeFirstByte(index)
+            }
             buffer.append(byte)
             if buffer.count >= Self.bufferSize { try flush() }
         }
         try flush()
+        trace.rangeFinished(index, bytes: written)
     }
 
     private static func progress(
