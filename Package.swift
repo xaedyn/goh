@@ -57,7 +57,8 @@ let package = Package(
         ),
         .testTarget(
             name: "GohCoreTests",
-            dependencies: ["GohCore"]
+            dependencies: ["GohCore"],
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "GohTUITests",
