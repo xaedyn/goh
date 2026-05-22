@@ -633,6 +633,8 @@ as `JobSummary.state`. State-specific detail rides in sibling top-level fields o
   distinct reason: on macOS, sleep drops the network and `nw_path_monitor`
   reports it as a `network` pause. Deferred to v0.2 if a future macOS makes the
   distinction real.)
+- `completedAt` — present when `state == completed`; a `Date` recording when the
+  download finished.
 - `error`, `retryEligible`, `failedAt`, `retryCount` — present when
   `state == failed`; their types are in §2's `JobSummary` and `error`'s shape in
   §1.4. Failure metadata is top-level, so it needs no wrapping struct and each
@@ -689,10 +691,11 @@ and the consumer renders an indeterminate state.
 **Question.** What is a `GohError`'s shape, and which `ErrorCode` categories must
 it cover?
 
-**Proposed answer.** `GohError` is `{ code: ErrorCode, message: String? }` — a
-typed `code` the CLI branches on (exit codes, retry prompts) without parsing
-prose, plus optional human-readable `message`. `ErrorCode` is a closed enum of
-fifteen categories, each with a remedy path:
+**Proposed answer.** `GohError` is `{ code: ErrorCode, message: String?,
+httpStatusCode: Int? }` — a typed `code` the CLI branches on (exit codes, retry
+prompts) without parsing prose, an optional human-readable `message`, and
+`httpStatusCode`, present only when `code == httpStatus`. `ErrorCode` is a closed
+enum of fifteen categories, each with a remedy path:
 
 | `ErrorCode` | Meaning | Remedy |
 |---|---|---|
@@ -719,16 +722,18 @@ Three deliberate exclusions:
   tell them apart — so the daemon states it rather than the consumer inferring it.
 - **`rangeNotSupported` is not an `ErrorCode`.** A server that does not honour
   `Range` is not a failure — the daemon falls back to a single connection and the
-  download proceeds. The downgrade is observable as
-  `JobSummary.actualConnectionCount` (§2), not as an error.
+  download proceeds. The downgrade is observable as `JobSummary`'s
+  `actualConnectionCount` differing from `requestedConnectionCount` (§2), not as
+  an error.
 - **Daemon shutdown is not a `GohError`.** A request in flight when the daemon
   stops surfaces as an XPC *transport* error — the connection invalidates — not a
-  `reply`-envelope `.failure`. `GohError` is reply-level; the transport layer is
-  the IPC contract's §3.
+  `reply`-envelope `.failure`. `GohError` is reply-level; connection lifecycle,
+  including a dropped daemon, is the IPC contract's §2 (§2.2 reconnect).
 
-The numeric HTTP status for an `httpStatus` error is carried in `message` (e.g.
-"HTTP 404 — Not Found"). If a machine-readable status is wanted, an additive
-`httpStatusCode: Int?` is a §3-compatible later addition.
+The numeric HTTP status for an `httpStatus` error is the structured
+`httpStatusCode` field — a consumer reads `select(.error.code == "httpStatus" and
+.error.httpStatusCode >= 500)` directly, rather than parsing the status out of
+the unstructured `message` (which carries the human-readable reason phrase).
 
 **Open.**
 - Confirm the fifteen-case list is complete for v0.1.
@@ -747,10 +752,13 @@ issue a follow-up `ls`.
 - `lastProgressAt: Date?` — when `progress` last advanced (nil if it never has).
   The *consumer* judges staleness from it (e.g. "no progress for 60 s"); the
   daemon does not decide what "stale" means.
+- `requestedConnectionCount: Int` — the connection count `add` was given (8, the
+  default, when the request omitted it).
 - `actualConnectionCount: Int` — connections currently in use (0 when not
-  actively downloading); below the requested `connectionCount` when the server
-  forced a single-connection fallback (§1.4).
+  actively downloading). A single-connection fallback (§1.4) is visible whenever
+  `actualConnectionCount` differs from `requestedConnectionCount`.
 - `pauseReason: PauseReason?` — present iff `state == paused`.
+- `completedAt: Date?` — present iff `state == completed`.
 - `error: GohError?`, `retryEligible: Bool?`, `failedAt: Date?`,
   `retryCount: Int?` — present iff `state == failed`.
 
@@ -870,9 +878,16 @@ which is a real-world break. **A default change therefore requires a
 the URL; `add.connectionCount` → 8; `add.useImportedCookies` → true;
 `add.priority` → TBD (§2.1); `rm.keepPartialFile` → false.
 
+**Date encoding.** `Date` fields are encoded on the wire as ISO-8601 strings with
+a timezone offset (e.g. `2026-05-21T14:32:09Z`), **not** the language's default
+`Codable` representation. The daemon emits UTC; decoders accept any valid
+ISO-8601 timezone. A serialization that holds only by a language default is not
+part of the wire contract until it is stated — the same reason the envelope's
+`messageType` values are pinned to explicit wire literals.
+
 **Open.**
-- None — the §4.3 rule applied to replies, plus the request-default corollary,
-  stated here so neither is re-litigated.
+- None — the §4.3 rule applied to replies, plus the request-default and
+  date-encoding corollaries, stated here so none is re-litigated.
 
 ### 4 · Adversarial stress-test
 
@@ -895,9 +910,11 @@ so the next completeness gap is caught here, not in review.
   `destination` ✓; `state` (flat enum) ✓; `progress` —
   `bytesCompleted` / `bytesTotal` / `bytesPerSecond` ✓, ETA derived by the CLI
   (§1.3) ✓; `createdAt` ✓; `lastProgressAt` ✓ (the staleness signal, consumer-
-  judged); `actualConnectionCount` ✓ (a single-connection fallback is visible);
-  `pauseReason` ✓; `error` / `retryEligible` / `failedAt` / `retryCount` ✓
-  (failure cause, retry-eligibility, and failure metadata all present). Every
+  judged); `requestedConnectionCount` / `actualConnectionCount` ✓ (a single-
+  connection fallback is visible as the pair differing, not from either alone);
+  `pauseReason` ✓; `completedAt` ✓; `error` / `retryEligible` / `failedAt` /
+  `retryCount` ✓ (failure cause, retry-eligibility, and failure metadata all
+  present). Every
   `ErrorCode` has a remedy path in §1.4's table. **Deliberately not in `ls`:**
   per-connection (8-way) progress and the 1 MB checkpoint offset — `goh top` /
   the subscription slice. **Gap check: none.**
