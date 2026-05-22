@@ -693,6 +693,17 @@ invariant is enforced in the daemon, not expressed in the wire type — a
 deliberate trade: the flat shape carries a representable-but-never-emitted
 invalid state and, in exchange, gives clean `jq` access and additive evolution.
 
+**Retry boundary.** `failed` is terminal. `retryEligible` is *advisory* — it
+indicates the failure was the kind that might succeed on a fresh attempt, not an
+actionable in-place state. To retry, the consumer issues a new `add` request,
+which creates a new job with a new `id`; there is no in-place retry operation and
+no `retry` command.
+
+**Priority and preemption.** `Priority` orders selection among `queued` jobs.
+Running jobs are not preempted — the `active → queued` transition does not exist
+outside `pause`. A `high`-priority job that arrives while the connection budget
+is full waits for a running job to finish, or to be paused or removed.
+
 **Considered alternatives.**
 - *An enum whose `paused` / `failed` cases carry associated values* — rejected.
   Swift's synthesised `Codable` for associated-value enums nests the payload
