@@ -102,9 +102,15 @@ extension GohEnvelope {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let payloadBytes = try encoder.encode(payload)
+        // `payload` is a `Codable` value, so its JSON encoding is never empty
+        // and the buffer always has a base address. Unwrapping it here passes a
+        // non-optional pointer, which `xpc_dictionary_set_data` accepts whether
+        // the SDK annotates the parameter as nullable or not.
         payloadBytes.withUnsafeBytes { raw in
-            xpc_dictionary_set_data(
-                dictionary, XPCEnvelope.payloadKey, raw.baseAddress, raw.count)
+            if let base = raw.baseAddress {
+                xpc_dictionary_set_data(
+                    dictionary, XPCEnvelope.payloadKey, base, raw.count)
+            }
         }
         return dictionary
     }
