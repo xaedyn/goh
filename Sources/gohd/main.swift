@@ -39,12 +39,9 @@ do {
     let store = JobStore(catalog: loaded.catalog, writer: writer)
 
     // The download engine runs a job whenever a command leaves it `queued` —
-    // a fresh `add`, or a `resume`. Each run is its own detached task. The
-    // per-host connection cap is raised so range-parallel downloads get real
-    // HTTP/1.1 concurrency (HTTP/2 multiplexes regardless).
-    let sessionConfiguration = URLSessionConfiguration.ephemeral
-    sessionConfiguration.httpMaximumConnectionsPerHost = 16
-    let engine = DownloadEngine(session: URLSession(configuration: sessionConfiguration))
+    // a fresh `add`, or a `resume`. Each run is its own detached task.
+    let engine = DownloadEngine(
+        session: URLSession(configuration: GohCore.downloadSessionConfiguration()))
     let dispatcher = CommandDispatcher(store: store, onJobQueued: { jobID in
         Task { await engine.run(jobID: jobID, in: store) }
     })
