@@ -568,6 +568,269 @@ output.
   (§1.1's open item) — lean yes, since the daemon already logs per-session peer
   identity; settle when the listener is implemented.
 
+## Command schemas
+
+> **Status: design draft, under review.** Each decision is written as
+> Question → Options considered → Proposed answer → Open — the format the XPC
+> contract round used. Nothing here is committed until the review PR is
+> resolved; once decisions land, this section is rewritten to conclusions
+> (rejected options kept as *Considered alternatives* notes) and merged into
+> `protocolVersion = 1`, where it freezes under the §4.3 rules.
+>
+> **This round freezes the job model's public surface, not only the wire
+> format.** `ls`'s reply *is* the externally-visible shape of a download job —
+> its identifier, states, progress, and errors. The daemon-job-model slice that
+> follows implements the job's *internals* behind this surface; it does not
+> re-decide identifier, state, progress, or error shape. Those are settled here
+> and frozen on merge — a later slice has no authority to revisit them.
+
+This round schematizes the five request/reply commands — `add`, `ls`, `pause`,
+`resume`, `rm`. `goh top` is a server-pushed subscription (§1.3), not a
+request/reply command; its `ProgressEvent` schema is a separate slice.
+
+Command **failures** travel the §1.2 error channel: a reply envelope is
+`Result<Payload, GohError>`, so a `pause` of a missing job returns `.failure`,
+not a command-specific error payload. The schemas below define the **success**
+payloads.
+
+### 1 · Shared types
+
+#### 1.1 Job identifier
+**Question.** What type identifies a job — on the wire and to the user?
+
+**Options considered.**
+- (a) `UUID`, consistent with the envelope's `requestID`.
+- (b) A daemon-assigned monotonic integer, persisted across daemon restarts.
+- (c) A human-friendly short string (`job-42`).
+
+**Proposed answer.** (b). A `UInt64` assigned by the daemon from a counter
+persisted alongside job state — the daemon already persists state to disk, so the
+counter survives restarts with no reuse and no collision. The decisive factor:
+the job identifier is **typed by the user** (`goh rm 5`, `goh pause 5`), unlike
+`requestID`, which is machine-only correlation — so typeability dominates and a
+`UUID` is unusable at a prompt. (c) is (b) with a display prefix; the prefix is a
+CLI presentation choice, not a wire concern — the wire carries the integer.
+
+**Open.**
+- Confirm `UInt64` over `UInt32`: `UInt32` (4 billion jobs) is ample, but `UInt64`
+  is the natural counter width and persistence makes wraparound moot either way.
+
+#### 1.2 Job state
+**Question.** What are a job's states, and what does each carry?
+
+**Options considered.**
+- (a) A flat enum (`queued`, `active`, `paused`, `completed`, `failed`) plus
+  separate optional fields for pause reason and failure detail.
+- (b) An enum whose `paused` and `failed` cases carry associated values.
+
+**Proposed answer.** (b). `JobState`: `queued`, `active`, `paused(PauseReason)`,
+`completed`, `failed(GohError)`. Associated values make invalid states
+unrepresentable — a flat enum admits `state: active, pauseReason: network`,
+which is nonsense. On the wire it is a `Codable` discriminated union.
+- `PauseReason` is `user` or `network`. The distinction is load-bearing, not
+  cosmetic: a network-paused job (cellular, ROADMAP §12) auto-resumes when Wi-Fi
+  returns; a user-paused job must not. The daemon needs the reason to make that
+  call, and `goh ls` surfaces it ("paused — cellular").
+- `failed` carries the structured error (§1.4). Retry-eligibility is a property
+  of the error category, not a separate field (see §1.4).
+
+**Open.**
+- An associated-value enum is a tagged union on the wire; changing a case's
+  associated type is a wire-incompatible change (§4.3) — adding a `PauseReason`
+  or error category is additive. Confirm the team accepts the tighter evolution
+  rule that buys the stronger type.
+
+#### 1.3 Progress
+**Question.** What does a job's progress look like in `ls`'s reply?
+
+**Options considered.**
+- (a) Aggregate only — bytes done, bytes total, throughput.
+- (b) Per-connection — an array of the 8 range-connection states.
+- (c) Both, per-connection nested inside aggregate.
+
+**Proposed answer.** (a) for `ls`. `JobProgress`: `bytesCompleted: UInt64`,
+`bytesTotal: UInt64?` (nil when the server sent no length), `bytesPerSecond:
+UInt64`. `goh ls` is a status list; the 8-connection breakdown belongs to
+`goh top`, whose `ProgressEvent` is the separate subscription slice — carrying 8
+connection states in every `ls` row would bloat the common case for a view that
+does not show them.
+
+**Open.**
+- Whether `goh ls --verbose` ever wants per-connection detail — if so it is an
+  additive optional field later, not a v1 obligation.
+- `bytesTotal` is optional — confirm `ls` and the TUI render an indeterminate
+  state gracefully when it is nil.
+
+#### 1.4 Error shape
+**Question.** What is a `GohError`'s shape on the wire? (The XPC contract
+deferred this; this round locks it.)
+
+**Options considered.**
+- (a) An untyped human string.
+- (b) A typed `code` enum plus an optional human `message`.
+
+**Proposed answer.** (b). `GohError` is `{ code: ErrorCode, message: String?,
+httpStatusCode: Int? }`. `ErrorCode` is a closed enum of categories —
+`networkUnreachable`, `httpStatus`, `timedOut`, `diskFull`,
+`destinationUnwritable`, `checksumMismatch`, `unauthorized`, `unsupportedURL`,
+`jobNotFound`, `protocolVersionMismatch`, `cancelled`, … — so the CLI branches on
+cause (exit codes, retry prompts) without parsing prose. `message` is
+human-readable detail; `httpStatusCode` is set only for `httpStatus`.
+Retry-eligibility is **derived** — `ErrorCode` exposes an `isRetryable` property
+(`networkUnreachable` / `timedOut` yes; `unauthorized` / `unsupportedURL` no) —
+not a separate wire bit, so it cannot disagree with the code.
+
+**Open.**
+- Derived vs explicit `isRetryable`: derived keeps the wire minimal and
+  internally consistent; a future case might want per-instance retryability.
+  Confirm derived for v1.
+- The `ErrorCode` case list above is a first cut — the review should complete it.
+
+### 2 · Commands
+
+A command's **request** is the `payload` of a `request`-kind envelope; its
+**reply** is the `Result<…, GohError>` payload of a `reply`-kind envelope (§1.2).
+A mutating command returns the **resulting `JobSummary`** so the CLI need not
+issue a follow-up `ls`.
+
+`JobSummary` — the job's public surface, returned by every job-bearing reply:
+`{ id: UInt64, url: String, destination: String, state: JobState,
+progress: JobProgress }`.
+
+#### 2.1 `add`
+**Question.** What are `add`'s request and reply payloads, and how does it
+reference imported Safari cookies?
+
+**Options considered (cookie reference).**
+- (a) A cookie-import id — `goh auth import` returns an id; `add` passes it.
+- (b) URL-domain match — the daemon, holding the cookie store, automatically
+  attaches cookies whose domain matches the URL.
+- (c) Both.
+
+**Proposed answer.** Request: `{ url: String, destination: String?,
+connectionCount: Int?, useImportedCookies: Bool? }` — `destination` nil → the
+daemon derives a filename in the default downloads directory; `connectionCount`
+nil → 8 (the contract default); `useImportedCookies` nil → true. Reply: the new
+job's `JobSummary`, state `queued`.
+Cookie reference: **(b), with opt-out**. `add` carries no cookie id; the daemon
+matches cookies by domain. `useImportedCookies: false` (CLI `--no-cookies`) opts
+out. The v0.1 UX is "import once, then it just works" — making the user carry an
+id from a prior command is friction a download manager should not impose; the
+opt-out covers "do not send my cookies to this host."
+
+**Open.**
+- (b) is implicit — the user may not see that cookies were attached. Mitigation:
+  `add` prints a one-line note when cookies matched ("attached cookies for
+  example.com"). Confirm that disclosure is enough.
+- A future `--expect-sha256 <digest>` (verify against a user-supplied digest) —
+  not v0.1 (ROADMAP §8 *computes* SHA-256, it is not user-supplied). Additive if
+  wanted; flagged so the field is not retrofitted awkwardly.
+
+#### 2.2 `ls`
+**Question.** What are `ls`'s request and reply payloads?
+
+**Options considered.**
+- (a) Empty request, full job list.
+- (b) Request carries a state filter / pagination.
+
+**Proposed answer.** (a). Request: `{}` — `ls` lists every job. Reply:
+`{ jobs: [JobSummary] }` in daemon order (creation order). A download manager's
+job count is small; pagination is unwarranted, and a state filter is an additive
+optional request field if ever wanted. The CLI sorts/filters client-side.
+
+**Open.**
+- None — the v1 obligation is `[JobSummary]` in creation order.
+
+#### 2.3 `pause`
+**Question.** What are `pause`'s payloads, and what does it do to an in-flight
+chunk?
+
+**Proposed answer.** Request: `{ jobID: UInt64 }`. Reply: the updated
+`JobSummary`, state `paused(.user)`.
+**Boundary behavior.** `pause` is **graceful**: the daemon lets the in-flight
+chunk's `pwrite` complete (a ≤1 MB write — sub-millisecond, bounded), writes the
+checkpoint, then transitions to `paused`. It never interrupts mid-write, so the
+partial file and checkpoint stay consistent for a later `resume`. Pausing an
+already-paused or completed job is a no-op returning the current summary.
+
+**Open.**
+- None.
+
+#### 2.4 `resume`
+**Question.** What are `resume`'s payloads?
+
+**Proposed answer.** Request: `{ jobID: UInt64 }`. Reply: the updated
+`JobSummary`, state `active` (or `queued` if the scheduler is at its connection
+budget). `resume` clears `paused` and re-enters the scheduler; resuming a `user`-
+and a `network`-paused job is the same operation; resuming a non-paused job is a
+no-op returning the current summary.
+
+**Open.**
+- None.
+
+#### 2.5 `rm`
+**Question.** What are `rm`'s payloads, and what does it do to an active job's
+in-flight chunk and partial file?
+
+**Proposed answer.** Request: `{ jobID: UInt64, keepPartialFile: Bool? }`
+(`keepPartialFile` nil → false; CLI `--keep`). Reply: `{ removedJobID: UInt64 }`.
+**Boundary behavior.** `rm` of an active job stops it and tears down its
+connections. Without `--keep`, the partial file and checkpoint are deleted — an
+in-flight chunk write may be abandoned, since the file is going away. With
+`--keep`, the daemon lets the in-flight chunk complete and checkpoints before
+retaining the partial, so the kept file is resumable by a future `add`.
+
+**Open.**
+- `rm` of a *completed* job: proposed to drop it from the job list only — `rm`
+  never deletes a finished download from disk, and `--keep` is irrelevant for a
+  completed job. Confirm.
+
+### 3 · Reply field evolution within `protocolVersion = 1`
+
+**Question.** Are reply schemas frozen exactly, or may point releases add fields?
+
+**Proposed answer.** Reply schemas follow the §4.3 rule already established for
+the envelope: **adding an optional field is backward-compatible** within
+`protocolVersion = 1` and does not bump the version; renaming, removing,
+retyping, or adding a *required* field is wire-incompatible and bumps it.
+Decoders **ignore unknown fields** (Codable does so by default), so a newer
+daemon's added field does not break an older CLI. The reply shape is therefore
+frozen against breaking changes, open to additive optional fields — not frozen
+exactly.
+
+**Open.**
+- None — this is the §4.3 rule applied to replies, stated here so it is explicit
+  for the command schemas rather than re-litigated.
+
+### 4 · Adversarial stress-test
+
+Each schema, walked against what the brief and `ROADMAP.md` say the v0.1 engine
+must do — designed to the *specified* engine, not a guessed one. The review
+rounds audit this section per command.
+
+- **`add`** — the engine needs a URL, a destination, a connection count (8
+  default, tunable — ROADMAP §6), and cookie auth (§9). The request carries all
+  four. SHA-256 verification (§8) is *computed during* the download, not
+  user-supplied, so no request field is needed. **Gap check: none.**
+- **`ls` reply / `JobSummary`** — range-parallel, resumable downloads (§6, §7)
+  produce: overall progress ✓ (`JobProgress`), state including paused and failed
+  ✓ (`JobState`), structured failure ✓ (`GohError`). **Deliberately not in `ls`:**
+  per-connection (8-way) progress, the 1 MB checkpoint offset, and per-connection
+  retry counts — those are `goh top` / the subscription slice. **Gap check:**
+  confirm `ls` needs none of them — "resuming from 42 %" is conveyed by
+  `bytesCompleted`; if `goh ls` must show retry counts, that is a missing
+  `JobSummary` field. Surfaced for the review.
+- **`pause` / `resume`** — the engine needs the job ID and must distinguish user
+  from network pause (§12 cellular auto-pause). Schema: `jobID` ✓, `PauseReason`
+  ✓. **Gap check: none.**
+- **`rm`** — the engine needs the job ID and the keep-or-delete choice for the
+  partial (§1.4 cancellation). Schema: `jobID` ✓, `keepPartialFile` ✓. **Gap
+  check: none.**
+- **Cross-cutting** — the 1 MB checkpoint (§7) is engine-internal; it surfaces to
+  the user only as `bytesCompleted`, confirmed not a separate `JobSummary` field.
+  Spotlight tagging, the sleep assertion, and `nw_path_monitor` (§10–§12) are
+  daemon behaviors with no command-schema surface.
+
 ## Scheduling
 
 _TBD — job queue, range-connection scheduling, `nw_path_monitor`-driven
