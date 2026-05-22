@@ -87,8 +87,38 @@ and the string form matches the manifest's existing style.
 
 ## Transport
 
-_TBD — HTTP/2 and HTTP/1.1 over `NetworkConnection` with ALPN negotiation;
-range-based parallelism (8 connections default). HTTP/3 is a v0.2 design pass._
+_The HTTP transport — single-connection, then range-parallel — is built in the
+v0.1 download-engine slices: range-based parallelism, 8 connections default.
+HTTP/3 is a v0.2 design pass._
+
+### Transport mechanism revision
+
+The brief and this document originally specified the transport as **HTTP/1.1 and
+HTTP/2 over `NetworkConnection`** (Network.framework), with `URLSession` rejected
+for wanting direct path control, interface selection, and `nw_path_monitor`
+integration. SDK verification against macOS 26 reverses that decision.
+
+- **The original premise was wrong.** It assumed `NetworkConnection`'s
+  application-protocol slot could carry HTTP. It cannot — the protocol types
+  Network.framework offers are `TLS`, `TCP`, `UDP`, `QUIC`, `QUICStream`,
+  `WebSocket`, and a generic `Coder`; there is no HTTP protocol.
+  `NetworkConnection<TLS>` is a TLS byte stream, and HTTP/2 over it would mean
+  hand-implementing HPACK, framing, stream multiplexing, and flow control.
+- **The `URLSession` rejection criteria do not survive.** *Direct path control*
+  was motivated by QUIC-layer tuning — moot now that HTTP/3 is deferred to v0.2.
+  *Interface selection* is available on `URLSession` via
+  `URLSessionConfiguration.boundInterfaceIdentifier`. *`nw_path_monitor`
+  integration* (the cellular auto-pause) is path monitoring — transport-
+  independent — and pairs with `URLSession` as readily as with anything.
+- **The foundation, going forward, is `URLSession` + `HTTPTypes`.** `URLSession`
+  natively provides HTTP/1.1, HTTP/2, ALPN negotiation, TLS, redirects, range
+  requests, and per-task progress; `swift-http-types` / `HTTPTypesFoundation`
+  (already a dependency) supply the typed `HTTPRequest` / `HTTPResponse` layer.
+  Range parallelism becomes N range-request tasks — over HTTP/2 they multiplex
+  as streams, strictly better than N separate TCP connections.
+
+The brief's reasoning was sound when written; it is moot once the macOS 26 API
+surface is real.
 
 ## Persistence
 
