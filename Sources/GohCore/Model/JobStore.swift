@@ -126,13 +126,14 @@ public final class JobStore: Sendable {
         try mutateJob(id: id) { $0.actualConnectionCount = count }
     }
 
-    /// Marks an `active` job `completed`.
+    /// Marks an `active` job `completed`. `actualConnectionCount` is kept — on a
+    /// completed job it is the record of how many connections the download
+    /// used, the "actual" against the requested count.
     public func complete(id: UInt64) throws -> JobSummary {
         try mutateJob(id: id) { job in
             guard JobLifecycle.isLegal(from: job.state, to: .completed) else { return }
             job.state = .completed
             job.completedAt = Date()
-            job.actualConnectionCount = 0
         }
     }
 

@@ -107,4 +107,66 @@ struct DownloadEngineTests {
         #expect(store.job(id: 1)?.state == .completed)
         #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
     }
+
+    @Test("a large file downloads across multiple ranges")
+    func multiRangeDownload() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        // 4 MiB against a 1 MiB minimum chunk → four ranges.
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .completed)
+        #expect(final?.actualConnectionCount == 4)
+        #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
+    }
+
+    @Test("a server without range support falls back to a single connection")
+    func fallbackWhenNoRangeSupport() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload, acceptsRanges: false)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .completed)
+        #expect(final?.actualConnectionCount == 1)
+        #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
+    }
+
+    @Test("a failing range fails the whole job")
+    func failingRangeFailsJob() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        // Four 1 MiB ranges; fail the one beginning at 2 MiB.
+        MockURLProtocol.stub(url, body: payload, failRangeStartingAt: 2 << 20)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+
+        #expect(store.job(id: job.id)?.state == .failed)
+    }
 }
