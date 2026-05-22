@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 import GohCore
@@ -87,6 +88,28 @@ struct CommandDispatcherTests {
             return
         }
         #expect(after.jobs.isEmpty)
+    }
+
+    @Test("onJobQueued fires with the new job's id when add creates a job")
+    func onJobQueuedFiresOnAdd() {
+        let signalled = Mutex<[UInt64]>([])
+        let dispatcher = CommandDispatcher(
+            store: JobStore(),
+            onJobQueued: { id in signalled.withLock { $0.append(id) } })
+        _ = dispatcher.reply(to: .add(request: AddRequest(url: "u")))
+        #expect(signalled.withLock { $0 } == [1])
+    }
+
+    @Test("onJobQueued fires again when resume returns a job to queued")
+    func onJobQueuedFiresOnResume() {
+        let signalled = Mutex<[UInt64]>([])
+        let dispatcher = CommandDispatcher(
+            store: JobStore(),
+            onJobQueued: { id in signalled.withLock { $0.append(id) } })
+        _ = dispatcher.reply(to: .add(request: AddRequest(url: "u")))    // fires once
+        _ = dispatcher.reply(to: .pause(jobID: 1))                        // no fire
+        _ = dispatcher.reply(to: .resume(jobID: 1))                       // fires again
+        #expect(signalled.withLock { $0 } == [1, 1])
     }
 
     @Test("pause, resume, and rm of an unknown id reply with a jobNotFound failure")

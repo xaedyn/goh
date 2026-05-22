@@ -62,11 +62,15 @@ public final class JobStore: Sendable {
         state.withLock { $0.jobs.first { $0.id == id } }
     }
 
-    /// Pauses the job with a `user` pause reason. A no-op when the lifecycle does
-    /// not permit `→ paused` (already paused, or terminal) — §3.3.
+    /// Pauses a `queued` job with a `user` pause reason.
+    ///
+    /// This slice pauses only a `queued` job. `pause` of an `active` job is a
+    /// no-op — 3a cannot interrupt a live transfer (that is slice 3c), and
+    /// reporting `paused` while the engine still moves bytes would lie to
+    /// `goh ls`. `pause` of `paused` / `completed` / `failed` is the §3.3 no-op.
     public func pause(id: UInt64) throws -> JobSummary {
         try mutateJob(id: id) { job in
-            guard JobLifecycle.isLegal(from: job.state, to: .paused) else { return }
+            guard job.state == .queued else { return }
             job.state = .paused
             job.pauseReason = .user
         }
@@ -79,6 +83,66 @@ public final class JobStore: Sendable {
             guard JobLifecycle.isLegal(from: job.state, to: .queued) else { return }
             job.state = .queued
             job.pauseReason = nil
+        }
+    }
+
+    // MARK: Engine transitions
+    //
+    // The download engine drives a job through its working states. Each
+    // transition is guarded by ``JobLifecycle``; a call on a job in the wrong
+    // state is a no-op (the engine is expected to call these in order).
+
+    /// Atomically claims a `queued` job for the engine: transitions it to
+    /// `active` and returns `true`. Returns `false` when the job exists but is
+    /// not `queued` — already claimed, or terminal — so a second caller cannot
+    /// also start downloading it. Throws `jobNotFound` if no such job exists.
+    public func start(id: UInt64) throws -> Bool {
+        try withMutation { state in
+            guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
+                throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+            }
+            guard JobLifecycle.isLegal(from: state.jobs[index].state, to: .active) else {
+                return false
+            }
+            state.jobs[index].state = .active
+            state.jobs[index].actualConnectionCount = 1  // single-connection in this slice
+            return true
+        }
+    }
+
+    /// Records download progress for an `active` job.
+    public func recordProgress(id: UInt64, _ progress: JobProgress) throws -> JobSummary {
+        try mutateJob(id: id) { job in
+            guard job.state == .active else { return }
+            job.progress = progress
+            job.lastProgressAt = Date()
+        }
+    }
+
+    /// Marks an `active` job `completed`.
+    public func complete(id: UInt64) throws -> JobSummary {
+        try mutateJob(id: id) { job in
+            guard JobLifecycle.isLegal(from: job.state, to: .completed) else { return }
+            job.state = .completed
+            job.completedAt = Date()
+            job.actualConnectionCount = 0
+        }
+    }
+
+    /// Marks an `active` job `failed`, recording the error. `retryEligible` is
+    /// the daemon's judgement that a fresh attempt could succeed; 3a does not
+    /// retry, so `retryCount` is 0 (the retry policy is slice 3c).
+    public func fail(
+        id: UInt64, error: GohError, retryEligible: Bool
+    ) throws -> JobSummary {
+        try mutateJob(id: id) { job in
+            guard JobLifecycle.isLegal(from: job.state, to: .failed) else { return }
+            job.state = .failed
+            job.error = error
+            job.failedAt = Date()
+            job.retryEligible = retryEligible
+            job.retryCount = 0
+            job.actualConnectionCount = 0
         }
     }
 

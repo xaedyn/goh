@@ -6,27 +6,25 @@ session; update at the start of every PR and at the end of every session.
 ## Current state
 
 - **Branch:** `feat/download-single-connection`
-- **Last merged:** PR #10 — Slice 2, job-model persistence — `main` at `fdd8ddf`.
-- **Current slice:** 3a — single-connection HTTP download.
+- **Last merged:** PR #11 — session-continuity files — `main` at `7a00315`.
+- **Current slice:** 3a — single-connection HTTP download — **complete, in review**.
 
-## Slice 3a — progress so far
+## Slice 3a — shipped
 
 - Transport-mechanism revision recorded in `DESIGN.md` §Transport.
-- Engine-facing job-store transitions wired — `start` / `recordProgress` /
+- Engine job-store transitions — `start` (an atomic claim) / `recordProgress` /
   `complete` / `fail`, driving `queued → active → completed/failed`. `pause`
   narrowed to the 3a no-op-on-active behaviour.
-- 75 tests passing.
+- `DownloadFile` — the disk side: `pwrite` at offset, streaming SHA-256, the
+  1 MiB fsync checkpoint, best-effort `F_PREALLOCATE`.
+- `DownloadEngine` — single-connection HTTP fetch over `URLSession`, streaming
+  the body to disk and driving the job; transport/HTTP errors mapped to
+  `GohError`. Tested over a `URLProtocol` mock — CI needs no network.
+- Daemon wiring — the dispatcher signals queued jobs; `gohd` runs the engine on
+  `add`, on `resume`, and for jobs still queued at startup.
+- 84 tests passing.
 
-## Slice 3a — remaining
-
-- File-I/O writer: `pwrite`, `F_PREALLOCATE`, streaming SHA-256, the 1 MB
-  checkpoint.
-- `URLSession` download engine, tested over a `URLProtocol` mock for CI-safe
-  tests.
-- Daemon wiring so `add` actually starts moving bytes.
-- PR when 3a coheres as a whole.
-
-**Milestone when 3a merges:** the first slice where `goh` moves bytes to disk.
+**Milestone:** the first slice where `goh` moves bytes to disk.
 
 ## Next planned slice
 
@@ -54,6 +52,7 @@ None currently.
 
 ## Next-session handoff
 
-Continue Slice 3a heads-down. Next step: the file-I/O writer. Then the
-`URLSession` engine over a `URLProtocol` mock. Then the daemon wiring. PR when
-3a coheres as a whole.
+Slice 3a is complete and in review. On merge, start Slice 3b — range-parallel
+orchestration: N concurrent `URLSession` range requests, the `Accept-Ranges`
+probe that decides whether parallelism is possible, `requestedConnectionCount`
+vs `actualConnectionCount` visibility, single-connection fallback.

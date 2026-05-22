@@ -14,9 +14,18 @@ public struct CommandDispatcher: Sendable {
     public static let defaultConnectionCount: UInt8 = 8
 
     private let store: JobStore
+    private let onJobQueued: (@Sendable (UInt64) -> Void)?
 
-    public init(store: JobStore) {
+    /// Creates a dispatcher over `store`. `onJobQueued`, when provided, is called
+    /// with a job's id whenever a command leaves that job `queued` — after
+    /// `add`, and after a `resume` that returns a job to `queued` — so the
+    /// daemon can hand it to the download engine.
+    public init(
+        store: JobStore,
+        onJobQueued: (@Sendable (UInt64) -> Void)? = nil
+    ) {
         self.store = store
+        self.onJobQueued = onJobQueued
     }
 
     /// Handles `command`, mutating the job store, and returns the outcome.
@@ -30,6 +39,7 @@ public struct CommandDispatcher: Sendable {
                         ?? Self.defaultDestination(forURL: request.url),
                     requestedConnectionCount: request.connectionCount
                         ?? Self.defaultConnectionCount)
+                onJobQueued?(job.id)
                 return .job(job)
 
             case .ls:
@@ -39,7 +49,11 @@ public struct CommandDispatcher: Sendable {
                 return .job(try store.pause(id: jobID))
 
             case .resume(let jobID):
-                return .job(try store.resume(id: jobID))
+                let summary = try store.resume(id: jobID)
+                if summary.state == .queued {
+                    onJobQueued?(jobID)
+                }
+                return .job(summary)
 
             case .rm(let request):
                 try store.remove(id: request.jobID)
