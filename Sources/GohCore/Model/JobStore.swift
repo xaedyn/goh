@@ -119,13 +119,14 @@ public final class JobStore: Sendable {
         }
     }
 
-    /// Marks an `active` job `completed`.
+    /// Marks an `active` job `completed`. `actualConnectionCount` is kept — on a
+    /// completed job it is the historical record of the connection count the
+    /// download used (`DESIGN.md` §2.2, "`actualConnectionCount` lifecycle").
     public func complete(id: UInt64) throws -> JobSummary {
         try mutateJob(id: id) { job in
             guard JobLifecycle.isLegal(from: job.state, to: .completed) else { return }
             job.state = .completed
             job.completedAt = Date()
-            job.actualConnectionCount = 0
         }
     }
 
