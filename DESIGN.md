@@ -103,8 +103,10 @@ The `goh` ↔ `gohd` contract runs over the modern low-level Swift XPC API
 > **Status: design draft, under review.** Each decision below is written as
 > Question → Options considered → Proposed answer → Open, so rejected
 > alternatives stay on the record. Nothing here is committed until the review PR
-> is resolved; once decisions land, this section is rewritten down to the
-> conclusions and a separate branch implements it behind tests. Exact API
+> is resolved; once decisions land, this section is rewritten down to
+> conclusions — each decision keeping its rejected options as a *Considered
+> alternatives* note rather than deleting them — and a separate branch
+> implements it behind tests. Exact API
 > spellings (Codable send/reply, audit-token access) are confirmed against
 > current Apple docs at implementation — this draft commits to the *shape*, not
 > the call signatures.
@@ -196,8 +198,12 @@ CLI only ever *requests* them. Cancelling the client-side `Task` for an in-fligh
 XPC request never cancels daemon work.
 
 **Open.**
-- Ctrl-C on `goh <url>`: silent detach plus a one-line note, or an interactive
-  prompt (detach / cancel / keep waiting)? Lean: silent detach + note.
+- Resolved (review 1): Ctrl-C is a **silent detach plus a one-line note**, never
+  an interactive prompt — Ctrl-C is muscle memory for "out now," and a confirm
+  dialog is the opposite of what the user wants in that moment. The note names
+  the job, e.g. `^C — download continues in background as job 42. 'goh ls' to
+  check, 'goh rm 42' to cancel.` Cancel-on-interrupt is a `--cancel-on-interrupt`
+  flag, not a prompt.
 
 ### 2 · Connection lifecycle
 
@@ -236,17 +242,26 @@ download runs and a CLI is attached?
 - (b) Attached CLI reconnects to the new daemon and re-subscribes.
 - (c) Attached CLI reports and exits; the daemon resumes the job itself.
 
-**Proposed answer.** (c). The daemon persists job state and 1 MB checkpoints to
-disk (already v0.1 scope); on crash-only relaunch it resumes in-progress
-downloads from their checkpoints. An attached foreground CLI sees its session
-invalidated and — consistent with "no reconnect logic" — prints `daemon
-restarted; download continues — run goh ls` and exits. A reconnecting foreground
-client is post-v0.1.
+**Proposed answer.** A *bounded* form of (b). The daemon persists job state and
+1 MB checkpoints to disk (already v0.1 scope) and, on crash-only relaunch,
+unconditionally resumes in-progress downloads from their checkpoints. An attached
+foreground `goh <url>` sees its session invalidated, prints a visible
+`reconnecting…` line, and makes **one** reconnection attempt — re-resolve the
+daemon's Mach service, re-subscribe to the *same job ID*. "One attempt" is bounded
+by a short wait window (≈2–3 s), because a launchd-relaunched daemon is not
+instantly back: it must restart, re-read job state, and re-register its listener,
+so a single instant retry would almost always fire too early. If the window
+elapses with no daemon, the CLI exits 0 with `download continues in background —
+'goh ls' to check`. That one bounded attempt is the whole of the client's
+reconnect logic — no multi-attempt retry state machine.
+
+Rationale: the daemon owns download state, so a restart is not a CLI-side
+recovery problem — the CLI only needs to reattach by job ID and resume streaming.
+One bounded attempt is cheap; multi-attempt retry is where this becomes a state
+machine nobody can reason about.
 
 **Open.**
-- Is exit-on-restart acceptable v0.1 UX, or is a single reconnect attempt for
-  `goh <url>` worth the one piece of client reconnect logic? This is the one
-  place the no-reconnect rule has a visible cost.
+- Confirm the ≈2–3 s reconnection window — the one new tunable this introduces.
 
 #### 2.3 CLI exits mid-stream
 **Question.** What happens when the CLI is killed, Ctrl-C'd, or its terminal
@@ -298,14 +313,34 @@ impostor that registered the mach service name?
 - (a) Trust the mach service name.
 - (b) Mutually validate the daemon's audit token, the same way as 3.1.
 
-**Proposed answer.** (b). Mutual validation. This matters most for
-`goh auth import safari`, where the CLI hands cookie-derived credentials to the
-daemon — sending those to a name-squatting impostor would leak them.
+**Proposed answer.** (b) — and the research below makes it warranted, not
+paranoid. **Can a same-user process squat `dev.goh.daemon`?** Runtime squatting:
+no. Configuration-time squatting: yes. Per `launchd.plist(5)`, a Mach service name
+enters the bootstrap namespace only because a launchd job declares it in its
+plist's `MachServices` dictionary; launchd registers and advertises the name, and
+the job obtains the port's receive right via `xpc_connection_create_mach_service`
+or `bootstrap_check_in`. XPC disallows ad-hoc registration — a process cannot
+claim an arbitrary listener name at runtime. **But** a same-user attacker can
+write its own LaunchAgent plist into `~/Library/LaunchAgents/` — a user-writable
+directory, no elevation needed — declaring `MachServices: { dev.goh.daemon: true }`
+with `Program` pointing at malware, and load it. If goh's own agent is not yet
+installed, the attacker's job claims the name; once goh's agent is loaded, launchd
+owns it and there is no runtime path to steal a live name. goh installs its agent
+via `brew services`, which writes the plist into that same user-writable
+`~/Library/LaunchAgents/` — not via the tamper-resistant `SMAppService` app-bundle
+route — so the pre-stage squat is feasible under our threat model. Mutual
+validation (b) is the mitigation: the CLI checks the daemon's audit token on
+connect and detects an impostor before sending anything — most importantly the
+`goh auth import safari` credential payload.
+
+Sources: `launchd.plist(5)`, the `MachServices` key
+(<https://keith.github.io/xcode-man-pages/launchd.plist.5.html>); RDerik,
+"Creating a Launch Agent that provides an XPC service on macOS"
+(<https://rderik.com/blog/creating-a-launch-agent-that-provides-an-xpc-service-on-macos/>).
 
 **Open.**
-- Can a non-goh same-user process actually register `dev.goh.daemon` before
-  `gohd` does, or does LaunchAgent service registration prevent it? The answer
-  decides how load-bearing 3.2 is — needs a definitive answer before §3 locks.
+- None — the squat question is settled and (b) stands. The exact code-signing
+  requirement string and the dev-build escape hatch are shared with §3.1.
 
 ### 4 · Version negotiation
 
@@ -348,8 +383,62 @@ envelope — just `protocolVersion` plus a `versionMismatch` marker — is decla
 permanently stable and may never change shape.
 
 **Open.**
-- The exact frozen-subset definition is the load-bearing detail of this section
-  and needs careful review.
+- The encoding of that frozen subset is its own decision — see §4.3.
+
+#### 4.3 Encoding the frozen negotiation subset
+**Question.** The mismatch reply (§4.2) must stay decodable by every past and
+future version. How is that frozen subset encoded so an envelope refactor cannot
+silently break the wire contract?
+
+**Options considered.**
+- (a) **Hand-rolled byte framing.** The envelope is a fixed byte layout —
+  `protocolVersion` as a 4-byte big-endian `UInt32` at offset 0, `messageType` as
+  a length-prefixed UTF-8 string, payload after — encoded and decoded by hand,
+  never through `Codable`.
+- (b) **Fixed-key XPC dictionary.** The envelope is a native XPC dictionary with
+  a permanently fixed three-key set — `protocolVersion`, `messageType`,
+  `payload` — read with primitive `xpc_dictionary_get_*` accessors before any
+  `Codable` decode. The payload value is a `Codable` blob, decoded with the
+  decoder chosen by `protocolVersion`.
+
+**Proposed answer.** (b) — and this diverges from the review-1 lean toward (a),
+so it is flagged for argument. The *instinct* behind (a) is correct and adopted:
+freeze the envelope, isolate it from payload evolution, and always be able to
+read the version even off a message you otherwise cannot decode. The *mechanism*
+is where (b) wins. XPC is not a raw byte stream; it is a keyed, structured-message
+IPC, and an XPC dictionary is unordered key-value — reading `protocolVersion` and
+`messageType` by key is order-independent and stable, and adding a fourth key
+later never disturbs the three frozen ones. Hand-rolled byte framing buys nothing
+over that on a keyed transport and adds a bespoke length-prefix parser that can
+carry its own bugs. The "Codable reorders fields" failure mode also does not apply
+to keyed encoders — XPC dictionaries, `JSONEncoder`, and `PropertyListEncoder` are
+all keyed; Codable wire breakage comes from renaming a property without
+`CodingKeys`, retyping a field, or removing a required one — never from field
+order. "Frozen" therefore means a policy enforced by the checklist below and the
+golden-file tests, not a hand-coded layout. The one case that would revive (a):
+if goh ever expects to carry this protocol over a non-XPC transport, byte framing
+becomes transport-independent — but that is not foreseen, and designing for it now
+is premature.
+
+**Wire-incompatible change checklist** — any one of these is a breaking change and
+requires a new `protocolVersion`:
+- Renaming, removing, or retyping any of the three envelope keys.
+- Renaming or removing a field in a payload type, or changing its type, for an
+  existing `protocolVersion`.
+- Adding a *required* (non-optional, no-default) field to an existing payload type.
+- Changing the meaning of an existing field's accepted values.
+- Changing how `protocolVersion` itself is encoded.
+
+Adding an *optional* field to a payload type, or defining a new `messageType`, is
+backward-compatible and does not bump the version.
+
+**Open.**
+- The implementation branch needs a **golden-file test suite**: recorded
+  request/reply byte sequences committed to the repo, round-trip decoded, and
+  decoded against a frozen `protocolVersion = 1` fixture. Wire-format regressions
+  ship and then cannot be unshipped — noted here so it is not forgotten at code time.
+- Confirm at implementation that the Swift XPC API exposes top-level dictionary
+  fields via primitive accessors independently of decoding the payload value.
 
 ### 5 · Serialization
 
@@ -370,12 +459,44 @@ control messages and progress events. There is no bulk-payload pressure that
 would justify (b) or (c).
 
 **Open.**
-- Two cases could still push us off pure `Codable`, both intersecting the auth
-  slice: (i) `goh auth import safari` — does the CLI send parsed cookies (small,
-  `Codable` — fine) or the raw `Cookies.binarycookies` blob (avoid)?
-  (ii) file-descriptor passing — if the CLI holds Full Disk Access and the daemon
-  does not, the CLI could open the cookie file and pass the *fd* over XPC rather
-  than a path. Decide in the auth design; flagged here.
+- The one case that could push us off pure `Codable` is the Full Disk Access
+  cookie path — see §5.2, which decides whether the XPC layer must also carry a
+  file descriptor.
+
+#### 5.2 File descriptors and the Full Disk Access path
+**Question.** `goh auth import safari` reads Safari's `Cookies.binarycookies`,
+which is gated by Full Disk Access. Which process holds FDA and does the read,
+and what crosses XPC?
+
+**Options considered.**
+- (a) **Daemon reads.** The user grants Full Disk Access to `gohd`; the CLI sends
+  `importCookies(.safari)` and the daemon opens, reads, and parses the file.
+  Nothing cookie-related crosses XPC.
+- (b) **CLI reads, passes the fd.** `goh` — the binary the user actually runs —
+  holds FDA; on `goh auth import safari` it opens the cookie file and passes the
+  open *file descriptor* over XPC. The daemon reads and parses from the fd and
+  never needs FDA.
+- (c) **CLI reads and parses, sends structured cookies.** `goh` holds FDA, parses
+  `binarycookies` itself, and sends a `Codable` array of cookie records. Only
+  structured data crosses XPC — no file, no fd.
+
+**Proposed answer (tentative — the Auth slice owns the final call).** Lean (b).
+Granting FDA to the interactively-run `goh` is a more natural mental model than
+FDA on a launchd-managed background agent — TCC prompting is unreliable for
+non-app daemons, and a permanently FDA-bearing daemon is a broad standing
+capability. Passing the fd rather than parsed records (b over c) keeps the
+`binarycookies` parser in one place — `GohCore`, daemon-side, next to where
+cookies are used — and off the short-lived CLI; an fd is a small XPC primitive,
+not a bulk blob. (a) is simplest for the XPC contract but pushes the awkward
+FDA-on-a-daemon UX onto the user. The binding decision is **deferred to the Auth
+slice**; it is surfaced here because it settles one thing for *this* contract —
+whether the XPC layer must carry a file descriptor.
+
+**Open.**
+- The binding call belongs to the Auth slice. For the IPC contract, lock only
+  this: the envelope's `command` must be able to carry a file descriptor, since
+  (b) needs it and fd-passing is plausibly useful elsewhere. Designing it in is
+  cheap; retrofitting it is not.
 
 ### 6 · Observability
 
