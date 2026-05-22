@@ -131,7 +131,7 @@ definition is canonical; everything else in this section refers back to it.**
 | `protocolVersion` | `UInt32` | XPC unsigned integer |
 | `requestID` | `UUID` | XPC string |
 | `messageType` | `MessageType` (a `String`-backed enum) | XPC string |
-| `payload` | a `Codable` value | Codable-encoded body |
+| `payload` | a `Codable` value | XPC value via the Swift XPC API's `Codable` encoding (§5.1) |
 
 - **`protocolVersion`** — the wire-protocol version (§4). Monotonic; bumped only
   on a wire-incompatible change (§4.3).
@@ -144,7 +144,9 @@ definition is canonical; everything else in this section refers back to it.**
 - **`messageType`** — discriminates the message kind: `request`, `reply`,
   `notification`, `error`. Swift models it as
   `enum MessageType: String { case request, reply, notification, error }`, but the
-  *wire* type is the raw `String`. The receiver reads that string with a primitive
+  *wire* type is the raw `String`. The wire strings are exactly `request`,
+  `reply`, `notification`, `error`; these literals are part of the frozen contract
+  (§4.3). The receiver reads that string with a primitive
   XPC accessor (§4.3) and maps it via `MessageType(rawValue:)`; an unrecognised
   value yields `nil` and is **dropped with an error, never crashed**. The split is
   deliberate: the enum gives typo-proof, exhaustively-switchable handling of
@@ -153,10 +155,11 @@ definition is canonical; everything else in this section refers back to it.**
   decoding garbage. Defining a new `MessageType` case is backward-compatible (§4.3).
 - **`payload`** — the kind-specific body. For a `request` it decodes to the
   `Command` enum (below); for a `reply`, the command's `Result` (§1.2); for a
-  `notification`, a `ProgressEvent` (§1.3). The `payload` is `Codable`. The
-  envelope dictionary may **also** carry native XPC file descriptors as sibling
-  entries beside these four keys (§5.2) — those are not part of the `Codable`
-  payload.
+  `notification`, a `ProgressEvent` (§1.3). The `payload` is `Codable`, encoded by
+  the Swift XPC API's native `Codable` bridge, not JSON or property-list encoding
+  (§5.1). The envelope dictionary may **also** carry native XPC file descriptors
+  as sibling entries beside these four keys (§5.2) — those are not part of the
+  `Codable` payload.
 
 The four-key set, the key names, and their wire types are **frozen** — §4.3
 governs what may and may not change. Envelope and payload types are defined once,
