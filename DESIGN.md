@@ -310,13 +310,13 @@ subscriber dying mid-send.
 
 #### 3.1 The daemon validates the client
 
-On every incoming session, `gohd`'s `XPCListener` handler reads the peer's audit
-token and checks it against a code-signing requirement for the genuine `goh`
-binary — our Team ID plus a designated requirement / identifier, **not** a cdhash
-(a cdhash changes every build). A same-user process that is not the signed `goh`
-cannot forge this and is rejected at session-accept time, before any command is
-processed. Validation runs **on every session, never cached** — per session, not
-per message.
+`gohd` binds its Mach service with `XPCListener(service:requirement:)`, passing an
+`XPCPeerRequirement` — `isFromSameTeam(andMatchesSigningIdentifier:)`: our Team ID
+plus the designated signing identifier, **not** a cdhash (a cdhash changes every
+build). The OS evaluates the requirement against every connecting peer at
+session-accept; a same-user process that is not the signed `goh` is rejected
+before any command is processed. Validation is the OS's own, performed per
+session — no manual audit-token handling, nothing cached.
 
 **Considered alternatives.**
 - *No validation — trust any same-user process that reaches the Mach service* —
@@ -324,23 +324,25 @@ per message.
 - *Team-ID-only* — would trust any future binary signed by our team, not just
   `goh`; the requirement pins the `goh` identity.
 
+**Resolved.**
+- The dev escape hatch is implemented — `PeerValidationMode` /
+  `peerValidationMode(environment:)`: a `DEBUG`-only, environment-variable-gated
+  relaxation, compiled out of release builds, for unsigned development binaries
+  that cannot satisfy the requirement.
+- Per-connection validation cost is benchmarked (`XPCValidationBenchmarkTests`):
+  an `XPCPeerRequirement` evaluation is sub-microsecond cold and warm — far
+  inside the ≤5 ms invisible band, so mutual validation costs nothing visible on
+  a fast-path verb.
+
 **Open.**
-- Dev builds (unsigned / ad-hoc-signed) will not satisfy the requirement — a
-  documented dev escape hatch is needed (a debug build flag, or a dev signing
-  identity). Exact requirement string confirmed at implementation.
-- **Per-connection validation cost is unmeasured.** Reading the audit token is
-  effectively free; evaluating the code-signing requirement is not — and mutual
-  validation (§3.1 + §3.2) pays it *twice* per connection, on the latency-sensitive
-  path where every fire-and-forget verb opens a fresh connection. Benchmark at
-  implementation. Rough triage, not a spec: under ~5 ms added to `goh ls` is
-  invisible; ~5–20 ms is noticeable and worth a note; over ~20 ms needs a
-  cost-side response (optimise the check) — not caching, which the threat model
-  rules out.
+- The designated signing identifier is pinned when code signing is configured.
 
 #### 3.2 The client validates the daemon
 
-`goh` mutually validates `gohd`'s audit token the same way, on every connection.
-This is warranted, not paranoid, and the reason is specific.
+`goh` mutually validates `gohd` the same way —
+`XPCSession(machService:requirement:)` with the same `XPCPeerRequirement` — so the
+daemon is validated before any message is sent. This is warranted, not paranoid,
+and the reason is specific.
 
 A Mach service name enters the bootstrap namespace only because a launchd job
 declares it in its plist's `MachServices` dictionary; launchd registers and
@@ -372,6 +374,13 @@ Sources: `launchd.plist(5)`, the `MachServices` key
 **Considered alternatives.**
 - *Trust the Mach service name* — a planted LaunchAgent can impersonate the
   daemon; trusting the name leaks the cookie-import payload to an impostor.
+
+**Test coverage.** Production validation is OS-enforced via the `requirement:`
+initializers. The reject direction is unit-tested — `senderSatisfies` confirms an
+unsigned binary fails `isFromSameTeam()`. The accept direction needs a properly
+signed binary and is exercised in signed-build smoke testing, not CI — as is the
+live launchd Mach-service registration. An anonymous-listener integration test
+proves the validated channel's message round-trip.
 
 ### 4 · Version negotiation
 
@@ -479,8 +488,11 @@ Downloaded file content **never crosses XPC**: the daemon `pwrite`s bytes straig
 to disk, and the CLI receives only small control messages and progress events, so
 there is no bulk-payload pressure.
 
-Made precise — the envelope is **not** sent as one opaque `Codable` message, which
-would defeat §4.3's primitive-accessor reads. `payload` is encoded by a Foundation
+Made precise — the Swift XPC API offers whole-message `Codable` transport
+(`XPCSession.send` / `sendSync`), and the envelope deliberately does **not** use
+it: sending the envelope as one opaque `Codable` message would defeat §4.3's
+ordered primitive-accessor reads (`protocolVersion` and `messageType` before
+`payload`). `payload` is encoded by a Foundation
 `Codable` encoder (JSON, deterministic key ordering) to bytes, carried as an XPC
 `data` value beside the primitive-typed envelope keys. `protocolVersion` is
 carried as an XPC `uint64` — the only unsigned-integer XPC primitive — holding a
