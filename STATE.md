@@ -71,38 +71,56 @@ amenable — three runs in tight agreement, structural not noise).
 
 ## Pending questions for the user
 
-- **Engine regression — diagnose, fix, re-run.** The competitive re-run
-  produced outcome 2 with magnitude: saturated `goh` 13.148s vs `curl` 6.661s
-  (~2× slower) vs `aria2c` 7.648s (72% slower); amenable `goh` 267.415s vs
-  `aria2c` 37.365s (~7× slower) vs `curl` 0.309s. Saturation check PASSed
-  (workload structurally valid); amenability check WARNed because the file
-  was clearly cached for `curl`. Three runs each in tight agreement. The
-  benchmark gate working — caught before merge.
+- **Engine regression — root cause #1 found, root cause #2 in flight.** The
+  competitive re-run produced outcome 2: saturated `goh` 13.148s vs `curl`
+  6.661s (~2× slower); amenable `goh` 267.415s vs `aria2c` 37.365s (~7×
+  slower). Three runs each in tight agreement.
 
-  The cap hypothesis is falsified (`GohCore.downloadSessionConfiguration()`
-  already sets `httpMaximumConnectionsPerHost = 16`). Diagnostics ship this
-  round. Next: run `Benchmarks/diagnose.sh` against the saturated workload,
-  post the trace to PR #14, form a hypothesis from the evidence, fix one
-  thing, re-run. As many rounds as it takes. #14 stays in draft until the
-  engine produces competitive numbers — no moved goalpost.
+  **Root cause #1 (fixed this round).** The `HEAD` capability probe checked
+  `URLResponse.expectedContentLength > 0`, but `URLSession` returns `-1`
+  (`NSURLResponseUnknownLength`) for `HEAD` responses on a real network even
+  when the server sent `Content-Length` (empirically verified on macOS 26).
+  The probe always fell back to `.single`, so the engine has been
+  single-connection only on every real download since Slice 3a — the
+  range-parallel orchestration ran in tests (under `MockURLProtocol`, which
+  populates `expectedContentLength` from headers and doesn't reproduce the
+  real-`URLSession` quirk) but never on the wire. That accounts for the
+  saturated 2× (goh single vs curl single, plus byte-by-byte `AsyncBytes`
+  overhead) and the amenable 7× (goh single vs aria2c 8-conn). Fixed by
+  parsing `Content-Length` from the response header directly.
+
+  **Root cause #2 (next round).** Post-fix local verification on a 9 MiB
+  ranged URL shows the trace emits as designed (peak active = 8, 8 ranges
+  start concurrently). It also reproducibly exposes a second bug: range 0
+  receives 7847 bytes past its requested length (1151390 vs 1143543, exactly
+  +7847 across three runs) and the download fails with `connectionFailed`.
+  Likely an HTTP/2 multiplexing or `URLSession.bytes(for:)` boundary issue;
+  speculation deferred until the diagnostic re-run produces evidence.
+
+  The cap hypothesis stays falsified (`httpMaximumConnectionsPerHost = 16`).
+  #14 remains in draft. Next: user re-runs `Benchmarks/diagnose.sh` against
+  the saturated workload, posts the trace, we form a hypothesis from the
+  evidence for root cause #2 — same loop, one change at a time.
 
 ## Next-session handoff
 
-Slice 3b is paused on a real engine finding. The competitive re-run against
-the rotated defaults reproduced ~2× slower than `curl` saturated and ~7×
-slower than `aria2c` amenable — three runs each in tight agreement, structural
-not noise. The benchmark discipline working — caught it before merge.
+Slice 3b: the engine has been single-connection only on every real download
+since Slice 3a. Root cause #1 found and fixed this round — the `HEAD` probe
+relied on `URLResponse.expectedContentLength`, which `URLSession` does not
+populate for `HEAD` on a real network (returns `-1`). Fix parses
+`Content-Length` from the response header directly. 100 tests still pass.
 
-This round shipped diagnostic instrumentation: `Benchmarks/diagnose.sh` plus
-`GOH_ENGINE_TRACE=1` emit per-range start/first-byte/completion timestamps,
-peak concurrent ranges, and per-range critical-section time split between the
-`pwrite`+fsync phase and the assembler/progress/store mutex phase. Off by
-default; release-build benchmarks flip it on via the env var. 100 tests
-(diagnostics adds 3); CI green on the code-correctness path.
+Post-fix local verification shows the trace now emits cleanly and 8 ranges
+genuinely run concurrently — and it also exposes root cause #2: range 0 over-
+delivers by exactly 7847 bytes and the download then fails with
+`connectionFailed`, reproducibly across three runs against a 9 MiB ranged URL.
+The range-parallel orchestration code shipped in 3a/3b is therefore freshly
+untested on the wire; the next round investigates #2 from the diagnosed
+re-run's trace.
 
-Next: run `Benchmarks/diagnose.sh` against the saturated workload, post the
-trace to PR #14, form a hypothesis from the evidence, fix one thing, re-run.
-As many rounds as it takes. The slice's definition of done explicitly
-required parity on saturated and ≥10% beat on amenable; we have neither, and
-#14 stays in draft until the engine produces competitive numbers. Next slice
-after 3b: 3c — error / retry / cancellation.
+Next: user re-runs `Benchmarks/diagnose.sh` against the saturated workload —
+it will likely fail in the same shape against the NDK URL, and the trace is
+the evidence for #2. Form a hypothesis from the evidence, fix one thing,
+re-run. As many rounds as it takes. #14 stays in draft until the engine
+produces competitive numbers. Next slice after 3b: 3c — error / retry /
+cancellation.
