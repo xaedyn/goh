@@ -41,6 +41,14 @@ let package = Package(
             name: "gohd",
             dependencies: ["GohCore"]
         ),
+        // Benchmark driver for the Slice 3b range-parallel work — times a
+        // goh-engine download (for the goh vs aria2c vs curl harness) and the
+        // unified-vs-inline hashing comparison. Not a shipped product.
+        .executableTarget(
+            name: "goh-bench",
+            dependencies: ["GohCore"],
+            path: "Benchmarks/goh-bench"
+        ),
         // Shared library — transport, scheduling, persistence, hashing, auth.
         // Off-main work is the 80% case, so the standard nonisolated default.
         .target(
