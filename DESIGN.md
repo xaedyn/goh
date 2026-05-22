@@ -134,12 +134,18 @@ granularity in §3 changes and must be re-surfaced.
 - (b) A single tagged-union enum carrying every command.
 - (c) An envelope wrapping a command enum.
 
-**Proposed answer.** (c). `GohRequest { protocolVersion, requestID, command }`,
-where `command` is a `Command` enum with associated values (`.add`, `.list`,
-`.pause`, `.resume`, `.remove`, `.subscribe`, …); replies are enveloped the same
-way. The envelope carries cross-cutting fields (version, correlation ID); the
-command enum gives the daemon a compiler-checked exhaustive switch. Defined once
-in `GohCore`, all `Codable`.
+**Proposed answer.** (c). One uniform envelope for every message — request, reply,
+and server notification: `{ protocolVersion, requestID, messageType, payload }`.
+`protocolVersion` is the wire version (§4); `requestID` correlates a reply or
+notification back to its originating request (§6); `messageType` discriminates
+request / reply / notification / error; `payload` carries the type-specific body.
+For a request, `payload` decodes to a `Command` enum (`.add`, `.list`, `.pause`,
+`.resume`, `.remove`, `.subscribe`, …) — still a compiler-checked exhaustive switch
+on the daemon. This key set is **canonical**: §4.3 freezes it, §5.2 extends it with
+file-descriptor siblings. Envelope and payload types are defined once in `GohCore`.
+The `payload` body is `Codable`; the envelope itself is a fixed-key XPC dictionary
+(§4.3) that may *also* carry native XPC values — file descriptors — as sibling
+entries (§5.2), so `Codable` covers the payload, not those siblings.
 
 **Open.**
 - Whether the envelope also carries a client-info block (e.g. pid) — settled with §6.
@@ -307,6 +313,15 @@ sessions (per session, not per message).
 - Dev builds (unsigned / ad-hoc-signed) will not satisfy the requirement — a
   documented dev escape hatch is needed (a debug build flag, or a dev signing
   identity). Exact requirement string confirmed at implementation.
+- **Per-connection validation cost is unmeasured.** Reading the audit token is
+  effectively free; evaluating the code-signing requirement is not — and mutual
+  validation pays it *twice* per connection (daemon-validates-client §3.1 +
+  client-validates-daemon §3.2), on the latency-sensitive path where every
+  fire-and-forget verb opens a fresh connection. Benchmark at implementation.
+  Rough triage, not a spec: under ~5 ms added to `goh ls` is invisible; ~5–20 ms
+  is noticeable and worth a note; over ~20 ms needs a design response — and since
+  the threat model fixes validation as per-connection, that response is cost-side
+  (optimise the check), not caching.
 
 #### 3.2 Does the CLI validate the daemon?
 **Question.** Should `goh` verify it is talking to the genuine `gohd`, not an
@@ -390,8 +405,9 @@ this early. On mismatch the daemon replies
 actionable line: `the goh daemon is running an older version — restart it with
 'brew services restart goh'`. **The crux:** that mismatch reply must be decodable
 by *both* an old and a new CLI, so a tiny **frozen negotiation subset** of the
-envelope — just `protocolVersion` plus a `versionMismatch` marker — is declared
-permanently stable and may never change shape.
+envelope — `protocolVersion` and `messageType` (which carries the
+`versionMismatch` marker) — is declared permanently stable and may never change
+shape.
 
 **Open.**
 - The encoding of that frozen subset is its own decision — see §4.3.
@@ -407,19 +423,21 @@ silently break the wire contract?
   a length-prefixed UTF-8 string, payload after — encoded and decoded by hand,
   never through `Codable`.
 - (b) **Fixed-key XPC dictionary.** The envelope is a native XPC dictionary with
-  a permanently fixed three-key set — `protocolVersion`, `messageType`,
-  `payload` — read with primitive `xpc_dictionary_get_*` accessors before any
-  `Codable` decode. The payload value is a `Codable` blob, decoded with the
-  decoder chosen by `protocolVersion`.
+  a permanently fixed key set — `protocolVersion`, `requestID`, `messageType`,
+  `payload` (§1.1) — read with primitive `xpc_dictionary_get_*` accessors before
+  any `Codable` decode. The `payload` value is a `Codable` blob, decoded with the
+  decoder chosen by `protocolVersion`; the envelope may *also* carry native XPC
+  values — file descriptors (§5.2) — as sibling entries beside these keys, which
+  are not part of the `Codable` payload.
 
 **Proposed answer.** (b) — and this diverges from the review-1 lean toward (a),
 so it is flagged for argument. The *instinct* behind (a) is correct and adopted:
 freeze the envelope, isolate it from payload evolution, and always be able to
 read the version even off a message you otherwise cannot decode. The *mechanism*
 is where (b) wins. XPC is not a raw byte stream; it is a keyed, structured-message
-IPC, and an XPC dictionary is unordered key-value — reading `protocolVersion` and
-`messageType` by key is order-independent and stable, and adding a fourth key
-later never disturbs the three frozen ones. Hand-rolled byte framing buys nothing
+IPC, and an XPC dictionary is unordered key-value — reading the frozen keys by
+name is order-independent and stable, and adding a further key later never
+disturbs the existing ones. Hand-rolled byte framing buys nothing
 over that on a keyed transport and adds a bespoke length-prefix parser that can
 carry its own bugs. The "Codable reorders fields" failure mode also does not apply
 to keyed encoders — XPC dictionaries, `JSONEncoder`, and `PropertyListEncoder` are
@@ -434,9 +452,10 @@ is premature.
 **Wire-incompatible change checklist** — any one of these is a breaking change and
 requires a new `protocolVersion`:
 - Renaming, removing, or retyping **any envelope key once it has shipped** —
-  `protocolVersion`, `messageType`, `payload`, or any key added later. The
-  envelope's key set is append-only; every shipped key and its primitive type is
-  a permanent part of the frozen contract and may never be renamed or retyped.
+  `protocolVersion`, `requestID`, `messageType`, `payload`, or any key added
+  later. The envelope's key set is append-only; every shipped key and its
+  primitive type is a permanent part of the frozen contract and may never be
+  renamed or retyped.
 - Renaming or removing a field in a payload type, or changing its type, for an
   existing `protocolVersion`.
 - Adding a *required* (non-optional, no-default) field to an existing payload type.
@@ -447,10 +466,19 @@ Adding an *optional* field to a payload type, or defining a new `messageType`, i
 backward-compatible and does not bump the version.
 
 **Open.**
-- The implementation branch needs a **golden-file test suite**: recorded
-  request/reply byte sequences committed to the repo, round-trip decoded, and
-  decoded against a frozen `protocolVersion = 1` fixture. Wire-format regressions
-  ship and then cannot be unshipped — noted here so it is not forgotten at code time.
+- The wire-incompatibility checklist above is enforced by a **golden-file test
+  suite** on the implementation branch — it is the checklist's CI mechanism, not a
+  generic regression test. Recorded request/reply messages are committed to the
+  repo and decoded by current code; a renamed or retyped envelope key, or a
+  changed payload field, makes a recorded message fail to decode and fails CI.
+- **Fixtures for shipped `protocolVersion` values are immutable.** A
+  `protocolVersion = 1` fixture is never edited — new versions only ever *add*
+  fixtures. Editing an existing fixture to make a test pass is the exact pattern
+  that ships a wire break: it moves the goalpost instead of catching the regression.
+- Checklist item 4 — *changing the meaning of an existing field's accepted
+  values* — is **not** catchable by the golden-file suite: the bytes are
+  identical, only the semantics moved. It requires human review against a
+  documented per-version semantics note, not CI.
 - Confirm at implementation that the Swift XPC API exposes top-level dictionary
   fields via primitive accessors independently of decoding the payload value.
 
@@ -508,9 +536,11 @@ whether the XPC layer must carry a file descriptor.
 
 **Open.**
 - The binding call belongs to the Auth slice. For the IPC contract, lock only
-  this: the envelope's `command` must be able to carry a file descriptor, since
-  (b) needs it and fd-passing is plausibly useful elsewhere. Designing it in is
-  cheap; retrofitting it is not.
+  this: the envelope must be able to carry one or more file descriptors as native
+  XPC sibling entries beside its `payload` (§1.1, §4.3) — *not* inside the
+  `Codable` payload, since a file descriptor is not `Codable`. Option (b) needs
+  this, and fd-passing is plausibly useful elsewhere; allowing sibling fd entries
+  in the envelope now is cheap, retrofitting it is not.
 
 ### 6 · Observability
 
