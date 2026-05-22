@@ -660,7 +660,7 @@ fields are ISO-8601 strings (§4).
 | `createdAt` | `Date` | always | when `add` created the job |
 | `lastProgressAt` | `Date?` | always; `null` if never | when `progress` last advanced — the staleness signal |
 | `requestedConnectionCount` | `UInt8` | always | the connection count `add` was given; `1`–`16` |
-| `actualConnectionCount` | `UInt8` | always | connections currently in use; `0` when not downloading, below `requestedConnectionCount` on a single-connection fallback |
+| `actualConnectionCount` | `UInt8` | always | the connection count the download used — kept on a `completed` job, `0` before the engine decides and on a `failed` job; below `requestedConnectionCount` on a single-connection fallback. See §2.2, *`actualConnectionCount` lifecycle* |
 | `pauseReason` | `PauseReason?` | iff `state == paused` | — |
 | `completedAt` | `Date?` | iff `state == completed` | when the download finished |
 | `error` | `GohError?` | iff `state == failed` | the failure |
@@ -734,6 +734,14 @@ Running jobs are not preempted — the `active → queued` transition does not e
 outside `pause`. A `high`-priority job that arrives while the connection budget
 is full waits for a running job to finish, or to be paused or removed.
 
+**`actualConnectionCount` lifecycle.** `actualConnectionCount` records the
+connection count the download used. It is `0` until the engine has probed and
+decided; on a `completed` job it remains at that value — the historical record
+of the parallelism the download achieved, the *actual* against the *requested* —
+and on a `failed` job it resets to `0`, a count being meaningless for a download
+that did not complete. The job's `state` determines the field's meaning; a
+consumer branching on `actualConnectionCount` checks `state` first.
+
 **Considered alternatives.**
 - *An enum whose `paused` / `failed` cases carry associated values* — rejected.
   Swift's synthesised `Codable` for associated-value enums nests the payload
@@ -745,6 +753,18 @@ is full waits for a running job to finish, or to be paused or removed.
   advantage; clean `jq` access and additive sibling fields are.) Its one gain —
   unrepresentable invalid states — is recovered by the daemon-side invariant
   above, without the wire cost.
+- *`actualConnectionCount` as a live count — connections in use right now, `0`
+  whenever the job is not downloading* — this was §1's original specification at
+  the first freeze. Rejected on amendment: a live count answers `goh top`'s
+  "what is happening now" but leaves `goh ls`'s "what did this job do"
+  unanswerable — a `completed` job always reads `0`, so the downgrade question
+  (did the download get the parallelism `add` requested?) cannot be answered
+  from a finished `JobSummary`, defeating the field's purpose. The
+  historical-record semantics answer both, since an `active` job's record is
+  also its live count. Amended in the same spirit as the Slice 1.5
+  `invalidArgument` round: a frozen contract that mandates a behaviour defeating
+  a field's purpose is a defect, and the fix is to amend the contract with the
+  rationale recorded.
 
 #### 2.3 Progress
 `JobProgress` is aggregate — `bytesCompleted`, `bytesTotal` (`null` when the
@@ -963,6 +983,15 @@ relevant schema and every field a documented engine capability will produce — 
 only the obvious progress fields. For `ls` that means: creation timestamp,
 staleness indicator, ETA (or its derivation justification), retry-eligibility
 presentation, and a remedy path for every `ErrorCode`.
+
+**Consumer requirements, not only engine requirements.** *(Added with the
+`actualConnectionCount` amendment.)* This walk checks each schema against what
+the *engine produces*. It must equally check what *consumers* — `goh ls`,
+`goh top` — must be able to *answer* from a schema. The original walk missed
+that direction: `actualConnectionCount`'s live-count semantics satisfied the
+engine (it can report a live count) but not the `goh ls` consumer (a completed
+job could not answer "what parallelism did this download get?"). A schema audit
+walks both directions — engine production *and* consumer interrogation.
 
 - **`add`** — the engine needs a URL, a destination, a connection count (8
   default, tunable — ROADMAP §6), cookie auth (ROADMAP §9), and a queue priority.

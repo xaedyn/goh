@@ -119,16 +119,16 @@ public final class JobStore: Sendable {
         }
     }
 
-    /// Records how many connections the engine actually used (`DESIGN.md` §2) —
-    /// set once the engine has probed and decided, and at most the requested
-    /// count.
+    /// Records how many connections the engine used — set once the engine has
+    /// probed and decided, at most the requested count (`DESIGN.md` §2.2,
+    /// "`actualConnectionCount` lifecycle").
     public func setActualConnectionCount(id: UInt64, _ count: UInt8) throws -> JobSummary {
         try mutateJob(id: id) { $0.actualConnectionCount = count }
     }
 
     /// Marks an `active` job `completed`. `actualConnectionCount` is kept — on a
-    /// completed job it is the record of how many connections the download
-    /// used, the "actual" against the requested count.
+    /// completed job it is the historical record of the connection count the
+    /// download used (`DESIGN.md` §2.2, "`actualConnectionCount` lifecycle").
     public func complete(id: UInt64) throws -> JobSummary {
         try mutateJob(id: id) { job in
             guard JobLifecycle.isLegal(from: job.state, to: .completed) else { return }
