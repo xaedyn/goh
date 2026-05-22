@@ -600,7 +600,7 @@ fields are ISO-8601 strings (§4).
 | `JobState` | `queued`, `active`, `paused`, `completed`, `failed` |
 | `PauseReason` | `user`, `network` |
 | `Priority` | `low`, `normal`, `high` |
-| `ErrorCode` | the fifteen cases tabulated in §2.4 |
+| `ErrorCode` | the sixteen cases tabulated in §2.4 |
 
 **`JobProgress`:**
 
@@ -709,7 +709,10 @@ is full waits for a running job to finish, or to be paused or removed.
   Swift's synthesised `Codable` for associated-value enums nests the payload
   (`{"failed":{"_0":{…}}}`), hostile to `goh ls --json | jq`; and changing a
   case's associated type is a wire-incompatible change (§4), whereas a flat enum
-  gains cases additively and sibling fields evolve under §4. Its one gain —
+  keeps state-specific detail in sibling fields, which evolve additively under §4
+  as ordinary optional fields. (Adding an enum *case* needs a `protocolVersion`
+  bump for either form — §4 — so additive *cases* are not the flat form's
+  advantage; clean `jq` access and additive sibling fields are.) Its one gain —
   unrepresentable invalid states — is recovered by the daemon-side invariant
   above, without the wire cost.
 
@@ -734,7 +737,7 @@ typed `code` the CLI branches on (exit codes, retry prompts) without parsing
 prose; an optional human-readable `message`; and `httpStatusCode`, set only when
 `code == httpStatus`, so a consumer reads `select(.error.code == "httpStatus" and
 .error.httpStatusCode >= 500)` directly rather than parsing a status out of
-`message`. `ErrorCode` is a closed enum of fifteen categories, each with a remedy
+`message`. `ErrorCode` is a closed enum of sixteen categories, each with a remedy
 path:
 
 | `ErrorCode` | Meaning | Remedy |
@@ -754,6 +757,7 @@ path:
 | `queueFull` | the daemon's job queue is at capacity | retry later |
 | `protocolVersionMismatch` | the CLI and daemon disagree on `protocolVersion` | upgrade the older component |
 | `cancelled` | the operation was cancelled (`rm`, shutdown) | — |
+| `invalidArgument` | a request field held an invalid value | `message` names the field and what was wrong |
 
 Three boundaries fix what `GohError` is *not*:
 - **Retry-eligibility is not derived from `code`** — it is the explicit
@@ -783,6 +787,23 @@ Three boundaries fix what `GohError` is *not*:
   consumer branching on cause needs them separable; a single collapsed code would
   force every consumer to parse the `message` string to recover the distinction
   the three separate codes preserve structurally.
+- *Reusing an existing code for an invalid request field, rather than adding
+  `invalidArgument`* — rejected: no existing code fits. `unsupportedURL` is a URL
+  problem (a `connectionCount` of `0` is not); `unauthorized` is an auth problem;
+  and leaving the rejection codeless — for the consumer to parse out of
+  `message` — defeats the purpose of a typed `code`, which is branching on cause
+  without parsing prose (the reasoning that kept `httpStatusCode` structured).
+- *Lenient enum decoding — an unknown `ErrorCode` decoding to a fallback rather
+  than failing* — rejected; strict decode is deliberate. Lenient decoding
+  silently degrades structured information: a consumer branching on a code (or on
+  `JobState`) would have to treat every value as "or possibly unknown," defeating
+  the flat, branchable shape the schema rounds chose. It moves a
+  version-incompatibility from an explicit §4.2 negotiation error to a
+  silently-degraded reply on certain jobs — the inverse of what §4.2 exists for.
+  And it is a real design slice across four enums (`ErrorCode`, `JobState`,
+  `PauseReason`, `Priority`), each needing its own fallback semantics. A new
+  `ErrorCode` case is a `protocolVersion` change (§4); §4.2 surfaces the mismatch
+  cleanly — the right mechanism for the problem lenient enums try to solve.
 
 ### 3 · Commands — rationale
 
@@ -804,8 +825,9 @@ silent. `priority` is a `Priority` enum — `low`, `normal`, `high`.
 single-connection download, `16` a ceiling past which parallel range-request
 benefit saturates on real CDNs. The daemon **caps** a request above `16` at `16`
 — the accepted value becomes `requestedConnectionCount`, the live count
-`actualConnectionCount` (§1) — and **rejects** a request of `0` with an error,
-since zero connections is nonsense, not a defaultable value.
+`actualConnectionCount` (§1) — and **rejects** a request of `0` with an
+`invalidArgument` error (§2.4), the `message` naming the field and rejected
+value, since zero connections is nonsense, not a defaultable value.
 
 **Considered alternatives.**
 - *A cookie-import id — `goh auth import` returns an id `add` passes* — rejected:
@@ -877,6 +899,13 @@ and does not bump the version; renaming, removing, retyping, or adding a
 fields** (Codable does so by default), so a newer daemon's added field does not
 break an older CLI. Reply shapes are frozen against breaking changes, open to
 additive optional fields.
+
+**Error-code evolution.** The sixteen `ErrorCode` cases are fixed for
+`protocolVersion = 1`. Unlike an optional *field* — which an older decoder simply
+ignores — an `ErrorCode` value an older consumer does not recognise fails its
+strict enum decode; a seventeenth case is therefore a `protocolVersion` change,
+not a point-release addition. Within v1, the daemon chooses the most specific
+applicable code for each rejection cause.
 
 **Frozen request defaults.** The default applied to an *absent* optional request
 field is itself part of the frozen contract. Changing a default across a point

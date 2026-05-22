@@ -16,6 +16,7 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
     case queueFull
     case protocolVersionMismatch
     case cancelled
+    case invalidArgument
 }
 
 /// A structured command failure (`DESIGN.md` §2.4). Travels the §1.2 error
