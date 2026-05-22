@@ -44,6 +44,13 @@ per-host bandwidth budgets; hashes beyond SHA-256.
   (`cookies.sqlite`) — different mechanics for each.
 - **yt-dlp integration.** As a plugin; `goh` does not reimplement site
   extraction.
+- **`SMAppService` migration.** Move daemon registration off `brew services` —
+  which writes the LaunchAgent plist into the user-writable
+  `~/Library/LaunchAgents/` — to `SMAppService`, whose tamper-resistant plist
+  location closes the configuration-time Mach-service squat described in
+  DESIGN.md §3.2. Deferred deliberately: v0.1's threat model accepts that a
+  same-user attacker already on the box has many options; this is hardening for
+  when goh is distributed outside Homebrew.
 
 ## Notes
 
