@@ -5,34 +5,33 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/download-single-connection`
-- **Last merged:** PR #11 — session-continuity files — `main` at `7a00315`.
-- **Current slice:** 3a — single-connection HTTP download — **complete, in review**.
+- **Branch:** `feat/download-range-parallel`
+- **Last merged:** PR #12 — Slice 3a, single-connection HTTP download — `main`
+  at `a051819`.
+- **Current slice:** 3b — range-parallel orchestration — **scoping** (the
+  scoping note is pending review).
 
-## Slice 3a — shipped
+## Slice 3a — shipped (the milestone: `goh` moves bytes to disk)
 
-- Transport-mechanism revision recorded in `DESIGN.md` §Transport.
 - Engine job-store transitions — `start` (an atomic claim) / `recordProgress` /
-  `complete` / `fail`, driving `queued → active → completed/failed`. `pause`
-  narrowed to the 3a no-op-on-active behaviour.
-- `DownloadFile` — the disk side: `pwrite` at offset, streaming SHA-256, the
-  1 MiB fsync checkpoint, best-effort `F_PREALLOCATE`.
-- `DownloadEngine` — single-connection HTTP fetch over `URLSession`, streaming
-  the body to disk and driving the job; transport/HTTP errors mapped to
-  `GohError`. Tested over a `URLProtocol` mock — CI needs no network.
-- Daemon wiring — the dispatcher signals queued jobs; `gohd` runs the engine on
-  `add`, on `resume`, and for jobs still queued at startup.
-- 84 tests passing.
+  `complete` / `fail`, driving `queued → active → completed/failed`.
+- `DownloadFile` — `pwrite` at offset, streaming SHA-256, the 1 MiB fsync
+  checkpoint, best-effort `F_PREALLOCATE`.
+- `DownloadEngine` — single-connection HTTP fetch over `URLSession`.
+- Daemon wiring — `gohd` runs the engine on `add`, on `resume`, and for jobs
+  still queued at startup.
+- 84 tests; the engine path is tested over a `URLProtocol` mock.
 
-**Milestone:** the first slice where `goh` moves bytes to disk.
+## Slice 3b — range-parallel orchestration (scoping)
 
-## Next planned slice
+N concurrent `URLSession` range requests; the `Accept-Ranges` + `Content-Length`
+probe; `requestedConnectionCount` vs `actualConnectionCount`; single-connection
+fallback. Two known design points the scoping note addresses: concurrent
+offset-writers reworking `DownloadFile`, and in-order hashing of out-of-order
+bytes (the chunk assembler). The definition of done includes benchmark targets
+against `aria2` and `curl`.
 
-3b — range-parallel orchestration: N concurrent `URLSession` tasks with `Range`
-headers, the `Accept-Ranges` probe, `requestedConnectionCount` vs
-`actualConnectionCount` visibility, single-connection fallback.
-
-## Roadmap from here (post-3a)
+## Roadmap from here
 
 - **3b** — range-parallel orchestration.
 - **3c** — error / retry / cancellation: the retry policy (§2.2 Retry boundary),
@@ -48,11 +47,14 @@ headers, the `Accept-Ranges` probe, `requestedConnectionCount` vs
 
 ## Pending questions for the user
 
-None currently.
+- The Slice 3b scoping note is awaiting review — scope, the `DownloadFile`
+  concurrent-writer rework, the chunk-assembler hashing approach, and the
+  benchmark targets that form part of 3b's definition of done.
 
 ## Next-session handoff
 
-Slice 3a is complete and in review. On merge, start Slice 3b — range-parallel
-orchestration: N concurrent `URLSession` range requests, the `Accept-Ranges`
-probe that decides whether parallelism is possible, `requestedConnectionCount`
-vs `actualConnectionCount` visibility, single-connection fallback.
+Slice 3b is scoped but not yet started — the scoping note is pending review.
+Once the scope and the benchmark targets are confirmed, build 3b heads-down:
+the `Accept-Ranges` probe, range splitting, concurrent offset-writers, the
+chunk assembler, single-connection fallback. Then the benchmark harness and a
+documented `goh` vs `aria2` vs `curl` run.
