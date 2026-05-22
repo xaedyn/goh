@@ -18,15 +18,30 @@ public enum GohCore {
 
     /// The `URLSessionConfiguration` for the download engine's session.
     ///
-    /// `httpMaximumConnectionsPerHost` is raised so range-parallel downloads get
-    /// real HTTP/1.1 concurrency — HTTP/2 multiplexes regardless of the cap —
-    /// and ``userAgent`` is set as a default header, so every request the engine
-    /// makes (the `HEAD` probe, each ranged `GET`, and the single-connection
-    /// `GET`) carries it without per-request wiring.
+    /// Three concerns are pinned here, so every request the engine makes (the
+    /// `HEAD` probe, each ranged `GET`, and the single-connection `GET`)
+    /// carries the same setup without per-request wiring:
+    ///
+    /// - `httpMaximumConnectionsPerHost = 16` — raised so range-parallel
+    ///   downloads get real HTTP/1.1 concurrency. HTTP/2 multiplexes regardless
+    ///   of the cap.
+    /// - `User-Agent` — ``userAgent``; a download manager fetches from
+    ///   arbitrary servers, so identifying the client is basic courtesy.
+    /// - `Accept-Encoding: identity` — opts out of HTTP content-encoding
+    ///   (gzip/br/deflate). URLSession's default is `gzip, deflate, br`, and
+    ///   its auto-decoding is incompatible with ranged downloads: a `Range`
+    ///   response over an encoded body is a partial slice of the *encoded*
+    ///   stream, not partial decoded bytes, so URLSession's decoder overshoots
+    ///   range 0 and fails with `cannotDecodeRawData` (-1015) on every later
+    ///   range. A download manager wants raw bytes regardless. See DESIGN.md
+    ///   §Transport.
     public static func downloadSessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpMaximumConnectionsPerHost = 16
-        configuration.httpAdditionalHeaders = ["User-Agent": userAgent]
+        configuration.httpAdditionalHeaders = [
+            "User-Agent": userAgent,
+            "Accept-Encoding": "identity",
+        ]
         return configuration
     }
 }

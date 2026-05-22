@@ -16,11 +16,13 @@ struct GohCoreBootstrapTests {
         #expect(GohCore.userAgent.contains("github.com/xaedyn/goh"))
     }
 
-    @Test("the download session configuration sets the User-Agent and the per-host cap")
+    @Test("the download session configuration pins User-Agent, Accept-Encoding identity, and the per-host cap")
     func downloadSessionConfigurationIsConfigured() {
         let configuration = GohCore.downloadSessionConfiguration()
         #expect(
             configuration.httpAdditionalHeaders?["User-Agent"] as? String == GohCore.userAgent)
+        #expect(
+            configuration.httpAdditionalHeaders?["Accept-Encoding"] as? String == "identity")
         #expect(configuration.httpMaximumConnectionsPerHost == 16)
     }
 }

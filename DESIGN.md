@@ -120,6 +120,36 @@ integration. SDK verification against macOS 26 reverses that decision.
 The brief's reasoning was sound when written; it is moot once the macOS 26 API
 surface is real.
 
+### URLSession quirks the engine works around
+
+Two non-obvious `URLSession` behaviours bit the engine on real-network testing
+and forced specific configuration. Both apply to every download and are pinned
+in `GohCore.downloadSessionConfiguration()`.
+
+**`HEAD` returns `expectedContentLength = -1`.**
+`URLResponse.expectedContentLength` is populated from the `Content-Length`
+header for `GET` responses but returns `-1` (`NSURLResponseUnknownLength`) for
+`HEAD` responses even when the server sent the header (empirically verified
+on macOS 26 against `dl.google.com`). The capability probe therefore reads
+`Content-Length` from `response.value(forHTTPHeaderField:)` directly, not
+from `expectedContentLength`. The unit-test `MockURLProtocol` builds its
+`HTTPURLResponse` via `headerFields:` and so populates
+`expectedContentLength` correctly, which hid the quirk in CI until a
+real-network diagnostic run surfaced it.
+
+**Auto-decompression is incompatible with ranged downloads.** `URLSession`'s
+default `Accept-Encoding: gzip, deflate, br` triggers transparent
+content-decoding on the response. For a whole response that is fine — but a
+`Range` request over a `Content-Encoding`'d body returns a *partial slice of
+the encoded stream*, not partial decoded bytes. `URLSession`'s decoder cannot
+start mid-gzip-stream, so every range past the first fails with
+`URLError.cannotDecodeRawData` (-1015); range 0 decodes a valid prefix whose
+decoded length differs from the requested encoded length, overshooting onto
+subsequent ranges' territory on disk. A download manager wants raw bytes
+regardless — the file on disk should match what the server serves — so the
+session configuration sends `Accept-Encoding: identity`, opting out of HTTP
+content-encoding entirely.
+
 ## Persistence
 
 _TBD — `pwrite(2)` chunk writes indexed by range offset; `F_PREALLOCATE` for
