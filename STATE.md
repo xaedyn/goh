@@ -8,8 +8,8 @@ session; update at the start of every PR and at the end of every session.
 - **Branch:** `feat/download-range-parallel`
 - **Last merged:** PR #12 — Slice 3a, single-connection HTTP download — `main`
   at `a051819`.
-- **Current slice:** 3b — range-parallel orchestration — **scoping** (the
-  scoping note is pending review).
+- **Current slice:** 3b — range-parallel orchestration — **in progress**
+  (orchestration done; the benchmark suite remains).
 
 ## Slice 3a — shipped (the milestone: `goh` moves bytes to disk)
 
@@ -22,14 +22,21 @@ session; update at the start of every PR and at the end of every session.
   still queued at startup.
 - 84 tests; the engine path is tested over a `URLProtocol` mock.
 
-## Slice 3b — range-parallel orchestration (scoping)
+## Slice 3b — range-parallel orchestration (in progress)
 
-N concurrent `URLSession` range requests; the `Accept-Ranges` + `Content-Length`
-probe; `requestedConnectionCount` vs `actualConnectionCount`; single-connection
-fallback. Two known design points the scoping note addresses: concurrent
-offset-writers reworking `DownloadFile`, and in-order hashing of out-of-order
-bytes (the chunk assembler). The definition of done includes benchmark targets
-against `aria2` and `curl`.
+Done and pushed (95 tests):
+
+- `DownloadFile` reworked to pure positioned I/O (`pwrite`/`pread`, `Sendable`).
+- `ChunkAssembler` — in-order hashing of out-of-order bytes via the
+  contiguous-frontier read-back; single-connection runs through it as `N = 1`.
+- `ByteRange.split` — file splitting capped by a minimum chunk size.
+- The `HEAD` capability probe, `fetchRanged` with N writers in a `TaskGroup`,
+  per-range failure cancelling siblings, the single-connection fallback,
+  `actualConnectionCount` recorded and kept on completion.
+
+Remaining: the benchmark suite — a committed `Benchmarks/` harness running
+`goh` vs `aria2c` vs `curl`, the unified-path-vs-3a-inline measurement, and a
+documented run (real-network, not CI). Then the 3b PR.
 
 ## Roadmap from here
 
@@ -47,14 +54,14 @@ against `aria2` and `curl`.
 
 ## Pending questions for the user
 
-- The Slice 3b scoping note is awaiting review — scope, the `DownloadFile`
-  concurrent-writer rework, the chunk-assembler hashing approach, and the
-  benchmark targets that form part of 3b's definition of done.
+None currently.
 
 ## Next-session handoff
 
-Slice 3b is scoped but not yet started — the scoping note is pending review.
-Once the scope and the benchmark targets are confirmed, build 3b heads-down:
-the `Accept-Ranges` probe, range splitting, concurrent offset-writers, the
-chunk assembler, single-connection fallback. Then the benchmark harness and a
-documented `goh` vs `aria2` vs `curl` run.
+Slice 3b's range-parallel orchestration is built, tested (95 tests), and
+pushed on `feat/download-range-parallel`. Remaining before the 3b PR: the
+benchmark suite — a `Benchmarks/` harness for `goh` vs `aria2c` vs `curl`
+(saturated workload → parity; amenable workload → beat `aria2c` by ≥10% on a
+chosen primary metric), plus the unified-path-vs-3a-inline re-read measurement.
+The benchmark run needs a real-network environment; the harness is committed
+either way and the numbers recorded in the PR.
