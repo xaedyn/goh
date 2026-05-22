@@ -8,8 +8,9 @@ session; update at the start of every PR and at the end of every session.
 - **Branch:** `feat/download-range-parallel`
 - **Last merged:** PR #12 — Slice 3a, single-connection HTTP download — `main`
   at `a051819`.
-- **Current slice:** 3b — range-parallel orchestration — **in progress**
-  (orchestration done; the benchmark suite remains).
+- **Current slice:** 3b — range-parallel orchestration — **PR #14 open in
+  draft**, blocked (see Pending questions).
+- **Last merged before #14:** PR #13 — the `actualConnectionCount` §1 amendment.
 
 ## Slice 3a — shipped (the milestone: `goh` moves bytes to disk)
 
@@ -22,9 +23,9 @@ session; update at the start of every PR and at the end of every session.
   still queued at startup.
 - 84 tests; the engine path is tested over a `URLProtocol` mock.
 
-## Slice 3b — range-parallel orchestration (in progress)
+## Slice 3b — range-parallel orchestration (PR #14, draft)
 
-Done and pushed (95 tests):
+Built, tested (95 tests), pushed:
 
 - `DownloadFile` reworked to pure positioned I/O (`pwrite`/`pread`, `Sendable`).
 - `ChunkAssembler` — in-order hashing of out-of-order bytes via the
@@ -33,10 +34,11 @@ Done and pushed (95 tests):
 - The `HEAD` capability probe, `fetchRanged` with N writers in a `TaskGroup`,
   per-range failure cancelling siblings, the single-connection fallback,
   `actualConnectionCount` recorded and kept on completion.
+- The `Benchmarks/` suite — `goh-bench` driver, `competitive.sh`, the hashing
+  benchmark wired into CI.
 
-Remaining: the benchmark suite — a committed `Benchmarks/` harness running
-`goh` vs `aria2c` vs `curl`, the unified-path-vs-3a-inline measurement, and a
-documented run (real-network, not CI). Then the 3b PR.
+The PR is **draft**, holding on two things: GitHub Actions billing (CI cannot
+run) and the competitive benchmark run.
 
 ## Roadmap from here
 
@@ -54,14 +56,19 @@ documented run (real-network, not CI). Then the 3b PR.
 
 ## Pending questions for the user
 
-None currently.
+- **GitHub Actions billing.** CI on PR #14 did not run — "recent account
+  payments have failed or your spending limit needs to be increased" (GitHub
+  Settings → Billing & plans). CI cannot pass until this is resolved; once it
+  is, re-run with `gh run rerun` or a push.
+- **Competitive benchmark.** Run `Benchmarks/competitive.sh` on a real network
+  and post the numbers to PR #14; then it can be marked ready and merged.
 
 ## Next-session handoff
 
-Slice 3b's range-parallel orchestration is built, tested (95 tests), and
-pushed on `feat/download-range-parallel`. Remaining before the 3b PR: the
-benchmark suite — a `Benchmarks/` harness for `goh` vs `aria2c` vs `curl`
-(saturated workload → parity; amenable workload → beat `aria2c` by ≥10% on a
-chosen primary metric), plus the unified-path-vs-3a-inline re-read measurement.
-The benchmark run needs a real-network environment; the harness is committed
-either way and the numbers recorded in the PR.
+Slice 3b (range-parallel orchestration + the benchmark suite) is complete,
+tested — 95 tests — and pushed; PR #14 is open in **draft**. It holds on the
+two Pending questions above: GitHub Actions billing (CI blocked) and the
+competitive benchmark run. Local hash-overhead preview: ~−2% (within noise —
+the read-back is free). Once CI is green and the competitive numbers land,
+mark #14 ready and merge. Next slice after 3b: 3c — error / retry /
+cancellation.
