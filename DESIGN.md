@@ -247,7 +247,9 @@ download runs and a CLI is attached?
 unconditionally resumes in-progress downloads from their checkpoints. An attached
 foreground `goh <url>` sees its session invalidated, prints a visible
 `reconnecting…` line, and makes **one** reconnection attempt — re-resolve the
-daemon's Mach service, re-subscribe to the *same job ID*. "One attempt" is bounded
+daemon's Mach service, **re-validate its audit token** (§3.2 — the reattached peer
+could be an impostor that claimed the name while `gohd` was down), and re-subscribe
+to the *same job ID*. "One attempt" is bounded
 by a short wait window (≈2–3 s), because a launchd-relaunched daemon is not
 instantly back: it must restart, re-read job state, and re-register its listener,
 so a single instant retry would almost always fire too early. If the window
@@ -297,8 +299,9 @@ audit token and checks it against a code-signing requirement for the genuine
 `goh` binary — our Team ID plus a designated requirement / identifier, **not** a
 cdhash (a cdhash changes every build). A same-user process that is not the signed
 `goh` cannot forge this and is rejected. Team-ID-only (c) is weaker — it would
-trust any future binary from our team. Enforcement happens once, at
-session-accept time in the `XPCListener` handler, never per message.
+trust any future binary from our team. Validation runs at session-accept time in
+the `XPCListener` handler — on **every** incoming session, never cached across
+sessions (per session, not per message).
 
 **Open.**
 - Dev builds (unsigned / ad-hoc-signed) will not satisfy the requirement — a
@@ -332,6 +335,14 @@ route — so the pre-stage squat is feasible under our threat model. Mutual
 validation (b) is the mitigation: the CLI checks the daemon's audit token on
 connect and detects an impostor before sending anything — most importantly the
 `goh auth import safari` credential payload.
+
+Validation is **per connection**, never cached. Because the squat is a planted
+LaunchAgent rather than a runtime race, the peer behind `dev.goh.daemon` can
+change between two `goh` invocations — and, most dangerously, across a §2.2
+reconnect, where the "restarted daemon" the CLI reattaches to could be an impostor
+that claimed the name while the real `gohd` was down. Every connection
+re-validates the peer's audit token; there is no "we trusted this peer before"
+shortcut.
 
 Sources: `launchd.plist(5)`, the `MachServices` key
 (<https://keith.github.io/xcode-man-pages/launchd.plist.5.html>); RDerik,
@@ -422,7 +433,10 @@ is premature.
 
 **Wire-incompatible change checklist** — any one of these is a breaking change and
 requires a new `protocolVersion`:
-- Renaming, removing, or retyping any of the three envelope keys.
+- Renaming, removing, or retyping **any envelope key once it has shipped** —
+  `protocolVersion`, `messageType`, `payload`, or any key added later. The
+  envelope's key set is append-only; every shipped key and its primitive type is
+  a permanent part of the frozen contract and may never be renamed or retyped.
 - Renaming or removing a field in a payload type, or changing its type, for an
   existing `protocolVersion`.
 - Adding a *required* (non-optional, no-default) field to an existing payload type.
