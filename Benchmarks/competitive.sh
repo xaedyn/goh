@@ -71,18 +71,37 @@ workload() {
   bench aria2c run_aria "$url"; local aria_median="$LAST_MEDIAN"
   bench curl   run_curl "$url"; local curl_median="$LAST_MEDIAN"
 
-  # The amenable workload is only valid if it genuinely rate-limits per
-  # connection — otherwise the >= 10% target is measured against the wrong
-  # thing. Verify it: 8-connection aria2c must clearly beat single-stream curl.
-  if [[ "$name" == "amenable" ]]; then
-    local ratio
-    ratio="$(perl -e "printf '%.2f', $curl_median / ($aria_median > 0 ? $aria_median : 1)")"
-    if perl -e "exit(!($curl_median / ($aria_median > 0 ? $aria_median : 1) >= 1.5))"; then
-      echo "  amenability check: PASS — aria2c ${ratio}x single-stream curl"
+  # Each workload's structural assumption is verified at run time, not assumed.
+  # Both compare 8-connection aria2c — a mature parallel downloader, the
+  # reference — against single-stream curl, so the check measures the workload,
+  # not goh. The full-precision division drives the threshold; the rounded
+  # `ratio` is for display only.
+  if [[ "$name" == "amenable" || "$name" == "saturated" ]]; then
+    local division ratio
+    division="$curl_median / ($aria_median > 0 ? $aria_median : 1)"
+    ratio="$(perl -e "printf '%.2f', $division")"
+    if [[ "$name" == "amenable" ]]; then
+      # Per-connection limiting → 8 connections clearly beat one. aria2c must be
+      # >= 1.5x single-stream curl, or the >= 10% target is measured wrong.
+      if perl -e "exit(!($division >= 1.5))"; then
+        echo "  amenability check: PASS — aria2c ${ratio}x single-stream curl"
+      else
+        echo "  amenability check: WARN — aria2c only ${ratio}x single-stream curl."
+        echo "  This URL is not clearly per-connection-limited; the >= 10% comparison"
+        echo "  is not valid against it. Pick another AMENABLE_URL — see README."
+      fi
     else
-      echo "  amenability check: WARN — aria2c only ${ratio}x single-stream curl."
-      echo "  This URL is not clearly per-connection-limited; the >= 10% comparison"
-      echo "  is not valid against it. Pick another AMENABLE_URL — see README."
+      # One connection already saturates → 8 add nothing. aria2c must stay
+      # within ~20% of single-stream curl (ratio <= 1.2); clearly faster means
+      # the link was not saturated and the parity target is meaningless.
+      if perl -e "exit(!($division <= 1.2))"; then
+        echo "  saturation check: PASS — aria2c ${ratio}x single-stream curl (converged)"
+      else
+        echo "  saturation check: WARN — aria2c ${ratio}x single-stream curl."
+        echo "  This URL does not fill the pipe on one connection; the parity"
+        echo "  comparison is not valid against it. Pick another SATURATED_URL —"
+        echo "  see README."
+      fi
     fi
     echo
   fi

@@ -45,9 +45,9 @@ the *correct* result, not a regression.
 > (probed 2026-05-22, with and without a browser `User-Agent`), and a
 > range-parallel downloader cannot run against it at all. The saturated workload
 > must be a real file. The modest server-side variability of a CDN-hosted file
-> is the price of measuring the actual question; the `RUNS`-median is the
-> smoothing, so the file is sized large enough that the transfer dominates
-> per-run fixed overhead.
+> is the price of measuring the actual question; the file is sized large enough
+> that the transfer dominates per-run fixed overhead, and whether it genuinely
+> saturates a single connection is verified at run time (below).
 
 **Amenable** — a host that **rate-limits per connection** (or is latency-bound),
 so N connections move toward N times the bytes. This is the load-bearing
@@ -79,16 +79,30 @@ workload: the ≥ 10 % target is measured here.
 > reachable and honours `Range`; the amenability property itself is checked at
 > run time (next).
 
-### Amenability is verified at run time — not assumed
+### Each workload's assumption is verified at run time — not assumed
 
-`competitive.sh` self-checks the amenable workload: after the runs it compares
-single-stream `curl` against 8-connection `aria2c`. If `aria2c` is **not** at
-least 1.5× faster, the workload was not genuinely per-connection-limited — the
-"amenable" run silently became a second saturated run — and the harness prints a
-**WARN**: the ≥ 10 % comparison is not valid against that URL.
+`competitive.sh` self-checks **both** workloads after their runs, each time
+comparing 8-connection `aria2c` against single-stream `curl`. `aria2c` — a
+mature parallel downloader — is the reference, so the check measures the
+*workload's* property, not `goh`'s performance.
 
-If the default `AMENABLE_URL` WARNs, override it with a **fallback candidate**
-(below) and re-run.
+**Amenable.** If `aria2c` is **not** at least 1.5× faster than single-stream
+`curl`, the workload was not genuinely per-connection-limited — the "amenable"
+run silently became a second saturated run — and the harness prints a **WARN**:
+the ≥ 10 % comparison is not valid against that URL.
+
+**Saturated.** If `aria2c` is **more than ~20 % faster** than single-stream
+`curl` (`curl ÷ aria2c` median above 1.2), one connection did *not* already
+fill the pipe — parallelism found headroom to exploit — so the workload was not
+genuinely saturated and the parity target is meaningless against it; the
+harness prints a **WARN**. The check is one-sided, the same shape as the
+amenable check: it fires on the unambiguous signal (parallelism clearly
+helped), not on `aria2c` merely being a little slower than `curl`, which is the
+expected saturated outcome.
+
+If a default WARNs, override that workload's URL and re-run — `AMENABLE_URL`
+with a **fallback candidate** (below); `SATURATED_URL` with another real file
+on a fast CDN.
 
 Record the actual URLs, the machine (`uname -mrs`, CPU, link speed), and the
 network conditions alongside the numbers — the harness prints the first two.
