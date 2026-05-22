@@ -11,6 +11,25 @@ public struct ByteRange: Sendable, Equatable {
         self.start = start
         self.length = length
     }
+
+    /// Splits `[0, total)` into contiguous ranges — at most `requested`, and
+    /// never so many that a range would fall below `minChunk`. The last range
+    /// takes any remainder; the result always has at least one range.
+    public static func split(
+        total: UInt64, requested: UInt8, minChunk: UInt64
+    ) -> [ByteRange] {
+        let maxByChunk = max(1, total / max(1, minChunk))
+        let count = max(1, min(UInt64(requested), maxByChunk))
+        let base = total / count
+        var ranges: [ByteRange] = []
+        var start: UInt64 = 0
+        for index in 0..<count {
+            let length = (index == count - 1) ? (total - start) : base
+            ranges.append(ByteRange(start: start, length: length))
+            start += length
+        }
+        return ranges
+    }
 }
 
 /// The outcome of assembling a download's hash.

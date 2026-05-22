@@ -42,6 +42,15 @@ struct JobStoreEngineTests {
         #expect(updated.lastProgressAt != nil)
     }
 
+    @Test("setActualConnectionCount records the engine's chosen connection count")
+    func setActualConnectionCountRecords() throws {
+        let store = JobStore()
+        let job = queuedJob(store)
+        _ = try store.start(id: job.id)
+        let updated = try store.setActualConnectionCount(id: job.id, 8)
+        #expect(updated.actualConnectionCount == 8)
+    }
+
     @Test("complete moves an active job to completed with a completion time")
     func completeFinishesActiveJob() throws {
         let store = JobStore()
