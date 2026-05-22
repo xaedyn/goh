@@ -23,31 +23,61 @@ The default workload URLs are baked into `competitive.sh`; override either with
 Range-parallelism only helps when one connection does not already saturate the
 client's bandwidth — so the benchmark needs both cases.
 
-**Saturated** — a fast CDN that fills the pipe on one connection. `goh`,
-`aria2c`, and `curl` converge here, and that convergence is the *correct*
-result, not a regression.
+**Saturated** — a real file on a fast CDN that fills the pipe on one
+connection. `goh`, `aria2c`, and `curl` converge here, and that convergence is
+the *correct* result, not a regression.
 
-> Default: `https://speed.cloudflare.com/__down?bytes=536870912` (512 MiB).
-> **Why:** Cloudflare's anycast CDN serves the `__down` speed-test endpoint at
-> full link speed on a single connection — probed 2026-05-22, 318 Mbps
-> single-stream. A synthetic always-fast endpoint is *ideal* here: it removes
-> server-side variability, isolating the one question the saturated case asks —
-> does `goh`'s range-parallel overhead cost anything once one connection already
-> fills the pipe? (Very large `bytes` values are rejected — keep it ≤ ~1 GiB.)
+> Default: `https://dl.google.com/android/repository/android-ndk-r27c-linux.zip`
+> (633 MiB) — the Android NDK r27c archive.
+> **Why:** the saturated case asks one question — once a single connection
+> already fills the link, does `goh`'s range-parallel overhead *cost* anything?
+> Answering it needs a file served fast enough to saturate the pipe on one
+> stream. `dl.google.com` is a hyperscale CDN that does that on a 300+ Mbps
+> link; the NDK archive is large, static, permanently hosted (Google keeps every
+> released NDK), and served directly — no redirect — with `Accept-Ranges:
+> bytes`. Probed 2026-05-22: `200`, ranged request `206`.
+>
+> **Considered — a synthetic speed-test endpoint** (`speed.cloudflare.com/__down`
+> and the like), the original default. A generator removes all server-side
+> variability, which made it the obvious first pick — but it has no underlying
+> file to range *into*, so it rejects any request carrying a `Range` header:
+> `speed.cloudflare.com/__down` returns `403 Forbidden` to a ranged request
+> (probed 2026-05-22, with and without a browser `User-Agent`), and a
+> range-parallel downloader cannot run against it at all. The saturated workload
+> must be a real file. The modest server-side variability of a CDN-hosted file
+> is the price of measuring the actual question; the `RUNS`-median is the
+> smoothing, so the file is sized large enough that the transfer dominates
+> per-run fixed overhead.
 
 **Amenable** — a host that **rate-limits per connection** (or is latency-bound),
 so N connections move toward N times the bytes. This is the load-bearing
 workload: the ≥ 10 % target is measured here.
 
-> Default: `https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2`
-> (~350 MiB; the `latest` path is stable across point releases).
-> **Why:** the `cloud.debian.org` redirector hands the request to a community /
-> academic mirror, and community mirrors commonly cap per-connection bandwidth
-> — probed 2026-05-22, it resolved to a `umu.se` mirror at ~23 MB/s
-> single-stream, below the test link's ceiling. **This is a researched
-> candidate, not a guaranteed-amenable URL** — per-connection limiting is a
-> server property that is undocumented, changes over time, and varies by route,
-> so it cannot be frozen into a URL. The harness verifies it at run time (next).
+> Default: `https://archive.org/download/his_girl_friday/his_girl_friday.mp4`
+> (~549 MiB) — *His Girl Friday* (1940), public domain, in the Internet
+> Archive's `feature_films` collection.
+> **Why:** the Internet Archive serves items from its own infrastructure, not a
+> hyperscale CDN, so single-connection throughput is genuinely modest — the
+> per-connection ceiling the amenable case needs — and the catalog is permanent,
+> so the item does not rotate. Probed 2026-05-22: `200`, `Accept-Ranges: bytes`,
+> ranged request `206`.
+>
+> The `archive.org/download/<id>/<file>` form is a *catalog* URL — it issues one
+> 302 to whichever data node currently holds the item. That redirect is fine,
+> and the distinction matters: the data-node URL (`ia*.us.archive.org/…`) is
+> *not* stable — it varied between two probes seconds apart — so the catalog URL
+> is the stable form, and one redirect is the price of that stability. It is
+> **not** the redirect *chain* a distro-mirror network produces: the catalog 302
+> is deterministic, so every tool on every run follows the same logic to the
+> same effective node; a mirror redirector can land different tools on different
+> mirrors and confound the comparison. One predictable redirect is fine; a
+> nondeterministic redirect chain is not.
+>
+> **This is a researched candidate, not a guaranteed-amenable URL** —
+> per-connection limiting is an undocumented, route-dependent server property
+> that cannot be frozen into a URL. A live probe confirms only that the URL is
+> reachable and honours `Range`; the amenability property itself is checked at
+> run time (next).
 
 ### Amenability is verified at run time — not assumed
 
@@ -57,20 +87,30 @@ least 1.5× faster, the workload was not genuinely per-connection-limited — th
 "amenable" run silently became a second saturated run — and the harness prints a
 **WARN**: the ≥ 10 % comparison is not valid against that URL.
 
-If the default `AMENABLE_URL` WARNs, pick another and re-run. Candidate sources,
-ranked by structural fit:
-
-1. **`archive.org` items** — served from the Internet Archive's own
-   infrastructure, not a hyperscale CDN; single-connection throughput is
-   genuinely modest and the catalog is permanent (files do not rotate). Any
-   public-domain item ≥ 500 MB (`archive.org/download/<id>/<file>`).
-2. **A community / academic Linux-distro mirror** — not the CDN-fronted primary.
-   A current ISO (~1–2 GB) from a mirror the WARN check confirms is limited.
-3. **A large GitHub release asset** (≥ 500 MB) — GitHub serves release downloads
-   via a CDN where per-connection / per-IP throttling is commonly observed.
+If the default `AMENABLE_URL` WARNs, override it with a **fallback candidate**
+(below) and re-run.
 
 Record the actual URLs, the machine (`uname -mrs`, CPU, link speed), and the
 network conditions alongside the numbers — the harness prints the first two.
+
+### Fallback candidates — if the amenable default WARNs
+
+Per-connection limiting cannot be guaranteed (above), so the amenable default
+can WARN. When it does, override `AMENABLE_URL` with another candidate and
+re-run. Sources, ranked by structural fit:
+
+1. **Another `archive.org` item** — a different public-domain item ≥ 500 MB
+   (`archive.org/download/<id>/<file>`), for the same structural reason the
+   default is one: Internet Archive infrastructure rather than a hyperscale CDN,
+   so single-connection throughput is genuinely modest, and a permanent catalog.
+   The `feature_films`, `opensource_movies`, and `audio` collections all hold
+   items in range.
+2. **A community / academic Linux-distro mirror** — not the CDN-fronted primary;
+   a current ISO (~1–2 GB) from a mirror the WARN check confirms is limited.
+   Prefer a direct mirror URL — a mirror *redirector* is the nondeterministic
+   redirect chain the amenable rationale above warns against.
+3. **A large GitHub release asset** (≥ 500 MB) — GitHub serves release downloads
+   via a CDN where per-connection / per-IP throttling is commonly observed.
 
 ### Targets — 3b's definition of done
 

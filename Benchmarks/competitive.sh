@@ -24,8 +24,8 @@ BENCH="$ROOT/.build/release/goh-bench"
 # Default workloads — see Benchmarks/README.md for the rationale and the ranked
 # fallback candidates. The amenable default is a researched candidate, not a
 # guaranteed-amenable URL; the amenability check below validates it each run.
-AMENABLE_URL="${AMENABLE_URL:-https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2}"
-SATURATED_URL="${SATURATED_URL:-https://speed.cloudflare.com/__down?bytes=536870912}"
+AMENABLE_URL="${AMENABLE_URL:-https://archive.org/download/his_girl_friday/his_girl_friday.mp4}"
+SATURATED_URL="${SATURATED_URL:-https://dl.google.com/android/repository/android-ndk-r27c-linux.zip}"
 
 [[ -x "$BENCH" ]] || { echo "build first: swift build -c release" >&2; exit 1; }
 command -v aria2c >/dev/null || { echo "missing: aria2c (brew install aria2)" >&2; exit 1; }
