@@ -45,6 +45,29 @@ struct CommandDispatcherTests {
         #expect(summary.requestedConnectionCount == 4)
     }
 
+    @Test("add rejects a zero connection count")
+    func addRejectsZeroConnectionCount() {
+        let dispatcher = CommandDispatcher(store: JobStore())
+        let request = AddRequest(url: "u", destination: "/tmp/x", connectionCount: 0)
+        guard case .failure(let error) = dispatcher.reply(to: .add(request: request)) else {
+            Issue.record("expected .failure")
+            return
+        }
+        #expect(error.code == .invalidArgument)
+        #expect(error.message?.contains("connectionCount") == true)
+    }
+
+    @Test("add caps a connection count above sixteen")
+    func addCapsConnectionCountAboveSixteen() {
+        let dispatcher = CommandDispatcher(store: JobStore())
+        let request = AddRequest(url: "u", destination: "/tmp/x", connectionCount: 17)
+        guard case .job(let summary) = dispatcher.reply(to: .add(request: request)) else {
+            Issue.record("expected .job")
+            return
+        }
+        #expect(summary.requestedConnectionCount == 16)
+    }
+
     @Test("ls replies with every job in creation order")
     func lsListsJobs() {
         let dispatcher = CommandDispatcher(store: JobStore())

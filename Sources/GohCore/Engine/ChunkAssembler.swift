@@ -58,6 +58,7 @@ public final class ChunkAssembler: Sendable {
 
     private let file: DownloadFile
     private let ranges: [ByteRange]
+    private let expectedFixedLength: UInt64?
     private let written: Mutex<[UInt64]>
     private let failure = Mutex<GohError?>(nil)
     private let finished = Mutex<Bool>(false)
@@ -67,6 +68,7 @@ public final class ChunkAssembler: Sendable {
     public init(file: DownloadFile, ranges: [ByteRange]) {
         self.file = file
         self.ranges = ranges
+        self.expectedFixedLength = Self.fixedLength(of: ranges)
         self.written = Mutex(Array(repeating: 0, count: ranges.count))
         (self.ticks, self.tick) = AsyncStream.makeStream(
             of: Void.self, bufferingPolicy: .bufferingNewest(1))
@@ -110,11 +112,22 @@ public final class ChunkAssembler: Sendable {
                         code: .destinationUnwritable,
                         message: "reading back the download to hash it: \(error)"))
                 }
-                if chunk.isEmpty { break }
+                if chunk.isEmpty {
+                    return .failed(GohError(
+                        code: .connectionFailed,
+                        message: "the download file ended before the reported frontier"))
+                }
                 hasher.update(data: chunk)
                 hashedUpTo += UInt64(chunk.count)
             }
-            if finished.withLock({ $0 }) && hashedUpTo == currentFrontier() {
+            let finishedNow = finished.withLock { $0 }
+            let finalFrontier = currentFrontier()
+            if finishedNow, let expectedFixedLength, finalFrontier < expectedFixedLength {
+                return .failed(GohError(
+                    code: .connectionFailed,
+                    message: "download ended after \(finalFrontier) of \(expectedFixedLength) expected bytes"))
+            }
+            if finishedNow && hashedUpTo == finalFrontier {
                 let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
                 return .digest(digest)
             }
@@ -133,5 +146,16 @@ public final class ChunkAssembler: Sendable {
             if snapshot[index] < ranges[index].length { break }
         }
         return frontier
+    }
+
+    private static func fixedLength(of ranges: [ByteRange]) -> UInt64? {
+        var total: UInt64 = 0
+        for range in ranges {
+            guard range.length != .max else { return nil }
+            let added = total.addingReportingOverflow(range.length)
+            guard !added.overflow else { return nil }
+            total = added.partialValue
+        }
+        return total
     }
 }

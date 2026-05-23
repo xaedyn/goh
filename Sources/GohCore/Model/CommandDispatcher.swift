@@ -9,9 +9,10 @@ import Foundation
 public struct CommandDispatcher: Sendable {
 
     /// The frozen default connection count when `add` omits it (`DESIGN.md` §4).
-    /// The §3.1 valid-range clamp/reject is deferred to the engine slice, where
-    /// the count becomes operative.
     public static let defaultConnectionCount: UInt8 = 8
+
+    /// The maximum accepted connection count (`DESIGN.md` §3.1).
+    public static let maximumConnectionCount: UInt8 = 16
 
     private let store: JobStore
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
@@ -33,12 +34,19 @@ public struct CommandDispatcher: Sendable {
         do {
             switch command {
             case .add(let request):
+                let requestedConnectionCount = request.connectionCount
+                    ?? Self.defaultConnectionCount
+                guard requestedConnectionCount > 0 else {
+                    return .failure(GohError(
+                        code: .invalidArgument,
+                        message: "connectionCount must be 1-16; got 0"))
+                }
                 let job = store.create(
                     url: request.url,
                     destination: request.destination
                         ?? Self.defaultDestination(forURL: request.url),
-                    requestedConnectionCount: request.connectionCount
-                        ?? Self.defaultConnectionCount)
+                    requestedConnectionCount: min(
+                        requestedConnectionCount, Self.maximumConnectionCount))
                 onJobQueued?(job.id)
                 return .job(job)
 

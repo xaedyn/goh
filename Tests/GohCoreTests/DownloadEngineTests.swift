@@ -186,4 +186,49 @@ struct DownloadEngineTests {
 
         #expect(store.job(id: job.id)?.state == .failed)
     }
+
+    @Test("a range that ends before its advertised length fails the whole job")
+    func truncatedRangeFailsJob() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload, truncateRangeStartingAt: 1 << 20)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .failed)
+        #expect(final?.error?.code == .connectionFailed)
+    }
+
+    @Test("a ranged response with a mismatched Content-Range fails the whole job")
+    func mismatchedContentRangeFailsJob() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            contentRangeOverride: [
+                1 << 20: "bytes 0-\((2 << 20) - 1)/\(payload.count)",
+            ])
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .failed)
+        #expect(final?.error?.code == .connectionFailed)
+    }
 }

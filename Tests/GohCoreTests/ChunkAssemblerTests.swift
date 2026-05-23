@@ -62,6 +62,28 @@ struct ChunkAssemblerTests {
         #expect(await result == .digest(sha256Hex(payload)))
     }
 
+    @Test("a fixed-length range that finishes short fails instead of digesting partial bytes")
+    func incompleteFixedLengthRangeFails() async throws {
+        let url = try temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let payload = Data("short".utf8)
+        let file = try DownloadFile(path: url.path, expectedSize: 100)
+        let assembler = ChunkAssembler(
+            file: file, ranges: [ByteRange(start: 0, length: 100)])
+        async let result = assembler.hashToCompletion()
+
+        try file.write(payload, at: 0)
+        assembler.advance(range: 0, writtenBytes: UInt64(payload.count))
+        assembler.finish()
+
+        guard case .failed(let error) = await result else {
+            Issue.record("expected .failed for an incomplete fixed-length range")
+            return
+        }
+        #expect(error.code == .connectionFailed)
+    }
+
     @Test("a recorded failure aborts the assembler")
     func recordedFailureAborts() async throws {
         let url = try temporaryFile()

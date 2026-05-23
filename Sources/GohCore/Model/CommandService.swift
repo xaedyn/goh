@@ -26,6 +26,25 @@ public struct CommandService: Sendable {
     /// the reply cannot fail for these well-formed payload types.
     public func handle(_ request: XPCDictionary) -> XPCDictionary? {
         request.withUnsafeUnderlyingDictionary { requestObject -> XPCDictionary? in
+            guard let header = try? Self.decodeHeader(requestObject) else {
+                return nil
+            }
+            if header.protocolVersion != Self.protocolVersion {
+                return try? XPCDictionary(Self.envelope(
+                    requestID: header.requestID,
+                    messageType: .error,
+                    payload: GohError(
+                        code: .protocolVersionMismatch,
+                        message: "client protocol \(header.protocolVersion) does not match daemon protocol \(Self.protocolVersion)")))
+            }
+            if header.messageType != .request {
+                return try? XPCDictionary(Self.envelope(
+                    requestID: header.requestID,
+                    messageType: .error,
+                    payload: GohError(
+                        code: .invalidArgument,
+                        message: "expected request messageType, got \(header.messageType.rawValue)")))
+            }
             guard
                 let envelope = try? GohEnvelope<Command>(xpcDictionary: requestObject),
                 let reply = try? Self.encodeReply(
@@ -36,6 +55,34 @@ public struct CommandService: Sendable {
             }
             return XPCDictionary(reply)
         }
+    }
+
+    private struct Header {
+        var protocolVersion: UInt32
+        var requestID: UUID
+        var messageType: MessageType
+    }
+
+    /// Reads the frozen envelope keys needed for compatibility checks before
+    /// decoding `payload`, so a future-version request with an incompatible
+    /// payload still receives the v1 mismatch error.
+    private static func decodeHeader(_ request: xpc_object_t) throws -> Header {
+        let rawVersion = try XPCEnvelope.uint64(request, XPCEnvelope.protocolVersionKey)
+        guard rawVersion <= UInt64(UInt32.max) else {
+            throw XPCEnvelopeError.protocolVersionOutOfRange(rawVersion)
+        }
+        let rawRequestID = try XPCEnvelope.string(request, XPCEnvelope.requestIDKey)
+        guard let requestID = UUID(uuidString: rawRequestID) else {
+            throw XPCEnvelopeError.malformedRequestID(rawRequestID)
+        }
+        let rawMessageType = try XPCEnvelope.string(request, XPCEnvelope.messageTypeKey)
+        guard let messageType = MessageType(rawValue: rawMessageType) else {
+            throw XPCEnvelopeError.unknownMessageType(rawMessageType)
+        }
+        return Header(
+            protocolVersion: UInt32(rawVersion),
+            requestID: requestID,
+            messageType: messageType)
     }
 
     /// Encodes `outcome` as a reply envelope dictionary, correlated by

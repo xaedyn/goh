@@ -68,4 +68,46 @@ struct CommandServiceTests {
         #expect(reply.payload.jobs.count == 1)
         #expect(reply.payload.jobs.first?.url == "https://example.com/a")
     }
+
+    @Test("a request with an incompatible protocol version replies with protocolVersionMismatch")
+    func protocolVersionMismatchRepliesWithError() throws {
+        let (listener, client) = try makeChannel()
+        defer { listener.cancel(); client.cancel() }
+
+        let requestID = UUID()
+        let request = GohEnvelope(
+            protocolVersion: 2,
+            requestID: requestID,
+            messageType: .request,
+            payload: Command.ls)
+        let replyDictionary = try client.sendSync(XPCDictionary(request.xpcDictionary()))
+        let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<GohError>(xpcDictionary: object)
+        }
+
+        #expect(reply.requestID == requestID)
+        #expect(reply.messageType == .error)
+        #expect(reply.payload.code == .protocolVersionMismatch)
+    }
+
+    @Test("a non-request envelope replies with invalidArgument")
+    func nonRequestEnvelopeRepliesWithError() throws {
+        let (listener, client) = try makeChannel()
+        defer { listener.cancel(); client.cancel() }
+
+        let requestID = UUID()
+        let request = GohEnvelope(
+            protocolVersion: 1,
+            requestID: requestID,
+            messageType: .notification,
+            payload: Command.ls)
+        let replyDictionary = try client.sendSync(XPCDictionary(request.xpcDictionary()))
+        let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<GohError>(xpcDictionary: object)
+        }
+
+        #expect(reply.requestID == requestID)
+        #expect(reply.messageType == .error)
+        #expect(reply.payload.code == .invalidArgument)
+    }
 }
