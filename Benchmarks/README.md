@@ -53,31 +53,35 @@ the *correct* result, not a regression.
 so N connections move toward N times the bytes. This is the load-bearing
 workload: the ≥ 10 % target is measured here.
 
-> Default: `https://archive.org/download/his_girl_friday/his_girl_friday.mp4`
-> (~549 MiB) — *His Girl Friday* (1940), public domain, in the Internet
-> Archive's `feature_films` collection.
-> **Why:** the Internet Archive serves items from its own infrastructure, not a
-> hyperscale CDN, so single-connection throughput is genuinely modest — the
-> per-connection ceiling the amenable case needs — and the catalog is permanent,
-> so the item does not rotate. Probed 2026-05-22: `200`, `Accept-Ranges: bytes`,
-> ranged request `206`.
+> Default: `https://saimei.ftp.acc.umu.se/debian-cd/current/amd64/iso-cd/debian-13.5.0-amd64-netinst.iso`
+> (~791 MiB) — the Debian 13.5.0 net-install ISO, served directly from
+> `saimei`, a machine in the Umeå University FTP-cluster mirror.
+> **Why:** academic distro mirrors commonly cap per-connection bandwidth so
+> volunteer-funded uplinks stay fair across users; that per-connection ceiling
+> is the amenable case's load-bearing property. The URL is the direct mirror
+> host — zero redirects, not a mirror redirector that would route different
+> connections to different backends nondeterministically and confound the
+> comparison. Probed 2026-05-22: `200`, `Accept-Ranges: bytes`, ranged request
+> `206`.
 >
-> The `archive.org/download/<id>/<file>` form is a *catalog* URL — it issues one
-> 302 to whichever data node currently holds the item. That redirect is fine,
-> and the distinction matters: the data-node URL (`ia*.us.archive.org/…`) is
-> *not* stable — it varied between two probes seconds apart — so the catalog URL
-> is the stable form, and one redirect is the price of that stability. It is
-> **not** the redirect *chain* a distro-mirror network produces: the catalog 302
-> is deterministic, so every tool on every run follows the same logic to the
-> same effective node; a mirror redirector can land different tools on different
-> mirrors and confound the comparison. One predictable redirect is fine; a
-> nondeterministic redirect chain is not.
+> **Considered — an `archive.org` item.** The prior amenable default
+> (`his_girl_friday.mp4` in `feature_films`) was rotated out: against
+> `URLSession`'s HTTP/2 multiplexed streams the Internet Archive served 1–2
+> streams at full speed and rate-limited the remaining 6 to ~430 KB/s,
+> reproducible across machines. `aria2c` on HTTP/1.1 with separate TCP
+> connections was unaffected on the same workload, but `URLSession` does not
+> cleanly expose a knob to force the equivalent connection model — so the
+> workload was unmeasurable as "amenable" against `goh` in particular. `goh`
+> single-stream-vs-`aria2c`-multi-stream comparison was distorted, not by
+> `goh`'s engine, but by `URLSession`-vs-archive.org's stream distribution.
+> archive.org items remain a reasonable fallback for non-`URLSession`
+> consumers and for cross-host diagnostic comparison.
 >
 > **This is a researched candidate, not a guaranteed-amenable URL** —
-> per-connection limiting is an undocumented, route-dependent server property
-> that cannot be frozen into a URL. A live probe confirms only that the URL is
-> reachable and honours `Range`; the amenability property itself is checked at
-> run time (next).
+> per-connection limiting is an undocumented server property that cannot be
+> frozen into a URL. A live probe confirms only that the URL is reachable and
+> honours `Range`; the amenability property itself is checked at run time
+> (next).
 
 ### Each workload's assumption is verified at run time — not assumed
 
@@ -113,18 +117,20 @@ Per-connection limiting cannot be guaranteed (above), so the amenable default
 can WARN. When it does, override `AMENABLE_URL` with another candidate and
 re-run. Sources, ranked by structural fit:
 
-1. **Another `archive.org` item** — a different public-domain item ≥ 500 MB
-   (`archive.org/download/<id>/<file>`), for the same structural reason the
-   default is one: Internet Archive infrastructure rather than a hyperscale CDN,
-   so single-connection throughput is genuinely modest, and a permanent catalog.
-   The `feature_films`, `opensource_movies`, and `audio` collections all hold
-   items in range.
-2. **A community / academic Linux-distro mirror** — not the CDN-fronted primary;
-   a current ISO (~1–2 GB) from a mirror the WARN check confirms is limited.
-   Prefer a direct mirror URL — a mirror *redirector* is the nondeterministic
-   redirect chain the amenable rationale above warns against.
-3. **A large GitHub release asset** (≥ 500 MB) — GitHub serves release downloads
-   via a CDN where per-connection / per-IP throttling is commonly observed.
+1. **Another community / academic Linux-distro mirror** — a different ISO from
+   a different mirror, or the same mirror's larger DVD ISO. Direct host URLs
+   only (not mirror *redirectors*). Volunteer-funded academic mirrors commonly
+   per-connection-limit, which is the amenable property the comparison needs.
+2. **A large GitHub release asset** (≥ 500 MB) — GitHub serves release
+   downloads via a CDN where per-connection / per-IP throttling is commonly
+   observed.
+3. **An `archive.org` item** — single-connection throughput is genuinely
+   modest, served from Internet Archive infrastructure rather than a
+   hyperscale CDN, and the catalog is permanent. Caveat: against
+   `URLSession`-based clients the Archive's HTTP/2 stream distribution is
+   uneven and inflates the apparent `goh`-vs-`aria2c` ratio compared to other
+   amenable hosts (see the amenable rationale above). Useful for cross-host
+   diagnostic comparison; misleading as the load-bearing amenable workload.
 
 ### Targets — 3b's definition of done
 
