@@ -20,7 +20,8 @@ extension URLSession {
     /// or throws on transport failure. Cancelling the consuming task cancels
     /// the underlying data task.
     func streamingResponse(
-        for request: URLRequest
+        for request: URLRequest,
+        onMetrics: (@Sendable (URLSessionTaskTransactionMetrics) -> Void)? = nil
     ) async throws -> (HTTPURLResponse, AsyncThrowingStream<Data, Error>) {
         var streamContinuation: AsyncThrowingStream<Data, Error>.Continuation!
         let stream = AsyncThrowingStream<Data, Error>(
@@ -33,7 +34,8 @@ extension URLSession {
             (responseContinuation: CheckedContinuation<HTTPURLResponse, Error>) in
             let delegate = StreamingDataTaskDelegate(
                 onResponse: responseContinuation,
-                onChunk: streamContinuation)
+                onChunk: streamContinuation,
+                onMetrics: onMetrics)
             let task = self.dataTask(with: request)
             task.delegate = delegate
             streamContinuation.onTermination = { @Sendable [weak task] _ in
@@ -58,13 +60,16 @@ private final class StreamingDataTaskDelegate:
 
     private let state: Mutex<State>
     private let streamContinuation: AsyncThrowingStream<Data, Error>.Continuation
+    private let onMetrics: (@Sendable (URLSessionTaskTransactionMetrics) -> Void)?
 
     init(
         onResponse: CheckedContinuation<HTTPURLResponse, Error>,
-        onChunk: AsyncThrowingStream<Data, Error>.Continuation
+        onChunk: AsyncThrowingStream<Data, Error>.Continuation,
+        onMetrics: (@Sendable (URLSessionTaskTransactionMetrics) -> Void)?
     ) {
         self.state = Mutex(State(responseContinuation: onResponse))
         self.streamContinuation = onChunk
+        self.onMetrics = onMetrics
         super.init()
     }
 
@@ -108,5 +113,17 @@ private final class StreamingDataTaskDelegate:
         } else {
             streamContinuation.finish()
         }
+    }
+
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask,
+        didFinishCollecting metrics: URLSessionTaskMetrics
+    ) {
+        // Multiple transactionMetrics on redirects; the last is the response
+        // that actually delivered the body.
+        guard let callback = onMetrics,
+              let final = metrics.transactionMetrics.last
+        else { return }
+        callback(final)
     }
 }

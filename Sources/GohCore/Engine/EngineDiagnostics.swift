@@ -113,6 +113,18 @@ final class EngineDiagnostics: Sendable {
         return result
     }
 
+    /// Records the network protocol negotiated for `index`'s request — `"h3"`,
+    /// `"h2"`, `"http/1.1"`, etc. `URLSession` doesn't expose the negotiated
+    /// protocol through the synchronous response; it arrives post-hoc via the
+    /// task's transaction metrics. Used to diagnose protocol regressions
+    /// (e.g., the HTTP/3 trial that regressed saturated against `dl.google.com`
+    /// — the trace would have told us whether `h3` actually negotiated or
+    /// `URLSession` fell back to `h2`).
+    func recordProtocol(_ index: Int, networkProtocolName name: String?) {
+        guard enabled else { return }
+        emit("range \(index) protocol=\(name ?? "<unknown>")")
+    }
+
     /// Emits the download-level summary line — the peak concurrent range count
     /// reached over the lifetime of the download.
     func summary() {

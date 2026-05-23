@@ -90,7 +90,11 @@ public struct DownloadEngine: Sendable {
         // whole file and the engine consumes it as a single connection.
         var request = URLRequest(url: url)
         request.setValue("bytes=0-", forHTTPHeaderField: "Range")
-        let (response, stream) = try await session.streamingResponse(for: request)
+        let (response, stream) = try await session.streamingResponse(
+            for: request,
+            onMetrics: { @Sendable [trace] metrics in
+                trace.recordProtocol(0, networkProtocolName: metrics.networkProtocolName)
+            })
         switch response.statusCode {
         case 206:
             guard let total = Self.totalFromContentRange(response) else {
@@ -272,7 +276,11 @@ public struct DownloadEngine: Sendable {
         var request = URLRequest(url: url)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
-        let (http, stream) = try await session.streamingResponse(for: request)
+        let (http, stream) = try await session.streamingResponse(
+            for: request,
+            onMetrics: { @Sendable [trace] metrics in
+                trace.recordProtocol(index, networkProtocolName: metrics.networkProtocolName)
+            })
         guard http.statusCode == 206 else {
             throw GohError(
                 code: .httpStatus,
