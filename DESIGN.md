@@ -89,7 +89,9 @@ and the string form matches the manifest's existing style.
 
 _The HTTP transport — single-connection, then range-parallel — is built in the
 v0.1 download-engine slices: range-based parallelism, 8 connections default.
-HTTP/3 is a v0.2 design pass._
+HTTP/3 is enabled per request via `URLRequest.assumesHTTP3Capable`; URLSession
+negotiates `h3` via ALPN where the server offers it, falling back to `h2` then
+`http/1.1` automatically._
 
 ### Transport mechanism revision
 
@@ -126,16 +128,16 @@ Two non-obvious `URLSession` behaviours bit the engine on real-network testing
 and forced specific configuration. Both apply to every download and are pinned
 in `GohCore.downloadSessionConfiguration()`.
 
-**`HEAD` returns `expectedContentLength = -1`.**
-`URLResponse.expectedContentLength` is populated from the `Content-Length`
-header for `GET` responses but returns `-1` (`NSURLResponseUnknownLength`) for
-`HEAD` responses even when the server sent the header (empirically verified
-on macOS 26 against `dl.google.com`). The capability probe therefore reads
-`Content-Length` from `response.value(forHTTPHeaderField:)` directly, not
-from `expectedContentLength`. The unit-test `MockURLProtocol` builds its
-`HTTPURLResponse` via `headerFields:` and so populates
-`expectedContentLength` correctly, which hid the quirk in CI until a
-real-network diagnostic run surfaced it.
+**`HEAD` returns `expectedContentLength = -1`** *(historical).*
+`URLResponse.expectedContentLength` is populated from `Content-Length` for
+`GET` responses but returns `-1` (`NSURLResponseUnknownLength`) for `HEAD`
+responses even when the server sent the header (empirically verified on
+macOS 26 against `dl.google.com`). The engine *used to* send a `HEAD`
+capability probe and worked around this by parsing `Content-Length` from
+`response.value(forHTTPHeaderField:)` directly. The engine now skips `HEAD`
+entirely (see *Speculative ranged GET* below), so the quirk no longer bites
+in practice. It's recorded here because the next engineer reaching for
+`expectedContentLength` on a `HEAD` response should know it's unreliable.
 
 **Auto-decompression is incompatible with ranged downloads.** `URLSession`'s
 default `Accept-Encoding: gzip, deflate, br` triggers transparent
@@ -149,6 +151,34 @@ subsequent ranges' territory on disk. A download manager wants raw bytes
 regardless — the file on disk should match what the server serves — so the
 session configuration sends `Accept-Encoding: identity`, opting out of HTTP
 content-encoding entirely.
+
+### Speculative ranged GET + HTTP/3
+
+Two engine choices for protocol/request shape:
+
+**Skip the `HEAD` probe via a speculative ranged GET.** The first request is
+`Range: bytes=0-`, not `HEAD`. A `206` response carries the total via
+`Content-Range` *and* starts range 0's bytes in the same round-trip — one RTT
+saved vs the older `HEAD`-then-`GET`. Range 0 reuses that stream (truncated
+at its allotted length via a `break` out of the consume loop, which cancels
+the task and closes the connection slot); ranges 1..N-1 issue fresh precise
+ranged `GET`s. A `200` response means the server didn't honour `Range`, so
+the stream is the full body and the engine consumes it as a single
+connection — no second request needed.
+
+The downside is a small bandwidth waste at cancellation time — bytes already
+in flight on the open-ended stream when it's truncated, typically ≤ one TCP
+window. The upside compounds: one RTT saved on every download.
+
+**HTTP/3 per request.** Each `URLRequest` sets
+`URLRequest.assumesHTTP3Capable = true`, so `URLSession` advertises `h3` in
+ALPN and the server picks the highest version it offers (`h3` → `h2` →
+`http/1.1` automatically). HTTP/3 brings 0-RTT TLS resumption on repeat
+connections to the same host, independent per-stream flow control (no
+head-of-line blocking across streams the way HTTP/2 over TCP suffers from),
+and connection migration across network changes.
+`URLSessionConfiguration` has no session-wide knob for this on the current
+SDK; the per-request property is the only path.
 
 ## Persistence
 

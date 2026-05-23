@@ -127,13 +127,26 @@ amenable — three runs in tight agreement, structural not noise).
   (`writeMs`+`reportMs` per range stay single-digit milliseconds); and
   AsyncBytes byte-iteration (chunked Data fix didn't change the gap).
 
-  **Next:** amenable URL rotated to the Debian 13.5.0 net-install ISO via
-  `saimei.ftp.acc.umu.se` — direct academic mirror host, zero redirects.
-  User re-runs `Benchmarks/competitive.sh` against the new default. Three
-  outcomes: (1) check PASSes + `goh` ≥10% over `aria2c` → validated 3b,
-  mark #14 ready; (2) check PASSes but goh misses ≥10% → cross-host
-  evidence the gap is real, accept saturated parity for v0.1 per the
-  README's escape clause and file the URLSession-HTTP/2 behaviour as a
+  **Next:** the user re-runs `Benchmarks/competitive.sh` against three
+  fresh engine optimizations landed this round, aimed at closing the
+  saturated 295 ms gap to `curl` and exceeding `aria2c` ≥10% on amenable:
+
+  1. **Speculative ranged GET.** First request is `Range: bytes=0-`, not
+     `HEAD`. The 206 response carries `Content-Range` (total) AND starts
+     range 0's bytes — one RTT saved per download.
+  2. **HTTP/3 per request** via `URLRequest.assumesHTTP3Capable = true`.
+     URLSession negotiates `h3` via ALPN (falling back to `h2` then
+     `http/1.1` silently). Brings 0-RTT TLS resumption, independent
+     per-stream flow control (the HTTP/2-on-archive.org head-of-line
+     issue is structurally addressed), connection migration.
+  3. **1 MiB flush buffer** (was 64 KiB) — ~16× fewer `pwrite`s; matches
+     the cumulative-fsync checkpoint.
+
+  101 tests still pass; local end-to-end download verified. Same three
+  outcomes by the framework: (1) check PASS + `goh` ≥10% over `aria2c` →
+  validated 3b, mark #14 ready; (2) check PASS but `goh` misses ≥10% →
+  cross-host evidence the gap is real, accept saturated parity per the
+  README's escape clause and file the residual amenable behaviour as a
   v0.2 investigation; (3) check WARNs → rotate to fallback #2 (large
   GitHub release asset). #14 stays in draft until one outcome lands.
 
@@ -156,8 +169,11 @@ The residual amenable gap (~5× slower than `aria2c` on archive.org) appears
 to be URLSession's HTTP/2-multiplexed behaviour against archive.org's
 per-stream rate-limiter — reproducible locally, not a goh code issue.
 
-Next: amenable URL rotated to the Debian 13.5.0 net-install ISO from
-`saimei.ftp.acc.umu.se` (direct academic mirror, zero redirects). User
-re-runs `Benchmarks/competitive.sh` against the new default; see the three
-outcomes under Pending questions. #14 stays in draft until one lands. 101
-tests; CI green. Next slice after 3b: 3c — error / retry / cancellation.
+Next: three engine optimizations shipped this round — speculative ranged
+GET (saves one RTT per download by skipping the HEAD probe), HTTP/3 per
+request (`URLRequest.assumesHTTP3Capable`; URLSession negotiates h3 via
+ALPN), 1 MiB flush buffer (16× fewer pwrites). 101 tests; local end-to-end
+verified. User re-runs `Benchmarks/competitive.sh` against the rotated
+amenable + the new engine; see the three outcomes under Pending questions.
+#14 stays in draft until one lands. Next slice after 3b: 3c — error /
+retry / cancellation.
