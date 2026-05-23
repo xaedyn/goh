@@ -89,7 +89,8 @@ and the string form matches the manifest's existing style.
 
 _The HTTP transport — single-connection, then range-parallel — is built in the
 v0.1 download-engine slices: range-based parallelism, 8 connections default.
-HTTP/3 is a v0.2 design pass._
+HTTP/3 is *not* opted into for v0.1 (a per-request `assumesHTTP3Capable` trial
+regressed the saturated workload — see *URLSession quirks* below)._
 
 ### Transport mechanism revision
 
@@ -119,6 +120,69 @@ integration. SDK verification against macOS 26 reverses that decision.
 
 The brief's reasoning was sound when written; it is moot once the macOS 26 API
 surface is real.
+
+### URLSession quirks the engine works around
+
+Two non-obvious `URLSession` behaviours bit the engine on real-network testing
+and forced specific configuration. Both apply to every download and are pinned
+in `GohCore.downloadSessionConfiguration()`.
+
+**`HEAD` returns `expectedContentLength = -1`** *(historical).*
+`URLResponse.expectedContentLength` is populated from `Content-Length` for
+`GET` responses but returns `-1` (`NSURLResponseUnknownLength`) for `HEAD`
+responses even when the server sent the header (empirically verified on
+macOS 26 against `dl.google.com`). The engine *used to* send a `HEAD`
+capability probe and worked around this by parsing `Content-Length` from
+`response.value(forHTTPHeaderField:)` directly. The engine now skips `HEAD`
+entirely (see *Speculative ranged GET* below), so the quirk no longer bites
+in practice. It's recorded here because the next engineer reaching for
+`expectedContentLength` on a `HEAD` response should know it's unreliable.
+
+**Auto-decompression is incompatible with ranged downloads.** `URLSession`'s
+default `Accept-Encoding: gzip, deflate, br` triggers transparent
+content-decoding on the response. For a whole response that is fine — but a
+`Range` request over a `Content-Encoding`'d body returns a *partial slice of
+the encoded stream*, not partial decoded bytes. `URLSession`'s decoder cannot
+start mid-gzip-stream, so every range past the first fails with
+`URLError.cannotDecodeRawData` (-1015); range 0 decodes a valid prefix whose
+decoded length differs from the requested encoded length, overshooting onto
+subsequent ranges' territory on disk. A download manager wants raw bytes
+regardless — the file on disk should match what the server serves — so the
+session configuration sends `Accept-Encoding: identity`, opting out of HTTP
+content-encoding entirely.
+
+### Speculative ranged GET
+
+The engine skips the `HEAD` probe. The first request is `Range: bytes=0-`,
+not `HEAD`. A `206` response carries the total via `Content-Range` *and*
+starts range 0's bytes in the same round-trip — one RTT saved vs the older
+`HEAD`-then-`GET`. Range 0 reuses that stream (truncated at its allotted
+length via a `break` out of the consume loop, which cancels the task and
+closes the connection slot); ranges 1..N-1 issue fresh precise ranged `GET`s.
+A `200` response means the server didn't honour `Range`, so the stream is
+the full body and the engine consumes it as a single connection — no second
+request needed.
+
+The downside is a small bandwidth waste at cancellation time — bytes already
+in flight on the open-ended stream when it's truncated, typically ≤ one TCP
+window. The upside compounds: one RTT saved on every download.
+
+### HTTP/3 — tried and reverted for v0.1
+
+`URLRequest.assumesHTTP3Capable = true` was tried as a per-request opt-in
+(URLSession has no session-wide knob on the current SDK) so URLSession would
+advertise `h3` in ALPN where servers offered it, with automatic fallback to
+`h2` then `http/1.1`. The intent was 0-RTT TLS resumption on repeats,
+independent per-stream flow control, and connection migration.
+
+In practice the change regressed the saturated workload measurably and with
+unusual run-to-run variance against `dl.google.com` (first run close to the
+HTTP/2 baseline, subsequent runs ~60 % slower) — the signature of
+server-side rate-limiting kicking in against HTTP/3 traffic from this
+network path. `aria2c` on HTTP/1.1 + `curl` on HTTP/2 stayed flat across the
+same runs. URLSession on HTTP/2 was actually the better steady-state choice
+on the workloads benchmarked. Reverted; HTTP/3 stays a v0.2 design pass when
+either a different host or more diagnostic time is available.
 
 ## Persistence
 

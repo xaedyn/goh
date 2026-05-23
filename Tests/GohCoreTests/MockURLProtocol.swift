@@ -2,21 +2,33 @@ import Foundation
 import Synchronization
 
 /// A `URLProtocol` that serves canned responses, so download-engine tests need
-/// no network. Each test stubs a unique URL; stubs accumulate harmlessly across
-/// a run, so there is no shared teardown to race on.
+/// no network. It answers `HEAD` capability probes and `Range` requests, so the
+/// range-parallel path is exercised end-to-end. Each test stubs a unique URL;
+/// stubs accumulate harmlessly across a run, so there is no shared teardown.
 final class MockURLProtocol: URLProtocol {
 
     struct Stub: Sendable {
         var statusCode: Int = 200
         var body: Data = Data()
         var failure: URLError?
+        /// Whether `HEAD` advertises `Accept-Ranges` and range requests succeed.
+        var acceptsRanges: Bool = true
+        /// A range request beginning at this offset fails — for failure tests.
+        var failRangeStartingAt: Int?
     }
 
     private static let stubs = Mutex<[String: Stub]>([:])
 
     /// Registers a successful response for `url`.
-    static func stub(_ url: String, status: Int = 200, body: Data) {
-        stubs.withLock { $0[url] = Stub(statusCode: status, body: body, failure: nil) }
+    static func stub(
+        _ url: String, status: Int = 200, body: Data,
+        acceptsRanges: Bool = true, failRangeStartingAt: Int? = nil
+    ) {
+        stubs.withLock {
+            $0[url] = Stub(
+                statusCode: status, body: body, failure: nil,
+                acceptsRanges: acceptsRanges, failRangeStartingAt: failRangeStartingAt)
+        }
     }
 
     /// Registers a transport failure for `url`.
@@ -40,17 +52,65 @@ final class MockURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: failure)
             return
         }
+        if request.httpMethod == "HEAD" {
+            deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: nil)
+            return
+        }
+        if let header = request.value(forHTTPHeaderField: "Range"),
+           let (start, end) = Self.parseRange(header),
+           stub.acceptsRanges, (200..<300).contains(stub.statusCode) {
+            if stub.failRangeStartingAt == start {
+                client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+                return
+            }
+            let upper = min(end, stub.body.count - 1)
+            let slice = Data(stub.body[start...upper])
+            deliver(url: url, status: 206, headers: [
+                "Content-Length": "\(slice.count)",
+                "Content-Range": "bytes \(start)-\(upper)/\(stub.body.count)",
+            ], body: slice)
+            return
+        }
+        deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: stub.body)
+    }
+
+    private func headers(for stub: Stub) -> [String: String] {
+        var headers = ["Content-Length": "\(stub.body.count)"]
+        if stub.acceptsRanges { headers["Accept-Ranges"] = "bytes" }
+        return headers
+    }
+
+    private func deliver(url: URL, status: Int, headers: [String: String], body: Data?) {
         guard let response = HTTPURLResponse(
-            url: url,
-            statusCode: stub.statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Length": "\(stub.body.count)"])
+            url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)
         else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: stub.body)
+        if let body, !body.isEmpty {
+            client?.urlProtocol(self, didLoad: body)
+        }
         client?.urlProtocolDidFinishLoading(self)
+    }
+
+    /// Parses `bytes=START-END` into integer offsets. The end may be omitted
+    /// (`bytes=START-`) — the speculative ranged GET sends this open-ended
+    /// form — in which case it is returned as `Int.max` and clamped to the
+    /// body size by the caller.
+    private static func parseRange(_ header: String) -> (start: Int, end: Int)? {
+        guard header.hasPrefix("bytes=") else { return nil }
+        let parts = header.dropFirst("bytes=".count)
+            .split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2, let start = Int(parts[0]) else { return nil }
+        let end: Int
+        if parts[1].isEmpty {
+            end = Int.max
+        } else if let parsed = Int(parts[1]) {
+            end = parsed
+        } else {
+            return nil
+        }
+        return (start, end)
     }
 }

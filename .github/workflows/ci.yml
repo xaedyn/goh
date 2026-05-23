@@ -29,3 +29,8 @@ jobs:
 
       - name: Test
         run: swift test
+
+      # The unified-vs-inline hashing measurement (Benchmarks/README.md §2) —
+      # deterministic, no network, so it runs here. The number goes in the PR.
+      - name: Hashing benchmark (unified vs inline)
+        run: swift run -c release goh-bench hash-overhead 256

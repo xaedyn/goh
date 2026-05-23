@@ -33,9 +33,24 @@ bandwidth budgets; hashes beyond SHA-256.
 
 ## v0.2 — backlog
 
-- **HTTP/3.** Resolved by the Slice 3a `URLSession` transport revision — HTTP/3
-  works transparently wherever servers offer it; no dedicated v0.2 design pass
-  is needed.
+- **Adaptive per-host range scheduling.** Slice 3b's competitive run validated
+  saturated parity but not the ≥10 % amenable target — the residual gap is
+  the structural HTTP/2-multiplexed-vs-N-TCP-connections difference between
+  `goh` and `aria2c`, and the 16-connection data point confirmed that no
+  static `N` is right for both workload classes (16 helps amenable, hurts
+  saturated). The v0.2 move is probe-and-adapt: discover the optimal `N` per
+  host empirically, persist in `gohd`'s catalog for repeat downloads. This is
+  the structural path past `aria2c`'s manual `--max-connection-per-server`.
+  Has its own design pass; the persisted per-host record is a load-bearing
+  on-disk format.
+- **HTTP/3.** A 3b trial via `URLRequest.assumesHTTP3Capable = true` regressed
+  saturated against `dl.google.com` (run-to-run variance signature of
+  server-side h3 throttling against this network path); reverted, documented
+  in DESIGN.md §Transport. The new per-range `protocol=` trace line landed
+  this round will isolate "h3 negotiated but slow" from "h3 didn't even
+  negotiate" when revisited. Worth retrying against Cloudflare/Akamai-served
+  workloads where QUIC is typically well-tuned, and against a different
+  network path.
 - **Mirror racing.** The headline v0.2 feature. Needs its own design pass.
 - **Plugin system** / dynamic library loading.
 - **Multi-browser auth.** Chrome (keychain-encrypted SQLite) and Firefox

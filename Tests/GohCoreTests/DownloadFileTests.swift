@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Testing
 
@@ -16,40 +15,36 @@ struct DownloadFileTests {
         return directory.appending(path: "download.bin")
     }
 
-    private func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    @Test("a single append writes the bytes and reports the streaming SHA-256")
-    func singleAppend() throws {
+    @Test("a positioned write is read back byte-for-byte")
+    func writeReadRoundTrip() throws {
         let url = try temporaryFile()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         let payload = Data("get over here".utf8)
         let file = try DownloadFile(path: url.path, expectedSize: UInt64(payload.count))
-        try file.append(payload)
-        let digest = try file.finalize()
+        try file.write(payload, at: 0)
+        let readBack = try file.read(at: 0, count: payload.count)
+        try file.finish()
 
+        #expect(readBack == payload)
         #expect(try Data(contentsOf: url) == payload)
-        #expect(digest == sha256Hex(payload))
     }
 
-    @Test("appends accumulate in order and the digest spans them all")
-    func multipleAppends() throws {
+    @Test("writes at out-of-order offsets assemble the whole file")
+    func outOfOrderPositionedWrites() throws {
         let url = try temporaryFile()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let chunks = [Data("alpha".utf8), Data("beta".utf8), Data("gamma".utf8)]
-        let whole = chunks.reduce(Data(), +)
-        let file = try DownloadFile(path: url.path, expectedSize: nil)
-        for chunk in chunks {
-            try file.append(chunk)
+        let whole = Data((0..<300).map { UInt8($0 & 0xff) })
+        let file = try DownloadFile(path: url.path, expectedSize: 300)
+        // Write the three 100-byte thirds in the order 2, 0, 1.
+        for third in [2, 0, 1] {
+            let start = third * 100
+            try file.write(Data(whole[start..<(start + 100)]), at: UInt64(start))
         }
-        let digest = try file.finalize()
+        try file.finish()
 
         #expect(try Data(contentsOf: url) == whole)
-        #expect(digest == sha256Hex(whole))
-        #expect(file.bytesWritten == UInt64(whole.count))
     }
 
     @Test("a payload larger than the checkpoint interval round-trips intact")
@@ -61,13 +56,14 @@ struct DownloadFileTests {
         let chunk = Data((0..<65_536).map { UInt8($0 & 0xff) })
         var whole = Data()
         let file = try DownloadFile(path: url.path, expectedSize: UInt64(65_536 * 40))
-        for _ in 0..<40 {
-            try file.append(chunk)
+        for index in 0..<40 {
+            try file.write(chunk, at: UInt64(index * 65_536))
             whole.append(chunk)
         }
-        let digest = try file.finalize()
+        let readBack = try file.read(at: 0, count: whole.count)
+        try file.finish()
 
+        #expect(readBack == whole)
         #expect(try Data(contentsOf: url) == whole)
-        #expect(digest == sha256Hex(whole))
     }
 }

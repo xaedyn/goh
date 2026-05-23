@@ -1,14 +1,54 @@
 // GohCore — shared library: transport, scheduling, persistence, hashing, auth.
 //
-// Bootstrap stub: exposes a module identifier and re-exports the HTTP message
-// types the transport layer will build on. Real functionality lands incrementally.
+// Exposes a module identifier, the download client's HTTP identity, and
+// re-exports the HTTP message types the transport layer builds on.
 
+import Foundation
 import HTTPTypes
 
 /// Namespace for the `GohCore` shared library.
 public enum GohCore {
     /// The module's name. A placeholder identity until real functionality lands.
     public static let moduleName = "GohCore"
+
+    /// The `User-Agent` every `goh` HTTP request carries. A download manager
+    /// fetches from arbitrary servers; identifying the client — and giving
+    /// operators a contact point through the repository — is basic courtesy.
+    public static let userAgent = "goh/0.1 (+https://github.com/xaedyn/goh)"
+
+    /// The `URLSessionConfiguration` for the download engine's session.
+    ///
+    /// Three concerns are pinned here, so every request the engine makes
+    /// carries the same setup without per-request wiring:
+    ///
+    /// - `httpMaximumConnectionsPerHost = 16` — raised so range-parallel
+    ///   downloads get real HTTP/1.1 concurrency. HTTP/2 multiplexes regardless
+    ///   of the cap.
+    /// - `User-Agent` — ``userAgent``; a download manager fetches from
+    ///   arbitrary servers, so identifying the client is basic courtesy.
+    /// - `Accept-Encoding: identity` — opts out of HTTP content-encoding
+    ///   (gzip/br/deflate). URLSession's default is `gzip, deflate, br`, and
+    ///   its auto-decoding is incompatible with ranged downloads: a `Range`
+    ///   response over an encoded body is a partial slice of the *encoded*
+    ///   stream, not partial decoded bytes, so URLSession's decoder overshoots
+    ///   range 0 and fails with `cannotDecodeRawData` (-1015) on every later
+    ///   range. A download manager wants raw bytes regardless. See DESIGN.md
+    ///   §Transport.
+    ///
+    /// HTTP/3 is *not* opted into. A first attempt to set
+    /// `URLRequest.assumesHTTP3Capable = true` per-request produced a
+    /// regression on the saturated workload (`dl.google.com` appeared to
+    /// throttle h3 traffic from this network path more aggressively than h2);
+    /// reverted. See DESIGN.md §Transport.
+    public static func downloadSessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpMaximumConnectionsPerHost = 16
+        configuration.httpAdditionalHeaders = [
+            "User-Agent": userAgent,
+            "Accept-Encoding": "identity",
+        ]
+        return configuration
+    }
 }
 
 // MARK: - Re-exported HTTP message types
