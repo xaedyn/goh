@@ -41,7 +41,7 @@ run_aria() {
     --console-log-level=error --summary-interval=0 \
     -d "$(dirname "$2")" -o "$(basename "$2")" "$1" >/dev/null
 }
-run_curl() { curl -sS -o "$2" "$1"; }
+run_curl() { curl --fail -sS -o "$2" "$1"; }
 
 # bench <label> <run-function> <url> — prints the runs, sets LAST_MEDIAN.
 LAST_MEDIAN=""

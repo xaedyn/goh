@@ -21,8 +21,10 @@ import Synchronization
 final class EngineDiagnostics: Sendable {
 
     /// Reads the `GOH_ENGINE_TRACE` env var once; cached for the process.
+    /// Strict `== "1"` so `GOH_ENGINE_TRACE=0` (or any non-`"1"` value) leaves
+    /// tracing off — matches the documented toggle.
     static let defaultEnabled: Bool =
-        ProcessInfo.processInfo.environment["GOH_ENGINE_TRACE"] != nil
+        ProcessInfo.processInfo.environment["GOH_ENGINE_TRACE"] == "1"
 
     /// The two critical sections inside a flush.
     enum CriticalSection: String, Sendable {
@@ -59,15 +61,17 @@ final class EngineDiagnostics: Sendable {
     }
 
     /// Records that the range task with `index` has started, with `bytes` the
-    /// range's expected length. Updates the peak-concurrency tally.
+    /// range's expected length. Updates the peak-concurrency tally. The
+    /// emitted `active=` field is the *current* concurrency at the moment
+    /// this range starts — the peak shows up in ``summary()``.
     func rangeStarted(_ index: Int, bytes: UInt64) {
         guard enabled else { return }
-        let peak = active.withLock { tally -> Int in
+        let activeNow = active.withLock { tally -> Int in
             tally.current += 1
             tally.peak = max(tally.peak, tally.current)
-            return tally.peak
+            return tally.current
         }
-        emit("range \(index) start       bytes=\(bytes)  active=\(peak)")
+        emit("range \(index) start       bytes=\(bytes)  active=\(activeNow)")
     }
 
     /// Records the first byte arriving on the range — answers

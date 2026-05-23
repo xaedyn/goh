@@ -121,9 +121,16 @@ public final class JobStore: Sendable {
 
     /// Records how many connections the engine used — set once the engine has
     /// probed and decided, at most the requested count (`DESIGN.md` §2.2,
-    /// "`actualConnectionCount` lifecycle").
+    /// "`actualConnectionCount` lifecycle"). Silently skips when the job is
+    /// not `active` or the count violates `0 < count <= requestedConnectionCount`
+    /// — the documented lifecycle constraints, enforced at the API boundary
+    /// rather than trusted of every caller.
     public func setActualConnectionCount(id: UInt64, _ count: UInt8) throws -> JobSummary {
-        try mutateJob(id: id) { $0.actualConnectionCount = count }
+        try mutateJob(id: id) { job in
+            guard job.state == .active else { return }
+            guard count > 0, count <= job.requestedConnectionCount else { return }
+            job.actualConnectionCount = count
+        }
     }
 
     /// Marks an `active` job `completed`. `actualConnectionCount` is kept — on a

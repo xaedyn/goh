@@ -27,7 +27,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Slice 3b — range-parallel orchestration (PR #14, draft)
 
-Built, tested (100 tests), pushed:
+Built, tested (101 tests), pushed:
 
 - `DownloadFile` reworked to pure positioned I/O (`pwrite`/`pread`, `Sendable`).
 - `ChunkAssembler` — in-order hashing of out-of-order bytes via the
