@@ -71,12 +71,12 @@ amenable — three runs in tight agreement, structural not noise).
 
 ## Pending questions for the user
 
-- **Engine regression — root causes #1 and #2 both fixed, ranged path
-  verified end-to-end.** The competitive re-run produced outcome 2 with
-  magnitude: saturated `goh` 13.148s vs `curl` 6.661s (~2× slower);
-  amenable `goh` 267.415s vs `aria2c` 37.365s (~7× slower). The diagnosed
-  re-run from the saturated NDK URL surfaced two distinct `URLSession`
-  quirks, both fixed (see DESIGN.md §Transport, *URLSession quirks*):
+- **Engine regression — three root causes fixed; saturated PARITY; amenable
+  remains route-bound on archive.org.** The original competitive re-run
+  showed saturated 2× slower than `curl` and amenable 7× slower than
+  `aria2c`. The investigation surfaced and resolved three URLSession
+  behaviours, of which the first two are quirks documented in DESIGN.md
+  §Transport (*URLSession quirks*):
 
   **#1 — HEAD's `expectedContentLength = -1`.** `URLSession` does not
   populate `expectedContentLength` from `Content-Length` for `HEAD`
@@ -92,45 +92,71 @@ amenable — three runs in tight agreement, structural not noise).
   default `Accept-Encoding: gzip, deflate, br` triggers transparent
   content-decoding. A `Range` over an encoded body returns a partial slice
   of the *encoded* stream, which the decoder can't start mid-stream for
-  ranges past 0 (`URLError.cannotDecodeRawData`, -1015) and which
-  over-decodes range 0 (proportional overshoot — +7847 bytes on a 9 MiB
-  test, +715382 bytes on the 633 MiB saturated NDK, same ~0.7% ratio).
+  ranges past 0 (-1015) and over-decodes range 0 (proportional overshoot).
   Verified by isolating in a 4-variant Swift test program against the
-  saturated host: the original HTTP/2-multiplexing hypothesis was falsified
-  (`Connection: close` and one session per range both kept the same bug
-  under h2). Fixed by sending `Accept-Encoding: identity` so the server
-  serves uncompressed bytes and URLSession has nothing to auto-decode.
+  saturated host: the original HTTP/2-multiplexing hypothesis was falsified.
+  Fixed by sending `Accept-Encoding: identity`.
 
-  Post-fix local verification on the 9 MiB ranged URL: 8 ranges complete
-  with exact byte counts; peak-active=8; wall-clock 0.373s (vs 0.443s
-  single-conn pre-fix). `writeMs` and `reportMs` per range are single-digit
-  milliseconds across 18 flushes — the chunk-assembler/mutex coordination
-  path is not the bottleneck, ruling out one of the original four
-  diagnostic hypotheses. 100 tests still pass; CI green.
+  **#3 (engine hygiene) — byte-by-byte AsyncBytes replaced with chunked
+  Data delivery.** `URLSession.bytes(for:)` was iterating one async
+  suspension per byte (~70M per range on the amenable file). Replaced with
+  a `URLSession.dataTask` + `URLSessionDataDelegate` bridge that yields
+  `Data` chunks via an `AsyncThrowingStream`. Tested as the amenable-gap
+  hypothesis; **falsified** — the asymmetric throughput pattern reproduces
+  locally with the new chunked code at the same magnitude. The change
+  ships anyway as engine hygiene (~70M async iterations per range becomes
+  ~700-760).
 
-  **Next:** user re-runs `Benchmarks/competitive.sh` against the rotated
-  defaults. Range-parallel actually runs on the wire now for the first
-  time. The slice's definition of done is unchanged — amenable ≥10% over
-  `aria2c`, saturated parity. #14 stays in draft until those numbers land.
+  **Competitive re-run (post #1 + #2):**
+  - **Saturated PARITY achieved.** `goh` 7.056s vs `aria2c` 7.300s vs `curl`
+    6.223s. Saturation check PASS (`aria2c 0.85× curl`, converged). `goh`
+    slightly faster than `aria2c`; both pay ~13-17% overhead vs single-conn
+    `curl` — the intrinsic cost of parallelism. The slice's hardest target
+    is met.
+  - **Amenable check WARN'd as expected** (curl 0.3s cached at edge), and
+    inside the WARN `goh` is ~5× slower than `aria2c` on the same ranged
+    URL (164s vs 33s). The diagnostic trace shows asymmetric throughput
+    (1-2 ranges fast, 6-7 throttled to ~430 KB/s) that reproduces locally
+    against archive.org. Not a goh code issue — the leading hypothesis is
+    archive.org's per-stream rate-limiting under sustained HTTP/2 multiplexed
+    load, against which `aria2c`'s HTTP/1.1 + separate-TCP-connection model
+    fares better. `URLSession` doesn't expose a clean way to force HTTP/1.1.
+
+  Three of the four original diagnostic hypotheses are now ruled out:
+  cap-throttling (cap is 16, observed peak=8); mutex contention
+  (`writeMs`+`reportMs` per range stay single-digit milliseconds); and
+  AsyncBytes byte-iteration (chunked Data fix didn't change the gap).
+
+  **Next:** rotate the amenable workload off archive.org per the README's
+  fallback list — a community/academic Linux-distro mirror or large GitHub
+  release asset. If `goh` ≈ `aria2c` on a different per-connection-limited
+  host, the 5× was archive.org-specific. If the gap persists across hosts,
+  the residual issue is URLSession HTTP/2 behaviour and 3b accepts saturated
+  parity for v0.1 per the README's escape clause. #14 stays in draft until
+  one of those outcomes lands.
 
 ## Next-session handoff
 
-Slice 3b: range-parallel actually runs on the wire now, for the first time
-since 3a. Two `URLSession` quirks were responsible for the regression —
-`HEAD`'s `expectedContentLength = -1` made the probe silently fall back to
-single-connection, and the default `Accept-Encoding: gzip, deflate, br`
-triggered auto-decompression that's structurally incompatible with `Range`
-requests. Both fixed and documented in DESIGN.md §Transport (*URLSession
-quirks the engine works around*). Local end-to-end verification on a 9 MiB
-ranged URL: 8 ranges complete with exact byte counts, peak-active=8, no
-errors. 100 tests still pass.
+Slice 3b: saturated PARITY achieved (`goh` 7.056s vs `aria2c` 7.300s vs
+`curl` 6.223s; saturation check PASS), the slice's hardest target met. Two
+URLSession quirks documented in DESIGN.md §Transport were responsible
+(HEAD's `expectedContentLength = -1`, and default `Accept-Encoding`
+auto-decompression structurally incompatible with `Range`); a third change
+(chunked Data via `URLSession.dataTask` + delegate, replacing byte-by-byte
+`URLSession.bytes(for:)`) shipped as engine hygiene after being tested and
+falsified as the amenable-gap cause.
 
-Two of the four original engine-bug hypotheses were ruled out by the trace
-data: the connection-cap was already 16, and `writeMs`+`reportMs` per range
-are single-digit milliseconds across 18 flushes — chunk-assembler / mutex
-coordination is not the bottleneck.
+Three of the four original engine-bug hypotheses are now ruled out
+empirically: the connection cap was already 16 (peak-active=8 observed),
+`writeMs`+`reportMs` are negligible (mutex/disk path not the bottleneck),
+and AsyncBytes byte-iteration didn't change the amenable gap when replaced.
+The residual amenable gap (~5× slower than `aria2c` on archive.org) appears
+to be URLSession's HTTP/2-multiplexed behaviour against archive.org's
+per-stream rate-limiter — reproducible locally, not a goh code issue.
 
-Next: user re-runs `Benchmarks/competitive.sh` against the rotated defaults.
-The slice's definition of done is unchanged — amenable ≥10% over `aria2c`,
-saturated parity. #14 stays in draft until those numbers land. Next slice
+Next: rotate the amenable workload off archive.org (community Linux-distro
+mirror or large GitHub release asset). If `goh` ≈ `aria2c` on a different
+host, the 5× was archive.org-specific. If the gap persists, 3b accepts
+saturated parity for v0.1 per the README's escape clause. #14 stays in
+draft until one of those outcomes lands. 101 tests; CI green. Next slice
 after 3b: 3c — error / retry / cancellation.
