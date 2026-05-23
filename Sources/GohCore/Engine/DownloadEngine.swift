@@ -123,10 +123,7 @@ public struct DownloadEngine: Sendable {
     // MARK: Single connection
 
     private func fetchSingle(job: JobSummary, store: JobStore, url: URL) async throws {
-        let (bytes, response) = try await session.bytes(from: url)
-        guard let http = response as? HTTPURLResponse else {
-            throw GohError(code: .connectionFailed, message: "the response was not HTTP")
-        }
+        let (http, stream) = try await session.streamingResponse(for: URLRequest(url: url))
         guard (200..<300).contains(http.statusCode) else {
             throw GohError(
                 code: .httpStatus,
@@ -156,8 +153,8 @@ public struct DownloadEngine: Sendable {
         }
 
         do {
-            for try await byte in bytes {
-                buffer.append(byte)
+            for try await chunk in stream {
+                buffer.append(chunk)
                 if buffer.count >= Self.bufferSize {
                     try flush()
                     _ = try store.recordProgress(
@@ -250,10 +247,7 @@ public struct DownloadEngine: Sendable {
         var request = URLRequest(url: url)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
-        let (bytes, response) = try await session.bytes(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GohError(code: .connectionFailed, message: "the response was not HTTP")
-        }
+        let (http, stream) = try await session.streamingResponse(for: request)
         guard http.statusCode == 206 else {
             throw GohError(
                 code: .httpStatus,
@@ -282,12 +276,12 @@ public struct DownloadEngine: Sendable {
         }
 
         var firstByteSeen = false
-        for try await byte in bytes {
+        for try await chunk in stream {
             if !firstByteSeen {
                 firstByteSeen = true
                 trace.rangeFirstByte(index)
             }
-            buffer.append(byte)
+            buffer.append(chunk)
             if buffer.count >= Self.bufferSize { try flush() }
         }
         try flush()

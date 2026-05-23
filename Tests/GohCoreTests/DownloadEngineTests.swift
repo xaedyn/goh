@@ -2,7 +2,7 @@ import Foundation
 import Synchronization
 import Testing
 
-import GohCore
+@testable import GohCore
 
 @Suite("Download engine")
 struct DownloadEngineTests {
@@ -149,6 +149,23 @@ struct DownloadEngineTests {
         #expect(final?.state == .completed)
         #expect(final?.actualConnectionCount == 1)
         #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
+    }
+
+    @Test("streamingResponse delivers the response and yields the body via async stream")
+    func streamingResponseDeliversChunks() async throws {
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<4096).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+
+        let (http, stream) = try await mockSession()
+            .streamingResponse(for: URLRequest(url: URL(string: url)!))
+
+        #expect(http.statusCode == 200)
+        var received = Data()
+        for try await chunk in stream {
+            received.append(chunk)
+        }
+        #expect(received == payload)
     }
 
     @Test("a failing range fails the whole job")
