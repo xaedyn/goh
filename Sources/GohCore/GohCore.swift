@@ -18,8 +18,7 @@ public enum GohCore {
 
     /// The `URLSessionConfiguration` for the download engine's session.
     ///
-    /// Three concerns are pinned here, so every request the engine makes (the
-    /// `HEAD` probe, each ranged `GET`, and the single-connection `GET`)
+    /// Three concerns are pinned here, so every request the engine makes
     /// carries the same setup without per-request wiring:
     ///
     /// - `httpMaximumConnectionsPerHost = 16` — raised so range-parallel
@@ -35,6 +34,10 @@ public enum GohCore {
     ///   range 0 and fails with `cannotDecodeRawData` (-1015) on every later
     ///   range. A download manager wants raw bytes regardless. See DESIGN.md
     ///   §Transport.
+    ///
+    /// HTTP/3 preference is set per ``URLRequest`` in the engine
+    /// (`URLRequest.assumesHTTP3Capable`) — the session-level knob doesn't
+    /// exist on `URLSessionConfiguration`.
     public static func downloadSessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpMaximumConnectionsPerHost = 16

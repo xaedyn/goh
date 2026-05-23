@@ -94,12 +94,21 @@ final class MockURLProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
 
-    /// Parses `bytes=START-END` into integer offsets.
+    /// Parses `bytes=START-END` into integer offsets. The end may be omitted
+    /// (`bytes=START-`) — the speculative ranged GET sends this open-ended
+    /// form — in which case it is returned as `Int.max` and clamped to the
+    /// body size by the caller.
     private static func parseRange(_ header: String) -> (start: Int, end: Int)? {
         guard header.hasPrefix("bytes=") else { return nil }
         let parts = header.dropFirst("bytes=".count)
             .split(separator: "-", omittingEmptySubsequences: false)
-        guard parts.count == 2, let start = Int(parts[0]), let end = Int(parts[1]) else {
+        guard parts.count == 2, let start = Int(parts[0]) else { return nil }
+        let end: Int
+        if parts[1].isEmpty {
+            end = Int.max
+        } else if let parsed = Int(parts[1]) {
+            end = parsed
+        } else {
             return nil
         }
         return (start, end)

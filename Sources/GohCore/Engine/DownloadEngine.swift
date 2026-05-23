@@ -22,15 +22,27 @@ private final class RangeProgress: Sendable {
 
 /// Runs an HTTP download (`DESIGN.md` §Transport).
 ///
-/// The engine claims a queued job, probes whether the server supports range
-/// requests, and either splits the file across N concurrent connections or
-/// downloads it over one. Either way it streams bytes into a ``DownloadFile``,
-/// hashes through a ``ChunkAssembler``, reports progress, and drives the job to
-/// `completed` or `failed`.
+/// The engine claims a queued job, sends a *speculative* ranged GET
+/// (`Range: bytes=0-`) as the first request, and routes from the response: a
+/// `206` reveals the total via `Content-Range` and the engine splits across N
+/// concurrent ranges with range 0 reusing the in-flight stream; a `200` means
+/// the server doesn't honour `Range`, so the engine consumes that stream as a
+/// single connection. Either way it streams bytes into a ``DownloadFile``,
+/// hashes through a ``ChunkAssembler``, reports progress, and drives the job
+/// to `completed` or `failed`.
+///
+/// Skipping the `HEAD` probe saves one round-trip on every download (we learn
+/// `Content-Length` from `Content-Range` *while* range 0's bytes are already
+/// arriving, instead of paying a separate `HEAD`-then-`GET` sequence). Each
+/// request sets `URLRequest.assumesHTTP3Capable = true`, letting `URLSession`
+/// negotiate HTTP/3 via ALPN when the server offers it.
 public struct DownloadEngine: Sendable {
 
     /// The buffer-flush granularity — bytes accumulate to here before a write.
-    private static let bufferSize = 1 << 16
+    /// 1 MiB matches the cumulative-fsync checkpoint, so each flush is roughly
+    /// one `pwrite` followed by an `fsync`, instead of 16 small `pwrite`s
+    /// against the same checkpoint interval.
+    private static let bufferSize = 1 << 20
 
     /// No range is split below this; smaller files download over one connection.
     private static let minChunk: UInt64 = 1 << 20
@@ -60,79 +72,76 @@ public struct DownloadEngine: Sendable {
         }
     }
 
-    private enum ProbeOutcome {
-        case ranged(total: UInt64)
-        case single
-    }
-
     private func download(
         job: JobSummary, store: JobStore, trace: EngineDiagnostics
     ) async throws {
         guard let url = URL(string: job.url) else {
             throw GohError(code: .unsupportedURL, message: "could not parse URL: \(job.url)")
         }
-        switch await probe(url) {
-        case .ranged(let total):
-            try await fetchRanged(
-                job: job, store: store, url: url, total: total, trace: trace)
-        case .single:
-            // The single-connection fallback is untouched in this round; the
-            // diagnostics target the range-parallel path the benchmarks hit.
-            try await fetchSingle(job: job, store: store, url: url)
-        }
-    }
-
-    /// A `HEAD` capability probe. Anything inconclusive — a non-2xx status, no
-    /// `Accept-Ranges: bytes`, no parseable `Content-Length` — falls back to a
-    /// single connection; the real download then surfaces any genuine error.
-    private func probe(_ url: URL) async -> ProbeOutcome {
+        // Speculative ranged GET. `Range: bytes=0-` asks for everything from
+        // byte zero; a server that honours ranges replies `206` with a
+        // `Content-Range` header that carries the total, and range 0's bytes
+        // start streaming in the same round-trip. A server that doesn't honour
+        // ranges replies `200` with the full body — this stream is then the
+        // whole file and the engine consumes it as a single connection.
         var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        guard
-            let (_, response) = try? await session.data(for: request),
-            let http = response as? HTTPURLResponse,
-            (200..<300).contains(http.statusCode),
-            (http.value(forHTTPHeaderField: "Accept-Ranges") ?? "")
-                .lowercased().contains("bytes"),
-            let total = Self.contentLength(from: http)
-        else {
-            return .single
+        request.setValue("bytes=0-", forHTTPHeaderField: "Range")
+        request.assumesHTTP3Capable = true
+        let (response, stream) = try await session.streamingResponse(for: request)
+        switch response.statusCode {
+        case 206:
+            guard let total = Self.totalFromContentRange(response) else {
+                throw GohError(
+                    code: .connectionFailed,
+                    message: "the 206 response did not carry a usable Content-Range")
+            }
+            try await fetchRanged(
+                job: job, store: store, url: url, total: total,
+                firstRangeStream: stream, trace: trace)
+        case 200..<300:
+            try await fetchSingle(
+                job: job, store: store,
+                initialResponse: response, initialStream: stream)
+        default:
+            throw GohError(
+                code: .httpStatus,
+                message: HTTPURLResponse.localizedString(forStatusCode: response.statusCode),
+                httpStatusCode: response.statusCode)
         }
-        return .ranged(total: total)
     }
 
-    /// Reads `Content-Length` from `response`. URLSession populates
-    /// `URLResponse.expectedContentLength` from `Content-Length` for `GET`
-    /// responses but returns `-1` (`NSURLResponseUnknownLength`) for `HEAD`
-    /// responses, even when the server sent the header — empirically verified
-    /// on macOS 26. The probe is a `HEAD`, so the literal header value is the
-    /// only reliable source for the total. Returns `nil` if the header is
-    /// absent, unparseable, or zero — in any of those cases the engine falls
-    /// back to a single connection.
-    private static func contentLength(from response: HTTPURLResponse) -> UInt64? {
-        guard
-            let raw = response.value(forHTTPHeaderField: "Content-Length"),
-            let length = UInt64(raw.trimmingCharacters(in: .whitespaces)),
-            length > 0
-        else {
-            return nil
-        }
-        return length
+    /// Parses `Content-Range: bytes START-END/TOTAL` and returns TOTAL. Returns
+    /// `nil` for unparseable, missing, or zero values — in which case the
+    /// caller treats the response as having no usable total.
+    private static func totalFromContentRange(_ response: HTTPURLResponse) -> UInt64? {
+        guard let value = response.value(forHTTPHeaderField: "Content-Range"),
+              value.hasPrefix("bytes ")
+        else { return nil }
+        let payload = value.dropFirst("bytes ".count)
+        guard let slash = payload.lastIndex(of: "/") else { return nil }
+        let totalStr = payload[payload.index(after: slash)...]
+            .trimmingCharacters(in: .whitespaces)
+        guard let total = UInt64(totalStr), total > 0 else { return nil }
+        return total
     }
 
     // MARK: Single connection
 
-    private func fetchSingle(job: JobSummary, store: JobStore, url: URL) async throws {
-        let (http, stream) = try await session.streamingResponse(for: URLRequest(url: url))
-        guard (200..<300).contains(http.statusCode) else {
+    private func fetchSingle(
+        job: JobSummary, store: JobStore,
+        initialResponse: HTTPURLResponse,
+        initialStream: AsyncThrowingStream<Data, Error>
+    ) async throws {
+        guard (200..<300).contains(initialResponse.statusCode) else {
             throw GohError(
                 code: .httpStatus,
-                message: HTTPURLResponse.localizedString(forStatusCode: http.statusCode),
-                httpStatusCode: http.statusCode)
+                message: HTTPURLResponse.localizedString(
+                    forStatusCode: initialResponse.statusCode),
+                httpStatusCode: initialResponse.statusCode)
         }
 
-        let total: UInt64? = http.expectedContentLength > 0
-            ? UInt64(http.expectedContentLength) : nil
+        let total: UInt64? = initialResponse.expectedContentLength > 0
+            ? UInt64(initialResponse.expectedContentLength) : nil
         let file = try DownloadFile(path: job.destination, expectedSize: total)
         let assembler = ChunkAssembler(
             file: file, ranges: [ByteRange(start: 0, length: total ?? UInt64.max)])
@@ -153,7 +162,7 @@ public struct DownloadEngine: Sendable {
         }
 
         do {
-            for try await chunk in stream {
+            for try await chunk in initialStream {
                 buffer.append(chunk)
                 if buffer.count >= Self.bufferSize {
                     try flush()
@@ -187,6 +196,7 @@ public struct DownloadEngine: Sendable {
 
     private func fetchRanged(
         job: JobSummary, store: JobStore, url: URL, total: UInt64,
+        firstRangeStream: AsyncThrowingStream<Data, Error>,
         trace: EngineDiagnostics
     ) async throws {
         let ranges = ByteRange.split(
@@ -203,7 +213,17 @@ public struct DownloadEngine: Sendable {
 
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                for (index, range) in ranges.enumerated() {
+                // Range 0 reuses the open-ended stream that download() already
+                // started; consumeRange truncates it at ranges[0].length.
+                group.addTask {
+                    try await consumeRange(
+                        index: 0, range: ranges[0], file: file,
+                        assembler: assembler, progress: progress,
+                        job: job, store: store, total: total,
+                        clock: clock, started: started, trace: trace,
+                        stream: firstRangeStream)
+                }
+                for (index, range) in ranges.enumerated().dropFirst() {
                     group.addTask {
                         try await downloadRange(
                             index: index, range: range, url: url, file: file,
@@ -236,6 +256,9 @@ public struct DownloadEngine: Sendable {
         trace.summary()
     }
 
+    /// Issues a fresh ranged `GET` for `range` and feeds its body into
+    /// ``consumeRange``. Used for ranges 1..N-1; range 0 is consumed from the
+    /// open-ended stream that ``download(job:store:trace:)`` already started.
     private func downloadRange(
         index: Int, range: ByteRange, url: URL, file: DownloadFile,
         assembler: ChunkAssembler, progress: RangeProgress,
@@ -243,10 +266,10 @@ public struct DownloadEngine: Sendable {
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics
     ) async throws {
-        trace.rangeStarted(index, bytes: range.length)
         var request = URLRequest(url: url)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
+        request.assumesHTTP3Capable = true
         let (http, stream) = try await session.streamingResponse(for: request)
         guard http.statusCode == 206 else {
             throw GohError(
@@ -254,7 +277,28 @@ public struct DownloadEngine: Sendable {
                 message: "the server did not honour the range request",
                 httpStatusCode: http.statusCode)
         }
+        try await consumeRange(
+            index: index, range: range, file: file,
+            assembler: assembler, progress: progress,
+            job: job, store: store, total: total,
+            clock: clock, started: started, trace: trace,
+            stream: stream)
+    }
 
+    /// Consumes `range`'s bytes from `stream` into `file`. Stops reading once
+    /// `range.length` bytes have arrived — the speculative range 0 stream is
+    /// open-ended and would otherwise spill into the next range's territory;
+    /// the per-range precise streams naturally end at this boundary, so the
+    /// break is benign for them.
+    private func consumeRange(
+        index: Int, range: ByteRange, file: DownloadFile,
+        assembler: ChunkAssembler, progress: RangeProgress,
+        job: JobSummary, store: JobStore, total: UInt64,
+        clock: ContinuousClock, started: ContinuousClock.Instant,
+        trace: EngineDiagnostics,
+        stream: AsyncThrowingStream<Data, Error>
+    ) async throws {
+        trace.rangeStarted(index, bytes: range.length)
         var buffer = Data()
         buffer.reserveCapacity(Self.bufferSize)
         var written: UInt64 = 0
@@ -271,7 +315,8 @@ public struct DownloadEngine: Sendable {
                 let overall = progress.report(index: index, written: written)
                 _ = try? store.recordProgress(
                     id: job.id,
-                    Self.progress(completed: overall, total: total, elapsed: clock.now - started))
+                    Self.progress(completed: overall, total: total,
+                                  elapsed: clock.now - started))
             }
         }
 
@@ -281,8 +326,19 @@ public struct DownloadEngine: Sendable {
                 firstByteSeen = true
                 trace.rangeFirstByte(index)
             }
-            buffer.append(chunk)
+            // Truncate so we never write past this range's allotted slice.
+            let alreadyHave = written + UInt64(buffer.count)
+            let remaining: UInt64 =
+                alreadyHave >= range.length ? 0 : range.length - alreadyHave
+            let toAppend: Data =
+                UInt64(chunk.count) <= remaining ? chunk : chunk.prefix(Int(remaining))
+            buffer.append(toAppend)
             if buffer.count >= Self.bufferSize { try flush() }
+            if written + UInt64(buffer.count) >= range.length {
+                // Allotted bytes received; break so the stream's onTermination
+                // cancels the in-flight task and frees the connection slot.
+                break
+            }
         }
         try flush()
         trace.rangeFinished(index, bytes: written)
