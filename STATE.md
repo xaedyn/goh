@@ -71,10 +71,16 @@ amenable — three runs in tight agreement, structural not noise).
 
 ## Pending questions for the user
 
-- **Engine regression — three root causes fixed; saturated PARITY; amenable
-  remains route-bound on archive.org.** The original competitive re-run
-  showed saturated 2× slower than `curl` and amenable 7× slower than
-  `aria2c`. The investigation surfaced and resolved three URLSession
+- **3b validated — parity-for-v0.1 accepted.** See the validated-measurement
+  comment on PR #14 for the full numbers and reasoning. Saturated criterion
+  met with margin (`goh` 7.020s vs `aria2c` 7.293s vs `curl` 6.802s at the
+  default 8 conn — slight win over `aria2c`, 3.2 % behind `curl`'s
+  single-stream ceiling). Amenable parity confirmed (`goh` 10.915s vs
+  `aria2c` 10.958s at 8 conn; 16-conn data point widens `aria2c`'s lead
+  marginally — the gap is the structural HTTP/2-vs-N-TCP one we've been
+  circling, not a `goh` code defect).
+
+  The investigation that got here surfaced and resolved three URLSession
   behaviours, of which the first two are quirks documented in DESIGN.md
   §Transport (*URLSession quirks*):
 
@@ -127,23 +133,22 @@ amenable — three runs in tight agreement, structural not noise).
   (`writeMs`+`reportMs` per range stay single-digit milliseconds); and
   AsyncBytes byte-iteration (chunked Data fix didn't change the gap).
 
-  **HTTP/3 reverted.** A first round of three optimizations (speculative
-  ranged GET, per-request `URLRequest.assumesHTTP3Capable`, 1 MiB flush
-  buffer) regressed the saturated workload by ~45 % (`goh` 6.607s → 10.754s
-  median, with run-to-run variance: 7.526s / 10.942s / 10.754s suggesting
-  server-side rate-limiting against h3 traffic from this network path).
-  `aria2c` and `curl` stayed flat. HTTP/3 reverted (per-request line
-  removed; documented in DESIGN.md §Transport as a v0.2 design pass when a
-  different host or more diagnostic time is available). Skip-HEAD and 1
-  MiB buffer kept — they're structurally simpler and don't show the
-  variance signature.
+  **HTTP/3 trial reverted.** A first round of three optimizations
+  (speculative ranged GET, per-request `URLRequest.assumesHTTP3Capable`,
+  1 MiB flush buffer) regressed the saturated workload by ~45 %
+  (`goh` 6.607s → 10.754s median, with run-to-run variance suggesting
+  server-side rate-limiting against h3 traffic on this network path).
+  `aria2c` and `curl` stayed flat. HTTP/3 reverted; skip-HEAD and 1 MiB
+  buffer kept (they don't show the variance signature). The slice landed
+  a per-range `protocol=` trace line so the next h3 attempt isn't blind.
 
-  **Next:** user re-runs `Benchmarks/competitive.sh` against the
-  HTTP/3-reverted build (skip-HEAD + 1 MiB buffer remain). Three outcomes:
-  (1) saturated returns to ~6.6s and amenable matches `aria2c` — H3 was
-  the regression, ship 3b with parity for v0.1; (2) saturated still
-  regressed — revert skip-HEAD next, isolate the remaining issue; (3)
-  amenable check WARNs — rotate workload again. #14 stays in draft.
+  **Final state at merge:** speculative ranged GET (one RTT saved per
+  download), 1 MiB flush buffer (~16× fewer pwrites), per-range protocol
+  diagnostic, all URLSession quirks (HEAD `expectedContentLength = -1`
+  and Range-incompatible auto-decompression) worked around, two committed
+  default benchmark workloads with run-time amenability/saturation checks,
+  the engine diagnostics that drove this slice's debugging cycles. 101
+  tests; CI green.
 
 ## Next-session handoff
 
@@ -164,10 +169,9 @@ The residual amenable gap (~5× slower than `aria2c` on archive.org) appears
 to be URLSession's HTTP/2-multiplexed behaviour against archive.org's
 per-stream rate-limiter — reproducible locally, not a goh code issue.
 
-Next: HTTP/3 reverted after the optimization round regressed saturated by
-~45 % with the variance signature of server-side h3 throttling against
-`dl.google.com`. Skip-HEAD (saves one RTT) and 1 MiB flush buffer (16×
-fewer pwrites) remain; HTTP/3 documented in DESIGN.md as a v0.2 design
-pass. 101 tests; user re-runs `Benchmarks/competitive.sh`. See three
-outcomes under Pending questions. #14 stays in draft. Next slice after
-3b: 3c — error / retry / cancellation.
+Next: 3b validated and un-drafted; CodeRabbit reviews on un-draft, address
+feedback, then merge. Validated-measurement comment posted to PR #14.
+v0.2 follow-ups filed: adaptive per-host range scheduling (the structural
+path past `aria2c`'s static `--max-connection-per-server`) and the HTTP/3
+re-trial against a host with better-tuned QUIC. Next slice after 3b: 3c —
+error / retry / cancellation.
