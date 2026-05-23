@@ -127,13 +127,15 @@ amenable — three runs in tight agreement, structural not noise).
   (`writeMs`+`reportMs` per range stay single-digit milliseconds); and
   AsyncBytes byte-iteration (chunked Data fix didn't change the gap).
 
-  **Next:** rotate the amenable workload off archive.org per the README's
-  fallback list — a community/academic Linux-distro mirror or large GitHub
-  release asset. If `goh` ≈ `aria2c` on a different per-connection-limited
-  host, the 5× was archive.org-specific. If the gap persists across hosts,
-  the residual issue is URLSession HTTP/2 behaviour and 3b accepts saturated
-  parity for v0.1 per the README's escape clause. #14 stays in draft until
-  one of those outcomes lands.
+  **Next:** amenable URL rotated to the Debian 13.5.0 net-install ISO via
+  `saimei.ftp.acc.umu.se` — direct academic mirror host, zero redirects.
+  User re-runs `Benchmarks/competitive.sh` against the new default. Three
+  outcomes: (1) check PASSes + `goh` ≥10% over `aria2c` → validated 3b,
+  mark #14 ready; (2) check PASSes but goh misses ≥10% → cross-host
+  evidence the gap is real, accept saturated parity for v0.1 per the
+  README's escape clause and file the URLSession-HTTP/2 behaviour as a
+  v0.2 investigation; (3) check WARNs → rotate to fallback #2 (large
+  GitHub release asset). #14 stays in draft until one outcome lands.
 
 ## Next-session handoff
 
@@ -154,9 +156,8 @@ The residual amenable gap (~5× slower than `aria2c` on archive.org) appears
 to be URLSession's HTTP/2-multiplexed behaviour against archive.org's
 per-stream rate-limiter — reproducible locally, not a goh code issue.
 
-Next: rotate the amenable workload off archive.org (community Linux-distro
-mirror or large GitHub release asset). If `goh` ≈ `aria2c` on a different
-host, the 5× was archive.org-specific. If the gap persists, 3b accepts
-saturated parity for v0.1 per the README's escape clause. #14 stays in
-draft until one of those outcomes lands. 101 tests; CI green. Next slice
-after 3b: 3c — error / retry / cancellation.
+Next: amenable URL rotated to the Debian 13.5.0 net-install ISO from
+`saimei.ftp.acc.umu.se` (direct academic mirror, zero redirects). User
+re-runs `Benchmarks/competitive.sh` against the new default; see the three
+outcomes under Pending questions. #14 stays in draft until one lands. 101
+tests; CI green. Next slice after 3b: 3c — error / retry / cancellation.
