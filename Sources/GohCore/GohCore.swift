@@ -35,9 +35,11 @@ public enum GohCore {
     ///   range. A download manager wants raw bytes regardless. See DESIGN.md
     ///   §Transport.
     ///
-    /// HTTP/3 preference is set per ``URLRequest`` in the engine
-    /// (`URLRequest.assumesHTTP3Capable`) — the session-level knob doesn't
-    /// exist on `URLSessionConfiguration`.
+    /// HTTP/3 is *not* opted into. A first attempt to set
+    /// `URLRequest.assumesHTTP3Capable = true` per-request produced a
+    /// regression on the saturated workload (`dl.google.com` appeared to
+    /// throttle h3 traffic from this network path more aggressively than h2);
+    /// reverted. See DESIGN.md §Transport.
     public static func downloadSessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpMaximumConnectionsPerHost = 16

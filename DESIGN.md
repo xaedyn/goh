@@ -89,9 +89,8 @@ and the string form matches the manifest's existing style.
 
 _The HTTP transport — single-connection, then range-parallel — is built in the
 v0.1 download-engine slices: range-based parallelism, 8 connections default.
-HTTP/3 is enabled per request via `URLRequest.assumesHTTP3Capable`; URLSession
-negotiates `h3` via ALPN where the server offers it, falling back to `h2` then
-`http/1.1` automatically._
+HTTP/3 is *not* opted into for v0.1 (a per-request `assumesHTTP3Capable` trial
+regressed the saturated workload — see *URLSession quirks* below)._
 
 ### Transport mechanism revision
 
@@ -152,33 +151,38 @@ regardless — the file on disk should match what the server serves — so the
 session configuration sends `Accept-Encoding: identity`, opting out of HTTP
 content-encoding entirely.
 
-### Speculative ranged GET + HTTP/3
+### Speculative ranged GET
 
-Two engine choices for protocol/request shape:
-
-**Skip the `HEAD` probe via a speculative ranged GET.** The first request is
-`Range: bytes=0-`, not `HEAD`. A `206` response carries the total via
-`Content-Range` *and* starts range 0's bytes in the same round-trip — one RTT
-saved vs the older `HEAD`-then-`GET`. Range 0 reuses that stream (truncated
-at its allotted length via a `break` out of the consume loop, which cancels
-the task and closes the connection slot); ranges 1..N-1 issue fresh precise
-ranged `GET`s. A `200` response means the server didn't honour `Range`, so
-the stream is the full body and the engine consumes it as a single
-connection — no second request needed.
+The engine skips the `HEAD` probe. The first request is `Range: bytes=0-`,
+not `HEAD`. A `206` response carries the total via `Content-Range` *and*
+starts range 0's bytes in the same round-trip — one RTT saved vs the older
+`HEAD`-then-`GET`. Range 0 reuses that stream (truncated at its allotted
+length via a `break` out of the consume loop, which cancels the task and
+closes the connection slot); ranges 1..N-1 issue fresh precise ranged `GET`s.
+A `200` response means the server didn't honour `Range`, so the stream is
+the full body and the engine consumes it as a single connection — no second
+request needed.
 
 The downside is a small bandwidth waste at cancellation time — bytes already
 in flight on the open-ended stream when it's truncated, typically ≤ one TCP
 window. The upside compounds: one RTT saved on every download.
 
-**HTTP/3 per request.** Each `URLRequest` sets
-`URLRequest.assumesHTTP3Capable = true`, so `URLSession` advertises `h3` in
-ALPN and the server picks the highest version it offers (`h3` → `h2` →
-`http/1.1` automatically). HTTP/3 brings 0-RTT TLS resumption on repeat
-connections to the same host, independent per-stream flow control (no
-head-of-line blocking across streams the way HTTP/2 over TCP suffers from),
-and connection migration across network changes.
-`URLSessionConfiguration` has no session-wide knob for this on the current
-SDK; the per-request property is the only path.
+### HTTP/3 — tried and reverted for v0.1
+
+`URLRequest.assumesHTTP3Capable = true` was tried as a per-request opt-in
+(URLSession has no session-wide knob on the current SDK) so URLSession would
+advertise `h3` in ALPN where servers offered it, with automatic fallback to
+`h2` then `http/1.1`. The intent was 0-RTT TLS resumption on repeats,
+independent per-stream flow control, and connection migration.
+
+In practice the change regressed the saturated workload measurably and with
+unusual run-to-run variance against `dl.google.com` (first run close to the
+HTTP/2 baseline, subsequent runs ~60 % slower) — the signature of
+server-side rate-limiting kicking in against HTTP/3 traffic from this
+network path. `aria2c` on HTTP/1.1 + `curl` on HTTP/2 stayed flat across the
+same runs. URLSession on HTTP/2 was actually the better steady-state choice
+on the workloads benchmarked. Reverted; HTTP/3 stays a v0.2 design pass when
+either a different host or more diagnostic time is available.
 
 ## Persistence
 

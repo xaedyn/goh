@@ -127,28 +127,23 @@ amenable — three runs in tight agreement, structural not noise).
   (`writeMs`+`reportMs` per range stay single-digit milliseconds); and
   AsyncBytes byte-iteration (chunked Data fix didn't change the gap).
 
-  **Next:** the user re-runs `Benchmarks/competitive.sh` against three
-  fresh engine optimizations landed this round, aimed at closing the
-  saturated 295 ms gap to `curl` and exceeding `aria2c` ≥10% on amenable:
+  **HTTP/3 reverted.** A first round of three optimizations (speculative
+  ranged GET, per-request `URLRequest.assumesHTTP3Capable`, 1 MiB flush
+  buffer) regressed the saturated workload by ~45 % (`goh` 6.607s → 10.754s
+  median, with run-to-run variance: 7.526s / 10.942s / 10.754s suggesting
+  server-side rate-limiting against h3 traffic from this network path).
+  `aria2c` and `curl` stayed flat. HTTP/3 reverted (per-request line
+  removed; documented in DESIGN.md §Transport as a v0.2 design pass when a
+  different host or more diagnostic time is available). Skip-HEAD and 1
+  MiB buffer kept — they're structurally simpler and don't show the
+  variance signature.
 
-  1. **Speculative ranged GET.** First request is `Range: bytes=0-`, not
-     `HEAD`. The 206 response carries `Content-Range` (total) AND starts
-     range 0's bytes — one RTT saved per download.
-  2. **HTTP/3 per request** via `URLRequest.assumesHTTP3Capable = true`.
-     URLSession negotiates `h3` via ALPN (falling back to `h2` then
-     `http/1.1` silently). Brings 0-RTT TLS resumption, independent
-     per-stream flow control (the HTTP/2-on-archive.org head-of-line
-     issue is structurally addressed), connection migration.
-  3. **1 MiB flush buffer** (was 64 KiB) — ~16× fewer `pwrite`s; matches
-     the cumulative-fsync checkpoint.
-
-  101 tests still pass; local end-to-end download verified. Same three
-  outcomes by the framework: (1) check PASS + `goh` ≥10% over `aria2c` →
-  validated 3b, mark #14 ready; (2) check PASS but `goh` misses ≥10% →
-  cross-host evidence the gap is real, accept saturated parity per the
-  README's escape clause and file the residual amenable behaviour as a
-  v0.2 investigation; (3) check WARNs → rotate to fallback #2 (large
-  GitHub release asset). #14 stays in draft until one outcome lands.
+  **Next:** user re-runs `Benchmarks/competitive.sh` against the
+  HTTP/3-reverted build (skip-HEAD + 1 MiB buffer remain). Three outcomes:
+  (1) saturated returns to ~6.6s and amenable matches `aria2c` — H3 was
+  the regression, ship 3b with parity for v0.1; (2) saturated still
+  regressed — revert skip-HEAD next, isolate the remaining issue; (3)
+  amenable check WARNs — rotate workload again. #14 stays in draft.
 
 ## Next-session handoff
 
@@ -169,11 +164,10 @@ The residual amenable gap (~5× slower than `aria2c` on archive.org) appears
 to be URLSession's HTTP/2-multiplexed behaviour against archive.org's
 per-stream rate-limiter — reproducible locally, not a goh code issue.
 
-Next: three engine optimizations shipped this round — speculative ranged
-GET (saves one RTT per download by skipping the HEAD probe), HTTP/3 per
-request (`URLRequest.assumesHTTP3Capable`; URLSession negotiates h3 via
-ALPN), 1 MiB flush buffer (16× fewer pwrites). 101 tests; local end-to-end
-verified. User re-runs `Benchmarks/competitive.sh` against the rotated
-amenable + the new engine; see the three outcomes under Pending questions.
-#14 stays in draft until one lands. Next slice after 3b: 3c — error /
-retry / cancellation.
+Next: HTTP/3 reverted after the optimization round regressed saturated by
+~45 % with the variance signature of server-side h3 throttling against
+`dl.google.com`. Skip-HEAD (saves one RTT) and 1 MiB flush buffer (16×
+fewer pwrites) remain; HTTP/3 documented in DESIGN.md as a v0.2 design
+pass. 101 tests; user re-runs `Benchmarks/competitive.sh`. See three
+outcomes under Pending questions. #14 stays in draft. Next slice after
+3b: 3c — error / retry / cancellation.

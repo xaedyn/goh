@@ -33,9 +33,13 @@ private final class RangeProgress: Sendable {
 ///
 /// Skipping the `HEAD` probe saves one round-trip on every download (we learn
 /// `Content-Length` from `Content-Range` *while* range 0's bytes are already
-/// arriving, instead of paying a separate `HEAD`-then-`GET` sequence). Each
-/// request sets `URLRequest.assumesHTTP3Capable = true`, letting `URLSession`
-/// negotiate HTTP/3 via ALPN when the server offers it.
+/// arriving, instead of paying a separate `HEAD`-then-`GET` sequence).
+///
+/// HTTP/3 enablement is *not* set per-request — a first attempt to opt in via
+/// `URLRequest.assumesHTTP3Capable = true` produced a regression on the
+/// saturated workload (run-to-run variance, dl.google.com appeared to throttle
+/// h3 traffic more aggressively than h2 from this network path). Reverted; see
+/// DESIGN.md §Transport for the discussion.
 public struct DownloadEngine: Sendable {
 
     /// The buffer-flush granularity — bytes accumulate to here before a write.
@@ -86,7 +90,6 @@ public struct DownloadEngine: Sendable {
         // whole file and the engine consumes it as a single connection.
         var request = URLRequest(url: url)
         request.setValue("bytes=0-", forHTTPHeaderField: "Range")
-        request.assumesHTTP3Capable = true
         let (response, stream) = try await session.streamingResponse(for: request)
         switch response.statusCode {
         case 206:
@@ -269,7 +272,6 @@ public struct DownloadEngine: Sendable {
         var request = URLRequest(url: url)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
-        request.assumesHTTP3Capable = true
         let (http, stream) = try await session.streamingResponse(for: request)
         guard http.statusCode == 206 else {
             throw GohError(
