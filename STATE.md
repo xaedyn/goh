@@ -176,14 +176,15 @@ non-wire Safari cookie foundation is now on `main`: parser, matcher, volatile
 per-job headers, engine attachment, locator, and daemon composition.
 
 This branch begins the load-bearing `goh auth import safari` command/FDA design
-round. `DESIGN.md` contains Round 1 and Round 2 notes, not a frozen contract:
-the proposed shape is a new `protocolVersion = 2` command,
+round. `DESIGN.md` contains Round 1 draft notes, Round 2 review notes, and Round
+3 candidate conclusions, but the contract is not frozen until final audit and
+merge. The current candidate shape is a new `protocolVersion = 2` command,
 `authImportSafari(request:)`, with an empty JSON request,
 `{ importedCookieCount: UInt32 }` success reply, and a required native XPC fd
-sibling key `auth.safariCookieFile`. Round 2 tightened the behavior: import
-replaces the process-local jar for future `add` commands only; existing jobs keep
-their original auth snapshot, and credentials still do not survive daemon
-restart.
+sibling key `auth.safariCookieFile`. Round 3 resolves the prior open questions:
+do not mutate v1, keep the command enum flat, fail-fast on malformed files, and
+keep import scoped to future `add` commands only. v0.1 does not promise
+credentialed resume across daemon restarts.
 
 Pick up by reviewing that draft before adding the IPC command:
 
@@ -194,7 +195,6 @@ Pick up by reviewing that draft before adding the IPC command:
 - keep Full Disk Access prompting and revocation handling user-clear;
 - avoid introducing a public persistent cookie-store format without an explicit
   design pass;
-- decide whether v0.1 needs persistent job auth opt-in before promising
-  credentialed resume across daemon restarts;
+- final-audit the Round 3 candidate conclusions before freezing/merging them;
 - leave unrelated untracked files (`AGENTS.md`,
   `Benchmarks/diagnose-saturated.log`) untouched.

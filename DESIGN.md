@@ -1493,6 +1493,68 @@ warning field in a new round before implementation.
   whether we need a separate persistent job-auth-opt-in bit before shipping
   credentialed resume across daemon restarts.
 
+### Auth import command contract conclusions — round 3, candidate text
+
+This section rewrites the draft and review notes down to candidate conclusions.
+It is still **not frozen** until the final audit and merge of the design PR.
+
+`goh auth import safari` is a new `protocolVersion = 2` command, not a mutation
+of v1. The request payload is an empty struct,
+`AuthImportSafariRequest`; the success reply is
+`AuthImportSafariReply { importedCookieCount: UInt32 }`. The `Command` enum case
+is flat: `authImportSafari(request: AuthImportSafariRequest)`.
+
+The request envelope carries exactly one required native XPC fd sibling under
+the key `auth.safariCookieFile`. The fd points at an already-open Safari
+`Cookies.binarycookies` file. The fd sibling is not represented inside the JSON
+payload, because an fd's integer value is process-local and only XPC's native
+fd-passing duplicates the underlying descriptor across processes.
+
+The CLI owns the Full Disk Access boundary. It locates Safari's cookie file via
+`SafariCookieFileLocator`, opens the first readable candidate, boxes the open fd
+as the `auth.safariCookieFile` XPC sibling, sends `authImportSafari`, and closes
+its local handle after the send path has boxed/duplicated the descriptor. If the
+CLI cannot open either candidate, it does not send XPC. It exits unsuccessfully
+after printing both expected paths and this remedy in substance: grant Full Disk
+Access to the terminal app (or to `goh` when installed as a standalone binary),
+then rerun `goh auth import safari`. The exact numeric exit-code taxonomy stays
+with the CLI slice.
+
+The daemon owns parsing and cookie replacement. It duplicates the received fd,
+reads the bytes, parses with `SafariBinaryCookiesParser`, and replaces the
+process-local `ImportedCookieStore` jar with the parsed cookies. A missing fd,
+wrongly-typed sibling, unreadable fd, or malformed cookie file returns the
+existing `invalidArgument` error code with a message naming the problem. Success
+is all-or-nothing: malformed cookie files do not partially import, and the reply
+does not carry warning counts in v0.1.
+
+Import affects future `add` commands only. Existing jobs keep the per-job cookie
+header snapshot (or lack of one) they were created with. Imported cookies and
+derived per-job headers remain process-local and disappear on daemon restart.
+Therefore v0.1 does **not** promise credentialed resume across daemon restarts.
+Adding secure persistent credential storage, or even a persisted job-auth-opt-in
+bit that enables post-restart re-snapshotting, is a separate load-bearing design
+decision and is deferred.
+
+**Considered alternatives.**
+- *Mutate `protocolVersion = 1` because v0.1 has not shipped yet* — rejected:
+  this repo has already chosen to treat v1 command schemas and fixtures as
+  frozen. Keeping that discipline now prevents pre-release convenience from
+  becoming the habit that later breaks users.
+- *Nested command namespace such as `auth(command:)`* — rejected for v0.1:
+  there is only one auth subcommand, while Chrome/Firefox import is v0.2 scope
+  and may have different persistence/security mechanics.
+- *CLI parses cookies and sends JSON records* — rejected: it moves credential
+  material into payload JSON and splits parser ownership across short-lived CLI
+  code and daemon code.
+- *Daemon holds Full Disk Access* — rejected: a launchd-managed daemon with FDA
+  is a broader standing capability and a worse user mental model than an
+  interactive command opening one file and passing the descriptor.
+- *Partial import with skipped-record warnings* — rejected for v0.1: it is
+  difficult to explain and could leave the user with a subtly incomplete auth
+  jar. Fail-fast is simpler and safer until real Safari files prove a recovery
+  path is needed.
+
 ## Hashing
 
 _TBD — SHA-256 via CryptoKit, streamed through the chunk assembler during the
