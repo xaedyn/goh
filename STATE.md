@@ -170,10 +170,12 @@ Implemented and verified the correctness gates on PR #15:
   incompatible `protocolVersion`, and rejects non-request message kinds.
 - `CommandDispatcher` rejects `connectionCount == 0` with `invalidArgument` and
   caps values above `16`.
+- The CodeRabbit review comment on PR #15 was addressed: `MockURLProtocol`
+  returns `416` for invalid test `Range` requests instead of trapping on an
+  out-of-bounds `Data` slice.
 
-Verification: `swift test` passes 111 tests; `swift build -Xswiftc
--warnings-as-errors` passes; `swift run -c release goh-bench hash-overhead 256`
-passes.
+Verification: `swift test` passes 112 tests; `swift build -Xswiftc
+-warnings-as-errors` passes.
 
 Next: once PR #15 is merged, surface the daemon restart policy for persisted
 `active` jobs as the first 3c design question, then build daemon-path

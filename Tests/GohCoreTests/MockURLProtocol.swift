@@ -71,6 +71,12 @@ final class MockURLProtocol: URLProtocol {
                 client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
                 return
             }
+            guard start >= 0, start < stub.body.count, end >= start else {
+                deliver(url: url, status: 416, headers: [
+                    "Content-Range": "bytes */\(stub.body.count)",
+                ], body: nil)
+                return
+            }
             let upper = min(end, stub.body.count - 1)
             let actualUpper = stub.truncateRangeStartingAt == start
                 ? min(upper, start + max(0, (upper - start) / 2)) : upper
