@@ -32,6 +32,40 @@ struct GohCommandLineTests {
         #expect(result.standardError == "")
     }
 
+    @Test("add options populate the full add request")
+    func addOptionsPopulateFullRequest() throws {
+        let job = Self.makeJob(
+            id: 43,
+            url: "https://example.com/private.zip",
+            destination: "/tmp/private.zip",
+            state: .queued)
+        var captured: Command?
+
+        let result = GohCommandLine(arguments: [
+            "add",
+            "--output", "/tmp/private.zip",
+            "--connections", "12",
+            "--priority", "high",
+            "--no-cookies",
+            "https://example.com/private.zip",
+        ]) { request in
+            try request.withUnsafeUnderlyingDictionary { object in
+                let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                captured = envelope.payload
+                return try Self.reply(to: envelope, payload: job)
+            }
+        }.run()
+
+        #expect(captured == .add(request: AddRequest(
+            url: "https://example.com/private.zip",
+            destination: "/tmp/private.zip",
+            connectionCount: 12,
+            useImportedCookies: false,
+            priority: .high)))
+        #expect(result.exitCode == 0)
+        #expect(result.standardError == "")
+    }
+
     @Test("ls sends an ls request and formats the job table")
     func lsFormatsJobTable() throws {
         let job = Self.makeJob(
@@ -66,6 +100,35 @@ struct GohCommandLineTests {
         #expect(result.standardOutput.contains("512 B/1 KB (50%)"))
         #expect(result.standardOutput.contains("2 KB/s"))
         #expect(result.standardOutput.contains("/tmp/archive.tar"))
+        #expect(result.standardError == "")
+    }
+
+    @Test("ls json emits the existing LsReply shape")
+    func lsJSONEmitsReplyShape() throws {
+        let job = Self.makeJob(
+            id: 8,
+            url: "https://example.com/data.bin",
+            destination: "/tmp/data.bin",
+            state: .completed,
+            progress: JobProgress(
+                bytesCompleted: 4096,
+                bytesTotal: 4096,
+                bytesPerSecond: 0),
+            actualConnectionCount: 4)
+
+        let result = GohCommandLine(arguments: ["ls", "--json"]) { request in
+            try request.withUnsafeUnderlyingDictionary { object in
+                let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                #expect(envelope.payload == .ls)
+                return try Self.reply(to: envelope, payload: LsReply(jobs: [job]))
+            }
+        }.run()
+
+        let decoded = try CommandCoding.decoder.decode(
+            LsReply.self,
+            from: Data(result.standardOutput.utf8))
+        #expect(decoded == LsReply(jobs: [job]))
+        #expect(result.standardOutput.hasSuffix("\n"))
         #expect(result.standardError == "")
     }
 
