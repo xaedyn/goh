@@ -55,17 +55,23 @@ public struct DownloadEngine: Sendable {
     private let checkpointStore: CheckpointStore?
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
+    private let sleepAssertionController: SleepAssertionController?
+    private let completedDownloadHandler: (@Sendable (JobSummary) -> Void)?
 
     public init(
         session: URLSession,
         checkpointStore: CheckpointStore? = nil,
         control: DownloadControl? = nil,
-        cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil
+        cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
+        sleepAssertionController: SleepAssertionController? = nil,
+        completedDownloadHandler: (@Sendable (JobSummary) -> Void)? = nil
     ) {
         self.session = session
         self.checkpointStore = checkpointStore
         self.control = control
         self.cookieHeaderProvider = cookieHeaderProvider
+        self.sleepAssertionController = sleepAssertionController
+        self.completedDownloadHandler = completedDownloadHandler
     }
 
     /// Downloads the job with `jobID`, driving it to a terminal state. Never
@@ -76,6 +82,8 @@ public struct DownloadEngine: Sendable {
         guard (try? store.start(id: jobID)) == true else { return }
         control?.register(jobID: jobID)
         defer { control?.unregister(jobID: jobID) }
+        sleepAssertionController?.downloadStarted()
+        defer { sleepAssertionController?.downloadFinished() }
         guard let job = store.job(id: jobID) else { return }
         do {
             if let checkpointStore,
@@ -257,7 +265,7 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
-        _ = try store.complete(id: job.id)
+        try complete(jobID: job.id, in: store)
         trace.summary()
     }
 
@@ -395,7 +403,7 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: completed, total: total, elapsed: clock.now - started))
-        _ = try store.complete(id: job.id)
+        try complete(jobID: job.id, in: store)
     }
 
     // MARK: Range-parallel
@@ -463,8 +471,13 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
-        _ = try store.complete(id: job.id)
+        try complete(jobID: job.id, in: store)
         trace.summary()
+    }
+
+    private func complete(jobID: UInt64, in store: JobStore) throws {
+        let completed = try store.complete(id: jobID)
+        completedDownloadHandler?(completed)
     }
 
     /// Issues a fresh ranged `GET` for `range` and feeds its body into

@@ -64,6 +64,8 @@ do {
 
     let downloadControl = DownloadControl()
     let importedCookies = ImportedCookieStore()
+    let metadataTagger = SpotlightMetadataTagger()
+    let sleepAssertions = SleepAssertionController()
     // The download engine runs a job whenever a command leaves it `queued` —
     // a fresh `add`, or a `resume`. Each run is its own detached task.
     let engine = DownloadEngine(
@@ -72,6 +74,17 @@ do {
         control: downloadControl,
         cookieHeaderProvider: { jobID, _ in
             importedCookies.header(forJobID: jobID)
+        },
+        sleepAssertionController: sleepAssertions,
+        completedDownloadHandler: { completed in
+            do {
+                try metadataTagger.tagCompletedDownload(
+                    destination: completed.destination,
+                    sourceURL: completed.url,
+                    downloadedAt: completed.completedAt ?? Date())
+            } catch {
+                warn("job \(completed.id) completed but Spotlight metadata tagging failed: \(error)")
+            }
         })
     let scheduleJob: @Sendable (UInt64) -> Void = { jobID in
         Task { await engine.run(jobID: jobID, in: store) }

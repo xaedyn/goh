@@ -186,12 +186,23 @@ were:
 Slice 6 starts here. Pick up by designing and test-driving the smallest
 reversible `GohCore` seams for:
 
-- Spotlight completion tagging (`kMDItemWhereFroms`, `kMDItemDownloadedDate`)
-  after a download completes;
-- sleep assertion ownership around active downloads using
-  `IOPMAssertionCreateWithName`, preventing idle sleep while allowing display
-  sleep;
-- daemon composition that keeps both behaviors out of the wire contract.
+Slice 6 progress: the first implementation step added a `SpotlightMetadataTagger`
+that writes `kMDItemWhereFroms` and `kMDItemDownloadedDate` as binary property
+lists in the standard `com.apple.metadata:*` extended attributes, because the
+current public SDK exposes the `MDItem` keys but no public setter. The second
+step added a reference-counted `SleepAssertionController` using
+`IOPMAssertionCreateWithName` and `kIOPMAssertPreventUserIdleSystemSleep`.
+`DownloadEngine` now has daemon-local hooks for completion metadata and active
+download power assertions; `gohd` composes one shared tagger and one shared sleep
+assertion controller. Full local validation is green:
+
+- `swift build -Xswiftc -warnings-as-errors`
+- `swift test` — 169 tests
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1422s, unified
+  0.1264s, overhead -11.1 %
+
+Pick up by reviewing the slice, opening a PR, checking CI/review comments, and
+merging under the agreed autonomous gates if clean.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
