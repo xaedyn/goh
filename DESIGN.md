@@ -1834,8 +1834,24 @@ download rather than re-read at the end._
 
 ## TUI
 
-_TBD — visual rendering details for `goh <url>` and the `goh top` dashboard.
-The wire contract above defines the data the TUI consumes._
+`goh top` uses the progress subscription contract's `scope: all` stream and
+renders a lightweight ANSI terminal dashboard. The first implementation is not a
+third-party curses dependency: it clears the screen, moves the cursor home, and
+repaints a compact table whenever the subscription baseline or a progress
+notification arrives. This keeps v0.1 native, dependency-free, and easy to test.
+
+`GohTUI` owns pure rendering. Given `[ProgressSnapshot]`, it returns the full
+dashboard string: a title, job count, and rows sorted by job ID with ID, state,
+progress, rate, connection count, and destination. Unknown totals render as
+`?`, and an empty snapshot renders a calm empty-state line. The `goh` executable
+owns terminal process behavior: installing the Ctrl-C signal source, writing the
+ANSI clear/home prefix, and keeping the XPC session alive.
+
+`goh top` exits `0` on Ctrl-C because it is only a monitor. If its daemon session
+drops, it uses the same bounded reconnect helper and fixed 2.5 s / 100 ms
+window as foreground downloads, but re-subscribes with `scope: all`. If the
+window elapses, `top` exits `1` with daemon-unavailable guidance instead of the
+foreground "download continues" note, because `top` did not create durable work.
 
 ## Dependencies
 
