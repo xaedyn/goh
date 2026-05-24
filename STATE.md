@@ -26,11 +26,12 @@ session; update at the start of every PR and at the end of every session.
   The follow-up CLI polish branch exposes already-frozen `add` options
   (`--output`, `--connections`, `--priority`, `--no-cookies`) and adds
   `goh ls --json` over the existing `LsReply` payload. The current branch is a
-  round-1 design draft for the load-bearing progress subscription contract:
+  round-2 design draft for the load-bearing progress subscription contract:
   `Command.subscribe`, `SubscribeReply`, `ProgressEvent`, full in-scope
-  progress snapshots, 100 ms coalescing, foreground reconnect, and `goh top`
-  subscription behavior. It is intentionally not implementation-ready until the
-  design rounds converge.
+  progress snapshots, progress-model revisions, explicit `fullSnapshot` update
+  events, 100 ms coalescing, foreground reconnect, and `goh top` subscription
+  behavior. It is intentionally not implementation-ready until the final design
+  audit passes.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -219,16 +220,18 @@ payload. Local gates for this branch:
 PR #24 passed CI and was squash-merged into `main` at `58c2e73`; CodeRabbit only
 posted the non-actionable quota / usage-credit warning.
 
-Current work: round 1 of the progress subscription design. The draft in
+Current work: round 2 of the progress subscription design. The draft in
 `DESIGN.md` proposes `protocolVersion = 3`, a `subscribe` command, full snapshot
-`ProgressEvent` notifications with lane-level progress, a daemon-local
+`ProgressEvent` notifications with lane-level progress, daemon progress-model
+`revision`s, an explicit v3 `updateKind == fullSnapshot`, a daemon-local
 `ProgressBroker` with 100 ms coalescing and terminal flushes, foreground
 `add`-then-subscribe behavior, and a 2.5 s reconnect window.
 
-Next: review the design draft before any implementation. The open questions are:
-confirm `protocolVersion = 3`; confirm full snapshots instead of deltas; confirm
-the `ProgressSnapshot` / `TransferLaneProgress` fields; confirm 100 ms
-coalescing; confirm the 2.5 s reconnect window.
+Next: do the design final-audit pass before implementation. The main audit
+questions are: ensure `revision` and `sequence` semantics are unambiguous;
+ensure the one-case `ProgressUpdateKind.fullSnapshot` enum is worth the
+explicitness; ensure reconnect never implies replay; and ensure the wire wording
+matches the existing `CommandCoding` evolution rules.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

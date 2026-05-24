@@ -1642,13 +1642,20 @@ directly to `AddRequest.destination`, `connectionCount`, `priority`, and
 the command JSON codec, with a trailing newline for shell ergonomics. This is a
 presentation choice over the current protocol, not a new wire shape.
 
-## Progress Subscription Contract — round 1 draft
+## Progress Subscription Contract — round 2 draft
 
-This is the first design round for the foreground `goh <url>` and `goh top`
-surface. It is load-bearing because it adds wire payloads to the current
-`Command` enum and defines the notification shape carried by `messageType ==
-notification`. Do not implement or merge this contract until the review rounds
-below converge and the final audit passes.
+This design pass covers the foreground `goh <url>` and `goh top` surface. It is
+load-bearing because it adds wire payloads to the current `Command` enum and
+defines the notification shape carried by `messageType == notification`. Do not
+implement or merge this contract until the review rounds below converge and the
+final audit passes.
+
+Round 2 keeps the round-1 direction — pushed full snapshots for v0.1 — and makes
+the long-term sync model explicit. Every baseline and event carries a monotonic
+progress-model `revision`, and every v3 event declares `updateKind ==
+fullSnapshot`. Deltas are intentionally out of v3, but the vocabulary leaves a
+clean protocol-v4 path for `delta` events if large queues or remote clients ever
+make that complexity worthwhile.
 
 SDK check: the macOS 26.5 XPC Swift interface exposes client-side incoming
 message handlers (`XPCSession.setIncomingMessageHandler` and initializers with
@@ -1679,17 +1686,22 @@ does it live in?
 `GohError.invalidArgument`. A job-scoped request for a missing job returns
 `GohError.jobNotFound`.
 
-The daemon replies once with `SubscribeReply { snapshot: [ProgressSnapshot] }`.
-That reply is the sequence-0 baseline. It then pushes `ProgressEvent`
-notification envelopes on the same session until the client disconnects or the
-daemon exits. Notifications reuse the original subscribe request's `requestID`,
-so one client session can correlate the stream without a second subscription
-identifier.
+The daemon replies once with a sequence-0 baseline:
 
-**Open.** Confirm `protocolVersion = 3` for this slice. It is the clean rule
-because `subscribe` is a new `Command` case and `ProgressEvent` is a new
-notification payload, but it means the v0.1 CLI and daemon must be upgraded
-together again.
+| Field | Type | Meaning |
+|---|---|---|
+| `revision` | `UInt64` | daemon progress-model revision represented by the snapshot |
+| `snapshot` | `[ProgressSnapshot]` | full current snapshot for the subscription scope |
+
+It then pushes `ProgressEvent` notification envelopes on the same session until
+the client disconnects or the daemon exits. Notifications reuse the original
+subscribe request's `requestID`, so one client session can correlate the stream
+without a second subscription identifier.
+
+**Round-2 status.** `protocolVersion = 3` is the converged direction unless the
+final audit finds a contradiction. It is the clean rule because `subscribe` is a
+new `Command` case and `ProgressEvent` is a new notification payload. The
+tradeoff is accepted: the v0.1 CLI and daemon must be upgraded together again.
 
 ### Decision 2 — what does a progress event contain?
 
@@ -1710,14 +1722,25 @@ let a reconnecting TUI recover immediately without replay state.
 | Field | Type | Meaning |
 |---|---|---|
 | `sequence` | `UInt64` | per-subscription counter, starting at `1` for the first notification after `SubscribeReply` |
+| `revision` | `UInt64` | daemon progress-model revision represented by this event |
 | `emittedAt` | `Date` | daemon emission time, ISO-8601 encoded by `CommandCoding` |
+| `updateKind` | `ProgressUpdateKind` | `fullSnapshot` in `protocolVersion = 3` |
 | `snapshot` | `[ProgressSnapshot]` | full current snapshot for the subscription scope |
 
-Because events are full snapshots, a removed in-scope job disappears from the
-next snapshot rather than producing a delta operation. For a job-scoped
-subscription, an empty snapshot means the watched job was removed by another
-client; for `goh top`, replacing the whole displayed model with the new snapshot
-removes stale rows.
+`ProgressUpdateKind` is a flat string enum with one valid v3 case:
+`fullSnapshot`. A future delta-capable protocol may add a `delta` case and patch
+fields under a new `protocolVersion`; v3 clients do not attempt to interpret
+unknown update kinds. Because v3 events are full snapshots, a removed in-scope
+job disappears from the next snapshot rather than producing a delta operation.
+For a job-scoped subscription, an empty snapshot means the watched job was
+removed by another client; for `goh top`, replacing the whole displayed model
+with the new snapshot removes stale rows.
+
+`revision` is not a replay cursor in v3. It is a daemon-local monotonic model
+revision that increments whenever the visible progress model changes. Coalescing
+may cause a subscriber to observe skipped revisions; that is normal. `sequence`
+is the per-subscription delivery counter for ordering events on one live
+session. On reconnect, the new `SubscribeReply.revision` becomes the baseline.
 
 `ProgressSnapshot` is:
 
@@ -1745,9 +1768,11 @@ HTTP/2 the work may be multiplexed streams on one TCP connection, while the UI
 still needs eight progress rows. `protocolName` is display-only and diagnostic;
 the engine still does not select HTTP/1.1, HTTP/2, or HTTP/3.
 
-**Open.** Confirm that full snapshots are acceptable for v0.1. A delta protocol
-is more efficient, but it makes reconnect and stale-client recovery stateful for
-no measured benefit yet.
+**Round-2 status.** Full snapshots are the converged v0.1 direction. A delta
+protocol is more efficient for very large queues or remote clients, but it makes
+reconnect and stale-client recovery stateful for no measured benefit yet. The
+explicit `revision` and `updateKind` fields make that later evolution clean
+without paying its implementation cost now.
 
 ### Decision 3 — how are notifications produced?
 
@@ -1760,18 +1785,19 @@ no measured benefit yet.
 
 **Proposed answer.** Add a daemon-local `ProgressBroker`. `JobStore` and the
 download engine publish state changes into the broker; the broker keeps only the
-latest in-scope snapshot and emits at most once per 100 ms per subscriber.
-Intermediate updates are intentionally overwritten. Terminal changes
-(`completed`, `failed`, `paused`, and `removed`) flush immediately so the
-foreground CLI exits promptly and `goh top` does not display stale rows.
+latest in-scope snapshot and latest revision, then emits at most once per 100 ms
+per subscriber. Intermediate updates are intentionally overwritten. Terminal
+changes (`completed`, `failed`, `paused`, and `removed`) flush immediately so
+the foreground CLI exits promptly and `goh top` does not display stale rows.
 
 If a notification send fails because the peer is gone, the daemon removes that
 subscriber and does not change job state. This preserves IPC §2.3's rule:
 subscriber sessions are observers.
 
-**Open.** Confirm the 100 ms cadence. It matches the earlier design note, is
-fast enough for a terminal progress UI, and remains cheap even with several
-active jobs.
+**Round-2 status.** The 100 ms cadence is the converged v0.1 direction unless
+implementation measurement shows it is too chatty. It matches the earlier design
+note, is fast enough for a terminal progress UI, and remains cheap even with
+several active jobs.
 
 ### Decision 4 — how do foreground and top use it?
 
@@ -1802,8 +1828,10 @@ the returned snapshot. If the window elapses, it exits `0` with the existing
 way, but if it gives up it exits `1` because it is only a monitor, not a
 foreground download that already created durable work.
 
-**Open.** Confirm that the reconnect constants should be `2.5 s` and `100 ms`.
-The previous design intentionally left this tunable open.
+**Round-2 status.** The reconnect constants are converging on `2.5 s` and
+`100 ms`. The important contract is the behavior: foreground downloads survive
+terminal/session loss, and reconnect receives a fresh full baseline rather than
+replaying missed events.
 
 ## Hashing
 
