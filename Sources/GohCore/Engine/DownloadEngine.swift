@@ -98,11 +98,12 @@ public struct DownloadEngine: Sendable {
         switch response.statusCode {
         case 206:
             guard let contentRange = Self.contentRange(response),
-                  contentRange.start == 0
+                  contentRange.start == 0,
+                  contentRange.end == contentRange.total - 1
             else {
                 throw GohError(
                     code: .connectionFailed,
-                    message: "the 206 response did not carry a usable Content-Range")
+                    message: "the initial 206 response did not carry a full Content-Range")
             }
             let total = contentRange.total
             try await fetchRanged(

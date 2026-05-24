@@ -158,20 +158,23 @@ remaining adaptive host scheduling work to v0.2.
 
 Current branch: `fix/core-correctness-gates`.
 
-Implemented and verified four correctness gates:
+Implemented and verified the correctness gates on PR #15:
 
 - Fixed-length chunk assembly now fails instead of digesting a short download.
 - Range workers validate exact `Content-Range` headers and fail short successful
   bodies.
+- The initial speculative `Range: bytes=0-` response now also requires a full,
+  internally consistent `Content-Range` (`0...total - 1`) before the scheduler
+  trusts the reported total.
 - `CommandService` reads envelope headers before payload decode, rejects
   incompatible `protocolVersion`, and rejects non-request message kinds.
 - `CommandDispatcher` rejects `connectionCount == 0` with `invalidArgument` and
   caps values above `16`.
 
-Verification: `swift test` passes 108 tests; `swift build -Xswiftc
+Verification: `swift test` passes 111 tests; `swift build -Xswiftc
 -warnings-as-errors` passes; `swift run -c release goh-bench hash-overhead 256`
 passes.
 
-Next: commit/push this branch and open the PR. After that, surface the daemon
-restart policy for persisted `active` jobs as the first 3c design question, then
-build daemon-path benchmarking so performance work measures the real product.
+Next: once PR #15 is merged, surface the daemon restart policy for persisted
+`active` jobs as the first 3c design question, then build daemon-path
+benchmarking so performance work measures the real product.
