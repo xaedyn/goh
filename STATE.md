@@ -5,9 +5,9 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `design/auth-import-command`
-- **Last merged:** PR #19 — Safari cookie import foundation — `main` at
-  `281b490`.
+- **Branch:** `feat/safari-auth-import-command`
+- **Last merged:** PR #20 — auth import command contract — `main` at
+  `a27b3b2`.
 - **Current slice:** Slice 5, Safari cookie import. The slice starts from the
   shipped network auto-pause daemon and adds the Safari
   `Cookies.binarycookies` parser plus the Full Disk Access import flow described
@@ -26,8 +26,9 @@ session; update at the start of every PR and at the end of every session.
   The sixth step composes one daemon-local `ImportedCookieStore` into both the
   dispatcher and `DownloadEngine`, so the already-built hooks are live in
   `gohd` without adding a new command. PR #19 shipped these non-wire
-  foundations. The current branch starts the load-bearing command/FDA contract
-  round for the remaining `goh auth import safari` surface.
+  foundations. PR #20 froze the load-bearing command/FDA contract for the
+  remaining `goh auth import safari` surface. The current branch implements that
+  `protocolVersion = 2` command and opened PR #21.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -167,36 +168,30 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `design/auth-import-command`.
+Current branch: `feat/safari-auth-import-command`.
 
-PR #19 was made ready, self-reviewed, checked against CI, and squash-merged into
-`main` at `281b490`. CodeRabbit could not run an actionable review because the
-account hit the hourly limit and the organization was out of usage credits. The
-non-wire Safari cookie foundation is now on `main`: parser, matcher, volatile
-per-job headers, engine attachment, locator, and daemon composition.
+PR #21 is open as a draft:
+<https://github.com/xaedyn/goh/pull/21>. Commit `0174c21` implements the frozen
+`protocolVersion = 2` `authImportSafari(request:)` command:
 
-This branch begins the load-bearing `goh auth import safari` command/FDA design
-round. `DESIGN.md` contains Round 1 draft notes, Round 2 review notes, Round 3
-candidate conclusions, and a Round 4 final audit. The contract is ready to
-freeze once the design PR is reviewed and merged. The candidate shape is a new
-`protocolVersion = 2` command,
-`authImportSafari(request:)`, with an empty JSON request,
-`{ importedCookieCount: UInt32 }` success reply, and a required native XPC fd
-sibling key `auth.safariCookieFile`. Round 3 resolves the prior open questions:
-do not mutate v1, keep the command enum flat, fail-fast on malformed files, and
-keep import scoped to future `add` commands only. v0.1 does not promise
-credentialed resume across daemon restarts.
+- v2 request/reply structs, command enum case, and immutable golden fixtures;
+- XPC fd sibling helpers for `auth.safariCookieFile`;
+- `CommandService` fd validation for missing/wrong siblings;
+- daemon-side fd read, Safari `Cookies.binarycookies` parse, and all-or-nothing
+  `ImportedCookieStore` replacement through `SafariAuthImportHandler`;
+- CLI-side `goh auth import safari` file-open flow, FDA guidance, and "do not
+  send XPC when no Safari cookie file opens" behavior.
 
-Pick up by reviewing that draft before adding the IPC command:
+Local validation before opening PR #21:
 
-- do not add `goh auth import safari` until its request/reply wire shape has an
-  approved design note;
-- connect the future import command to `ImportedCookieStore.replaceCookies(_:)`;
-- use `SafariCookieFileLocator` in the CLI-side FDA open flow;
-- keep Full Disk Access prompting and revocation handling user-clear;
-- avoid introducing a public persistent cookie-store format without an explicit
-  design pass;
-- if PR #20 CI/review stays clean, make it ready and merge it, then start the
-  implementation branch from updated `main`;
-- leave unrelated untracked files (`AGENTS.md`,
-  `Benchmarks/diagnose-saturated.log`) untouched.
+- `swift build -Xswiftc -warnings-as-errors`
+- `swift test` — 164 tests
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1462s, unified
+  0.1245s, overhead -14.8 %
+
+Pick up by checking PR #21 CI and review comments. If CI is green and review is
+clean, make PR #21 ready and merge it under the agreed autonomous gates. Then
+start the next roadmap slice from updated `main`.
+
+Leave unrelated untracked files (`AGENTS.md`,
+`Benchmarks/diagnose-saturated.log`) untouched.
