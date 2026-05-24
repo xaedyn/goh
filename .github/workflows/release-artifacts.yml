@@ -70,6 +70,9 @@ jobs:
       - name: Package release artifacts
         run: bash Scripts/package-release.sh "${{ steps.version.outputs.version }}" .build/release-artifacts
 
+      - name: Verify release artifacts
+        run: bash Scripts/verify-release-artifact.sh ".build/release-artifacts/goh-${{ steps.version.outputs.version }}-macos-arm64.tar.gz"
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
