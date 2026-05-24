@@ -9,7 +9,8 @@ session; update at the start of every PR and at the end of every session.
 - **Last merged:** PR #16 — checkpoint/resume design — `main` at `237c85e`.
 - **Current slice:** Slice 3c, checkpoint/resume implementation. This branch now
   has checkpoint primitives, startup reconciliation, engine checkpoint writes,
-  and crash resume from the first missing byte; live pause/resume/rm/retry is
+  crash resume from the first missing byte, and live active `pause` / `rm`
+  control at checkpoint boundaries; retry policy and kept-partial adoption are
   the next layer.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
@@ -175,7 +176,9 @@ Implemented on `feat/checkpoint-resume` so far:
 - `DownloadEngine` accepts a checkpoint store, records synced ranged-download
   intervals into checkpoints, resumes a checkpointed job with `If-Range` from
   missing byte ranges, and deletes the checkpoint after completion.
+- `DownloadControl` coordinates active `pause` and active `rm`: command replies
+  wait until the engine reaches a checkpoint boundary, so `pause` cannot race an
+  immediate `resume`; `rm` without keep deletes partial/checkpoint, while
+  `rm --keep` preserves both.
 
-Next: build the live control layer on top of the same checkpoint mechanism:
-active `pause`, user `resume`, `rm` teardown with `keepPartialFile`, then retry
-policy.
+Next: implement automatic kept-partial adoption on `add`, then retry policy.

@@ -79,17 +79,23 @@ public final class JobStore: Sendable {
         state.withLock { $0.jobs.first { $0.id == id } }
     }
 
-    /// Pauses a `queued` job with a `user` pause reason.
-    ///
-    /// This slice pauses only a `queued` job. `pause` of an `active` job is a
-    /// no-op — 3a cannot interrupt a live transfer (that is slice 3c), and
-    /// reporting `paused` while the engine still moves bytes would lie to
-    /// `goh ls`. `pause` of `paused` / `completed` / `failed` is the §3.3 no-op.
+    /// The job with `id`, throwing `jobNotFound` when none exists.
+    public func requireJob(id: UInt64) throws -> JobSummary {
+        guard let job = job(id: id) else {
+            throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+        }
+        return job
+    }
+
+    /// Pauses a `queued` job immediately, or an `active` job after the engine
+    /// has acknowledged its checkpoint boundary through ``DownloadControl``.
+    /// `pause` of `paused` / `completed` / `failed` is the §3.3 no-op.
     public func pause(id: UInt64) throws -> JobSummary {
         try mutateJob(id: id) { job in
-            guard job.state == .queued else { return }
+            guard JobLifecycle.isLegal(from: job.state, to: .paused) else { return }
             job.state = .paused
             job.pauseReason = .user
+            job.actualConnectionCount = 0
         }
     }
 

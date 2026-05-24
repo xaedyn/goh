@@ -47,14 +47,18 @@ do {
         warn("job \(jobID) could not safely resume after restart and was marked retryable")
     }
 
+    let downloadControl = DownloadControl()
     // The download engine runs a job whenever a command leaves it `queued` —
     // a fresh `add`, or a `resume`. Each run is its own detached task.
     let engine = DownloadEngine(
         session: URLSession(configuration: GohCore.downloadSessionConfiguration()),
-        checkpointStore: checkpointStore)
-    let dispatcher = CommandDispatcher(store: store, onJobQueued: { jobID in
-        Task { await engine.run(jobID: jobID, in: store) }
-    })
+        checkpointStore: checkpointStore,
+        control: downloadControl)
+    let dispatcher = CommandDispatcher(
+        store: store, control: downloadControl,
+        onJobQueued: { jobID in
+            Task { await engine.run(jobID: jobID, in: store) }
+        })
     let service = CommandService(dispatcher: dispatcher)
 
     // Resume any jobs that were still `queued` when the daemon last stopped.

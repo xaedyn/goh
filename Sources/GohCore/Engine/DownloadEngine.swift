@@ -53,10 +53,16 @@ public struct DownloadEngine: Sendable {
 
     private let session: URLSession
     private let checkpointStore: CheckpointStore?
+    private let control: DownloadControl?
 
-    public init(session: URLSession, checkpointStore: CheckpointStore? = nil) {
+    public init(
+        session: URLSession,
+        checkpointStore: CheckpointStore? = nil,
+        control: DownloadControl? = nil
+    ) {
         self.session = session
         self.checkpointStore = checkpointStore
+        self.control = control
     }
 
     /// Downloads the job with `jobID`, driving it to a terminal state. Never
@@ -65,6 +71,8 @@ public struct DownloadEngine: Sendable {
         guard store.job(id: jobID) != nil else { return }
         // Claim the job atomically; only proceed if this call won the claim.
         guard (try? store.start(id: jobID)) == true else { return }
+        control?.register(jobID: jobID)
+        defer { control?.unregister(jobID: jobID) }
         guard let job = store.job(id: jobID) else { return }
         do {
             if let checkpointStore,
@@ -77,6 +85,8 @@ public struct DownloadEngine: Sendable {
                 try await download(job: job, store: store, trace: EngineDiagnostics())
             }
             try? checkpointStore?.delete(jobID: jobID)
+        } catch let stop as DownloadControlStop {
+            handle(stop: stop, job: job)
         } catch let error as GohError {
             _ = try? store.fail(
                 id: jobID, error: error, retryEligible: Self.retryEligible(for: error))
@@ -84,6 +94,17 @@ public struct DownloadEngine: Sendable {
             let mapped = Self.mapError(error)
             _ = try? store.fail(
                 id: jobID, error: mapped, retryEligible: Self.retryEligible(for: mapped))
+        }
+    }
+
+    private func handle(stop: DownloadControlStop, job: JobSummary) {
+        switch stop {
+        case .pause:
+            return
+        case .remove(let keepPartialFile):
+            guard !keepPartialFile else { return }
+            try? checkpointStore?.delete(jobID: job.id)
+            try? FileManager.default.removeItem(atPath: job.destination)
         }
     }
 
@@ -284,6 +305,7 @@ public struct DownloadEngine: Sendable {
                     completed: completedBeforeRange + written,
                     total: total,
                     elapsed: clock.now - started))
+            try control?.stopIfRequested(jobID: job.id)
         }
 
         for try await chunk in stream {
@@ -349,6 +371,7 @@ public struct DownloadEngine: Sendable {
             completed += UInt64(buffer.count)
             buffer.removeAll(keepingCapacity: true)
             assembler.advance(range: 0, writtenBytes: completed)
+            try control?.stopIfRequested(jobID: job.id)
         }
 
         do {
@@ -527,6 +550,7 @@ public struct DownloadEngine: Sendable {
                     Self.progress(completed: overall, total: total,
                                   elapsed: clock.now - started))
             }
+            try control?.stopIfRequested(jobID: job.id)
         }
 
         var firstByteSeen = false

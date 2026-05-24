@@ -363,6 +363,14 @@ checkpoint metadata match exactly. Otherwise it creates a fresh job and leaves
 the kept file alone. No explicit "adopt partial" flag is added to the v1 request
 schema.
 
+The command path and engine coordinate through a daemon-local `DownloadControl`.
+For active jobs, `pause` and `rm --keep` block the command reply until the engine
+has written and checkpointed its current piece; `rm` without `--keep` uses the
+same acknowledgement and then deletes the daemon-owned partial and checkpoint.
+This keeps the v1 wire state honest without adding a transient `pausing` state:
+when the client receives the reply, the engine has stopped touching that job's
+file.
+
 **Considered alternatives.**
 - *Separate mechanisms for crash, pause, and keep-partial* — easier to stage but
   likely to diverge.
@@ -1156,7 +1164,9 @@ Request: `{ jobID }`; reply: the updated `JobSummary` (`state == paused`,
 `pauseReason == user`). `pause` is **graceful**: the daemon lets the in-flight
 chunk's `pwrite` complete — a ≤1 MB write, sub-millisecond and bounded — writes
 the checkpoint, then transitions to `paused`, so the partial file and checkpoint
-stay consistent for a later `resume`. Pausing an already-paused or completed job
+stay consistent for a later `resume`. The command reply is held until that
+boundary has been acknowledged, so a caller cannot immediately `resume` into a
+second engine task racing the first. Pausing an already-paused or completed job
 is a no-op returning the current summary.
 
 #### 3.4 `resume`
@@ -1173,6 +1183,8 @@ down its connections: without `--keep` the partial file and checkpoint are
 deleted (an in-flight chunk write may be abandoned, since the file is going
 away); with `--keep` the daemon lets the in-flight chunk complete and checkpoints
 before retaining the partial, so the kept file is resumable by a future `add`.
+Like active `pause`, active `rm` replies only after the engine has acknowledged
+the stop. Non-active `rm` remains a synchronous catalog mutation.
 
 **File ownership boundary.** `rm` removes the daemon's *tracking record* for a
 job. A finished file on disk is the **user's**; the daemon never deletes a file

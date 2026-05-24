@@ -15,6 +15,7 @@ public struct CommandDispatcher: Sendable {
     public static let maximumConnectionCount: UInt8 = 16
 
     private let store: JobStore
+    private let control: DownloadControl?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
 
     /// Creates a dispatcher over `store`. `onJobQueued`, when provided, is called
@@ -23,9 +24,11 @@ public struct CommandDispatcher: Sendable {
     /// daemon can hand it to the download engine.
     public init(
         store: JobStore,
+        control: DownloadControl? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil
     ) {
         self.store = store
+        self.control = control
         self.onJobQueued = onJobQueued
     }
 
@@ -54,6 +57,9 @@ public struct CommandDispatcher: Sendable {
                 return .list(LsReply(jobs: store.allJobs()))
 
             case .pause(let jobID):
+                if store.job(id: jobID)?.state == .active {
+                    _ = control?.requestStop(jobID: jobID, reason: .pause)
+                }
                 return .job(try store.pause(id: jobID))
 
             case .resume(let jobID):
@@ -64,6 +70,12 @@ public struct CommandDispatcher: Sendable {
                 return .job(summary)
 
             case .rm(let request):
+                let job = try store.requireJob(id: request.jobID)
+                if job.state == .active {
+                    _ = control?.requestStop(
+                        jobID: request.jobID,
+                        reason: .remove(keepPartialFile: request.keepPartialFile ?? false))
+                }
                 try store.remove(id: request.jobID)
                 return .removed(RmReply(removedJobID: request.jobID))
             }
