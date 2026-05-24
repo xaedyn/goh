@@ -58,6 +58,32 @@ struct GohCommandLineTests {
         #expect(result.standardError == "")
     }
 
+    @Test("top runs the live dashboard flow")
+    func topRunsLiveDashboardFlow() {
+        var topRunCount = 0
+        var oneShotSendCount = 0
+
+        let result = GohCommandLine(
+            arguments: ["top"],
+            top: {
+                topRunCount += 1
+                return GohCommandLineResult(
+                    exitCode: 0,
+                    standardOutput: "top flow\n")
+            },
+            send: { _ in
+                oneShotSendCount += 1
+                throw TestTransportError()
+            }
+        ).run()
+
+        #expect(topRunCount == 1)
+        #expect(oneShotSendCount == 0)
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == "top flow\n")
+        #expect(result.standardError == "")
+    }
+
     @Test("add options populate the full add request")
     func addOptionsPopulateFullRequest() throws {
         let job = Self.makeJob(

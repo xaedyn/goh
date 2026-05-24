@@ -3,6 +3,7 @@ import Dispatch
 import Foundation
 
 import GohCore
+import GohTUI
 
 // goh — CLI client. Thin. Talks to the daemon (`gohd`) over XPC and exits fast.
 
@@ -65,6 +66,36 @@ let result = GohCommandLine(
             },
             shouldInterrupt: {
                 inbox.isInterrupted
+            },
+            standardOutput: { text in
+                write(text, to: .standardOutput)
+            },
+            standardError: { text in
+                write(text, to: .standardError)
+            }
+        ).run()
+    },
+    top: {
+        let inbox = GohXPCNotificationInbox()
+        let interruptSource = makeInterruptSource {
+            inbox.interrupt()
+        }
+        defer { interruptSource.cancel() }
+
+        return GohTop(
+            session: try makeForegroundSession(
+                inbox: inbox,
+                validationMode: validationMode),
+            reconnect: {
+                try makeForegroundSession(
+                    inbox: inbox,
+                    validationMode: validationMode)
+            },
+            shouldInterrupt: {
+                inbox.isInterrupted
+            },
+            render: { snapshots in
+                GohTUI.renderTopDashboard(snapshots: snapshots) + "\n"
             },
             standardOutput: { text in
                 write(text, to: .standardOutput)
