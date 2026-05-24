@@ -5,14 +5,14 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/spotlight-sleep-assertions`
-- **Last merged:** PR #21 — Safari auth import command — `main` at
-  `0da86e6`.
-- **Current slice:** Slice 6, Spotlight tagging and sleep assertions. The slice
-  starts from the shipped Safari auth import command and adds completion
-  metadata (`kMDItemWhereFroms`, `kMDItemDownloadedDate`) plus an active-download
-  sleep assertion that prevents idle sleep while allowing display sleep
-  (`ROADMAP.md` §10-11).
+- **Branch:** `feat/cli-client`
+- **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
+  `5b3884d`.
+- **Current slice:** Slice 7, the `goh` CLI client. The slice starts from the
+  shipped daemon, engine, auth import, Spotlight metadata, and sleep assertion
+  foundation and fills out the command-line surface in `ROADMAP.md` §2-4:
+  foreground `goh <url>`, `goh add`, `goh ls`, `goh pause`, `goh resume`,
+  `goh rm`, and first-run daemon-service guidance.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -30,7 +30,8 @@ session; update at the start of every PR and at the end of every session.
   foundations. PR #20 froze the load-bearing command/FDA contract for the
   remaining `goh auth import safari` surface. PR #21 implemented the
   `protocolVersion = 2` command, including XPC fd passing, daemon parse/import,
-  and CLI Full Disk Access handling. Slice 5 is shipped.
+  and CLI Full Disk Access handling. PR #22 shipped Spotlight completion
+  metadata and active-download sleep assertions. Slices 5 and 6 are shipped.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -81,8 +82,8 @@ remaining adaptive host scheduling work to v0.2.
 - **4** — shipped in PR #18: `NWPathMonitor` cellular auto-pause (§12).
 - **5** — shipped across PR #19, PR #20, and PR #21: Safari cookie import
   foundation, auth import command contract, and implementation.
-- **6** — in progress: Spotlight tagging and sleep assertions.
-- **7** — the `goh` CLI client.
+- **6** — shipped in PR #22: Spotlight tagging and sleep assertions.
+- **7** — in progress: the `goh` CLI client.
 - **8** — the TUI for `goh top`.
 - **9** — Homebrew formula, signing, notarization, the release pipeline.
 
@@ -169,40 +170,29 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/spotlight-sleep-assertions`.
+Current branch: `feat/cli-client`.
 
-PR #21 was made ready, locally self-reviewed, checked against CI, and
-squash-merged into `main` at `0da86e6`. CodeRabbit was unavailable for an
+PR #22 was made ready, locally self-reviewed, checked against CI, and
+squash-merged into `main` at `5b3884d`. CodeRabbit was unavailable for an
 actionable review because the account/organization hit review quota and usage
-credit limits; the PR had no review findings to address. The final PR #21 gates
+credit limits; the PR had no review findings to address. The final PR #22 gates
 were:
-
-- `swift build -Xswiftc -warnings-as-errors`
-- `swift test` — 165 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1409s, unified
-  0.1290s, overhead -8.5 %
-- GitHub Actions `Build & test` passed
-
-Slice 6 starts here. Pick up by designing and test-driving the smallest
-reversible `GohCore` seams for:
-
-Slice 6 progress: the first implementation step added a `SpotlightMetadataTagger`
-that writes `kMDItemWhereFroms` and `kMDItemDownloadedDate` as binary property
-lists in the standard `com.apple.metadata:*` extended attributes, because the
-current public SDK exposes the `MDItem` keys but no public setter. The second
-step added a reference-counted `SleepAssertionController` using
-`IOPMAssertionCreateWithName` and `kIOPMAssertPreventUserIdleSystemSleep`.
-`DownloadEngine` now has daemon-local hooks for completion metadata and active
-download power assertions; `gohd` composes one shared tagger and one shared sleep
-assertion controller. Full local validation is green:
 
 - `swift build -Xswiftc -warnings-as-errors`
 - `swift test` — 169 tests
 - `swift run -c release goh-bench hash-overhead 256` — inline 0.1422s, unified
   0.1264s, overhead -11.1 %
+- GitHub Actions `Build & test` passed
 
-Pick up by reviewing the slice, opening a PR, checking CI/review comments, and
-merging under the agreed autonomous gates if clean.
+Slice 7 starts here. Pick up by test-driving the CLI surface in small pieces,
+preferably by keeping parsing/formatting/testable command runners in `GohCore`
+or another importable target while `Sources/goh/main.swift` remains thin:
+
+- `goh add <url>` and foreground `goh <url>` request construction;
+- `goh ls`, `pause`, `resume`, `rm` request construction and reply/error
+  formatting;
+- daemon connection errors and first-run `brew services start goh` guidance;
+- preserving the existing `goh auth import safari` flow from Slice 5.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
