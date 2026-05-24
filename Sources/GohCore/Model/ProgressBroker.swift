@@ -42,7 +42,8 @@ public struct ProgressBroker: Sendable {
     public init(cadence: TimeInterval = 0.100, initialSnapshots: [ProgressSnapshot] = []) {
         self.revision = 0
         self.snapshots = Dictionary(
-            uniqueKeysWithValues: initialSnapshots.map { ($0.job.id, $0) })
+            initialSnapshots.map { ($0.job.id, $0) },
+            uniquingKeysWith: { _, latest in latest })
         self.subscribers = [:]
         self.subscriberOrder = []
         self.cadence = cadence
@@ -75,7 +76,7 @@ public struct ProgressBroker: Sendable {
     }
 
     public mutating func remove(jobID: UInt64, at now: Date = Date()) -> [ProgressBrokerDelivery] {
-        snapshots.removeValue(forKey: jobID)
+        guard snapshots.removeValue(forKey: jobID) != nil else { return [] }
         revision += 1
         return enqueueEvents(changedJobID: jobID, terminal: true, at: now)
     }

@@ -61,6 +61,17 @@ struct ProgressBrokerTests {
         }
     }
 
+    @Test("duplicate initial snapshots keep the latest snapshot instead of trapping")
+    func duplicateInitialSnapshotsKeepLatest() throws {
+        let first = ProgressSnapshot(job: job(id: 1, completed: 10), lanes: [])
+        let latest = ProgressSnapshot(job: job(id: 1, completed: 20), lanes: [])
+        var broker = ProgressBroker(initialSnapshots: [first, latest])
+
+        let subscription = try broker.subscribe(SubscribeRequest(scope: .job, jobID: 1))
+
+        #expect(subscription.reply.snapshot == [latest])
+    }
+
     @Test("coalescing overwrites intermediate updates with the latest snapshot")
     func coalescingKeepsLatestSnapshot() throws {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
@@ -110,5 +121,22 @@ struct ProgressBrokerTests {
         expectErrorCode(.jobNotFound) {
             _ = try broker.subscribe(SubscribeRequest(scope: .job, jobID: 1))
         }
+    }
+
+    @Test("removing a missing job does not advance revision or emit")
+    func missingRemovalDoesNotAdvanceRevisionOrEmit() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var broker = ProgressBroker(
+            initialSnapshots: [ProgressSnapshot(job: job(id: 1), lanes: [])])
+        let subscription = try broker.subscribe(SubscribeRequest(scope: .all))
+
+        #expect(broker.remove(jobID: 404, at: start).isEmpty)
+
+        let deliveries = broker.publish(
+            ProgressSnapshot(job: job(id: 1, completed: 10), lanes: []),
+            at: start.addingTimeInterval(1))
+
+        #expect(deliveries.map(\.subscriptionID) == [subscription.id])
+        #expect(deliveries.first?.event.revision == 1)
     }
 }

@@ -1747,10 +1747,12 @@ separate: `ProgressBroker` is deterministic and in-memory, while a thread-safe
 send throws, and the accepted XPC session's cancellation handler explicitly
 unsubscribes every stream registered on that session. That means an idle
 watcher does not linger forever waiting for the next progress event just to
-discover that its peer is gone. `JobStore` publishes empty-lane
-`ProgressSnapshot`s for every visible job mutation and terminal removal; richer
-per-lane engine snapshots can replace those empty lanes later without changing
-the v3 wire shape.
+discover that its peer is gone. `JobStore` serializes each state mutation
+through its progress-broker side effect, so a late progress publish cannot race
+after a later removal and reintroduce a stale job to subscribers. It publishes
+empty-lane `ProgressSnapshot`s for every visible job mutation and terminal
+removal; richer per-lane engine snapshots can replace those empty lanes later
+without changing the v3 wire shape.
 
 Foreground `goh <url>` sends the already-frozen `add` request, receives the new
 `JobSummary`, then sends `subscribe(scope: job, jobID:)` on the same session and

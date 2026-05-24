@@ -37,6 +37,10 @@ public final class JobStore: Sendable {
     }
 
     private let state: Mutex<State>
+    /// Serializes each state mutation through its progress-broker side effect,
+    /// so a publish cannot race after a later removal and resurrect stale
+    /// progress.
+    private let mutationOrder = Mutex(())
     private let writer: CatalogWriter?
     private let progress: ProgressBrokerHub?
 
@@ -62,24 +66,26 @@ public final class JobStore: Sendable {
             bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
         lastProgressAt: Date? = nil
     ) -> JobSummary {
-        let summary = withMutation { state in
-            let id = state.nextID
-            state.nextID += 1
-            let summary = JobSummary(
-                id: id,
-                url: url,
-                destination: destination,
-                state: .queued,
-                progress: progress,
-                createdAt: Date(),
-                lastProgressAt: lastProgressAt,
-                requestedConnectionCount: requestedConnectionCount,
-                actualConnectionCount: 0)
-            state.jobs.append(summary)
+        mutationOrder.withLock { _ in
+            let summary = withMutation { state in
+                let id = state.nextID
+                state.nextID += 1
+                let summary = JobSummary(
+                    id: id,
+                    url: url,
+                    destination: destination,
+                    state: .queued,
+                    progress: progress,
+                    createdAt: Date(),
+                    lastProgressAt: lastProgressAt,
+                    requestedConnectionCount: requestedConnectionCount,
+                    actualConnectionCount: 0)
+                state.jobs.append(summary)
+                return summary
+            }
+            publishProgress(summary)
             return summary
         }
-        publishProgress(summary)
-        return summary
     }
 
     /// Every job, in creation order.
@@ -133,21 +139,23 @@ public final class JobStore: Sendable {
     /// not `queued` — already claimed, or terminal — so a second caller cannot
     /// also start downloading it. Throws `jobNotFound` if no such job exists.
     public func start(id: UInt64) throws -> Bool {
-        let (started, summary): (Bool, JobSummary?) = try withMutation { state in
-            guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
-                throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+        try mutationOrder.withLock { _ in
+            let (started, summary): (Bool, JobSummary?) = try withMutation { state in
+                guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
+                    throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+                }
+                guard JobLifecycle.isLegal(from: state.jobs[index].state, to: .active) else {
+                    return (false, Optional<JobSummary>.none)
+                }
+                state.jobs[index].state = .active
+                state.jobs[index].actualConnectionCount = 1  // single-connection in this slice
+                return (true, state.jobs[index])
             }
-            guard JobLifecycle.isLegal(from: state.jobs[index].state, to: .active) else {
-                return (false, Optional<JobSummary>.none)
+            if let summary {
+                publishProgress(summary)
             }
-            state.jobs[index].state = .active
-            state.jobs[index].actualConnectionCount = 1  // single-connection in this slice
-            return (true, state.jobs[index])
+            return started
         }
-        if let summary {
-            publishProgress(summary)
-        }
-        return started
     }
 
     /// Records download progress for an `active` job.
@@ -229,59 +237,63 @@ public final class JobStore: Sendable {
             }
         }
 
-        let (result, changedJobs) = withMutation { state in
-            var result = StartupReconciliationResult()
-            var changedJobs: [JobSummary] = []
-            for index in state.jobs.indices where state.jobs[index].state == .active {
-                let jobID = state.jobs[index].id
-                guard let decision = decisions[jobID] else { continue }
-                switch decision {
-                case .requeue(let progress, let lastProgressAt):
-                    state.jobs[index].state = .queued
-                    state.jobs[index].progress = progress
-                    state.jobs[index].lastProgressAt = lastProgressAt
-                    state.jobs[index].actualConnectionCount = 0
-                    state.jobs[index].pauseReason = nil
-                    state.jobs[index].completedAt = nil
-                    state.jobs[index].error = nil
-                    state.jobs[index].retryEligible = nil
-                    state.jobs[index].failedAt = nil
-                    state.jobs[index].retryCount = nil
-                    result.requeuedJobIDs.append(jobID)
-                    changedJobs.append(state.jobs[index])
-                case .fail(let message):
-                    state.jobs[index].state = .failed
-                    state.jobs[index].progress.bytesPerSecond = 0
-                    state.jobs[index].actualConnectionCount = 0
-                    state.jobs[index].pauseReason = nil
-                    state.jobs[index].completedAt = nil
-                    state.jobs[index].error = GohError(
-                        code: .connectionFailed, message: message)
-                    state.jobs[index].failedAt = Date()
-                    state.jobs[index].retryEligible = true
-                    state.jobs[index].retryCount = 0
-                    result.failedJobIDs.append(jobID)
-                    changedJobs.append(state.jobs[index])
+        return mutationOrder.withLock { _ in
+            let (result, changedJobs) = withMutation { state in
+                var result = StartupReconciliationResult()
+                var changedJobs: [JobSummary] = []
+                for index in state.jobs.indices where state.jobs[index].state == .active {
+                    let jobID = state.jobs[index].id
+                    guard let decision = decisions[jobID] else { continue }
+                    switch decision {
+                    case .requeue(let progress, let lastProgressAt):
+                        state.jobs[index].state = .queued
+                        state.jobs[index].progress = progress
+                        state.jobs[index].lastProgressAt = lastProgressAt
+                        state.jobs[index].actualConnectionCount = 0
+                        state.jobs[index].pauseReason = nil
+                        state.jobs[index].completedAt = nil
+                        state.jobs[index].error = nil
+                        state.jobs[index].retryEligible = nil
+                        state.jobs[index].failedAt = nil
+                        state.jobs[index].retryCount = nil
+                        result.requeuedJobIDs.append(jobID)
+                        changedJobs.append(state.jobs[index])
+                    case .fail(let message):
+                        state.jobs[index].state = .failed
+                        state.jobs[index].progress.bytesPerSecond = 0
+                        state.jobs[index].actualConnectionCount = 0
+                        state.jobs[index].pauseReason = nil
+                        state.jobs[index].completedAt = nil
+                        state.jobs[index].error = GohError(
+                            code: .connectionFailed, message: message)
+                        state.jobs[index].failedAt = Date()
+                        state.jobs[index].retryEligible = true
+                        state.jobs[index].retryCount = 0
+                        result.failedJobIDs.append(jobID)
+                        changedJobs.append(state.jobs[index])
+                    }
                 }
+                return (result, changedJobs)
             }
-            return (result, changedJobs)
+            for job in changedJobs {
+                publishProgress(job)
+            }
+            return result
         }
-        for job in changedJobs {
-            publishProgress(job)
-        }
-        return result
     }
 
     /// Removes the job's tracking record (`DESIGN.md` §3.5 "File ownership
     /// boundary" — the record, not any file on disk).
     public func remove(id: UInt64) throws {
-        try withMutation { state in
-            guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
-                throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+        try mutationOrder.withLock { _ in
+            try withMutation { state in
+                guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
+                    throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+                }
+                state.jobs.remove(at: index)
             }
-            state.jobs.remove(at: index)
+            progress?.remove(jobID: id)
         }
-        progress?.remove(jobID: id)
     }
 
     /// Runs `body` under the lock, then schedules a catalog save of the new
@@ -303,18 +315,20 @@ public final class JobStore: Sendable {
     private func mutateJob(
         id: UInt64, _ change: (inout JobSummary) -> Void
     ) throws -> JobSummary {
-        let (summary, changed) = try withMutation { state in
-            guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
-                throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+        try mutationOrder.withLock { _ in
+            let (summary, changed) = try withMutation { state in
+                guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
+                    throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+                }
+                let original = state.jobs[index]
+                change(&state.jobs[index])
+                return (state.jobs[index], state.jobs[index] != original)
             }
-            let original = state.jobs[index]
-            change(&state.jobs[index])
-            return (state.jobs[index], state.jobs[index] != original)
+            if changed {
+                publishProgress(summary)
+            }
+            return summary
         }
-        if changed {
-            publishProgress(summary)
-        }
-        return summary
     }
 
     private static func unsafeResumeMessage(sidecar: URL?) -> String {
