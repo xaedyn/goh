@@ -1642,6 +1642,169 @@ directly to `AddRequest.destination`, `connectionCount`, `priority`, and
 the command JSON codec, with a trailing newline for shell ergonomics. This is a
 presentation choice over the current protocol, not a new wire shape.
 
+## Progress Subscription Contract — round 1 draft
+
+This is the first design round for the foreground `goh <url>` and `goh top`
+surface. It is load-bearing because it adds wire payloads to the current
+`Command` enum and defines the notification shape carried by `messageType ==
+notification`. Do not implement or merge this contract until the review rounds
+below converge and the final audit passes.
+
+SDK check: the macOS 26.5 XPC Swift interface exposes client-side incoming
+message handlers (`XPCSession.setIncomingMessageHandler` and initializers with
+`incomingMessageHandler`) and unidirectional sends (`XPCSession.send(message:)`).
+That means daemon-pushed notification envelopes over the already-open validated
+session are viable without polling or a second transport.
+
+### Decision 1 — how does a client subscribe?
+
+**Question.** Is progress subscription a new command payload, and what version
+does it live in?
+
+**Options considered.**
+- Add `Command.subscribe(request:)` in a new `protocolVersion = 3`.
+- Reuse `ls` and keep the session open.
+- Add a second Mach service dedicated to progress streams.
+
+**Proposed answer.** Add `Command.subscribe(request:)` and bump the protocol to
+`3`. The request is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `scope` | `SubscriptionScope` | `job` for foreground `goh <url>`, `all` for `goh top` |
+| `jobID` | `UInt64?` | required when `scope == job`, absent when `scope == all` |
+
+`SubscriptionScope` is a flat string enum: `job`, `all`. A malformed invariant
+(`scope == job` without `jobID`, or `scope == all` with `jobID`) returns
+`GohError.invalidArgument`. A job-scoped request for a missing job returns
+`GohError.jobNotFound`.
+
+The daemon replies once with `SubscribeReply { snapshot: [ProgressSnapshot] }`.
+That reply is the sequence-0 baseline. It then pushes `ProgressEvent`
+notification envelopes on the same session until the client disconnects or the
+daemon exits. Notifications reuse the original subscribe request's `requestID`,
+so one client session can correlate the stream without a second subscription
+identifier.
+
+**Open.** Confirm `protocolVersion = 3` for this slice. It is the clean rule
+because `subscribe` is a new `Command` case and `ProgressEvent` is a new
+notification payload, but it means the v0.1 CLI and daemon must be upgraded
+together again.
+
+### Decision 2 — what does a progress event contain?
+
+**Question.** Should the stream carry deltas or snapshots, and how much
+per-connection detail belongs in v0.1?
+
+**Options considered.**
+- Full in-scope snapshots every event.
+- Deltas with update/remove operations.
+- Aggregate-only job progress, leaving connection detail to a later protocol.
+
+**Proposed answer.** Use full snapshots for v0.1. The expected job count is
+small, the payloads stay tiny relative to downloaded bytes, and full snapshots
+let a reconnecting TUI recover immediately without replay state.
+
+`ProgressEvent` is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `sequence` | `UInt64` | per-subscription counter, starting at `1` for the first notification after `SubscribeReply` |
+| `emittedAt` | `Date` | daemon emission time, ISO-8601 encoded by `CommandCoding` |
+| `snapshot` | `[ProgressSnapshot]` | full current snapshot for the subscription scope |
+
+Because events are full snapshots, a removed in-scope job disappears from the
+next snapshot rather than producing a delta operation. For a job-scoped
+subscription, an empty snapshot means the watched job was removed by another
+client; for `goh top`, replacing the whole displayed model with the new snapshot
+removes stale rows.
+
+`ProgressSnapshot` is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `job` | `JobSummary` | the existing public job surface |
+| `lanes` | `[TransferLaneProgress]` | active range/connection lanes for this job; empty when not active or before the scheduler has lane detail |
+
+`TransferLaneProgress` is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `index` | `UInt8` | stable display index within the current engine attempt |
+| `state` | `TransferLaneState` | `pending`, `active`, `completed`, or `failed` |
+| `rangeStart` | `UInt64?` | byte offset for the lane, when known |
+| `rangeEnd` | `UInt64?` | inclusive byte offset for the lane, when known |
+| `bytesCompleted` | `UInt64` | bytes written by this lane |
+| `bytesTotal` | `UInt64?` | lane length, or `null` when unknown |
+| `bytesPerSecond` | `UInt64` | recent lane throughput |
+| `protocolName` | `String?` | observed URLSession protocol string such as `h2`, when known |
+| `updatedAt` | `Date?` | last lane update time |
+
+The lane vocabulary deliberately says "lane" instead of "connection": on
+HTTP/2 the work may be multiplexed streams on one TCP connection, while the UI
+still needs eight progress rows. `protocolName` is display-only and diagnostic;
+the engine still does not select HTTP/1.1, HTTP/2, or HTTP/3.
+
+**Open.** Confirm that full snapshots are acceptable for v0.1. A delta protocol
+is more efficient, but it makes reconnect and stale-client recovery stateful for
+no measured benefit yet.
+
+### Decision 3 — how are notifications produced?
+
+**Question.** Where does coalescing live, and what cadence should v0.1 use?
+
+**Options considered.**
+- A daemon-local `ProgressBroker` that coalesces latest state per subscriber.
+- Push a notification on every `JobStore.recordProgress` call.
+- Have the CLI poll `ls` and render differences.
+
+**Proposed answer.** Add a daemon-local `ProgressBroker`. `JobStore` and the
+download engine publish state changes into the broker; the broker keeps only the
+latest in-scope snapshot and emits at most once per 100 ms per subscriber.
+Intermediate updates are intentionally overwritten. Terminal changes
+(`completed`, `failed`, `paused`, and `removed`) flush immediately so the
+foreground CLI exits promptly and `goh top` does not display stale rows.
+
+If a notification send fails because the peer is gone, the daemon removes that
+subscriber and does not change job state. This preserves IPC §2.3's rule:
+subscriber sessions are observers.
+
+**Open.** Confirm the 100 ms cadence. It matches the earlier design note, is
+fast enough for a terminal progress UI, and remains cheap even with several
+active jobs.
+
+### Decision 4 — how do foreground and top use it?
+
+**Question.** What client behavior sits on top of the stream?
+
+**Options considered.**
+- Foreground `goh <url>` sends `add`, then subscribes to that job on the same
+  validated session.
+- Foreground `goh <url>` sends one combined `addAndSubscribe` command.
+- Foreground `goh <url>` runs as `goh add <url>` and exits.
+
+**Proposed answer.** Foreground `goh <url>` sends the already-frozen `add`
+request, receives the new `JobSummary`, then sends `subscribe(scope: job,
+jobID:)` on the same session and renders progress until the job reaches
+`completed` or `failed`. Ctrl-C closes the session and prints the detach note
+already specified in IPC §1.4. A later `--cancel-on-interrupt` flag can issue
+`rm` before exiting, but the default is detach.
+
+`goh top` sends `subscribe(scope: all)` and renders every snapshot until the user
+exits. It does not change job state.
+
+If a foreground subscription loses the daemon session mid-download, the CLI uses
+the existing bounded reconnect helper with a fixed 2.5 s window and 100 ms poll
+interval. On reconnect, it validates the daemon by constructing a fresh
+`GohXPCClient`, sends `subscribe(scope: job, jobID:)`, and resumes rendering from
+the returned snapshot. If the window elapses, it exits `0` with the existing
+"download continues in background" guidance. `goh top` may reconnect the same
+way, but if it gives up it exits `1` because it is only a monitor, not a
+foreground download that already created durable work.
+
+**Open.** Confirm that the reconnect constants should be `2.5 s` and `100 ms`.
+The previous design intentionally left this tunable open.
+
 ## Hashing
 
 _TBD — SHA-256 via CryptoKit, streamed through the chunk assembler during the
@@ -1649,7 +1812,8 @@ download rather than re-read at the end._
 
 ## TUI
 
-_TBD — live progress rendering for `goh <url>` and the `goh top` dashboard._
+_TBD — visual rendering details for `goh <url>` and the `goh top` dashboard.
+The wire contract draft above defines the data the TUI consumes._
 
 ## Dependencies
 
