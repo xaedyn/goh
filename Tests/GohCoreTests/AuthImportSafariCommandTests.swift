@@ -49,7 +49,7 @@ struct AuthImportSafariCommandTests {
             sendCount += 1
             return try request.withUnsafeUnderlyingDictionary { object in
                 let envelope = try GohEnvelope<Command>(xpcDictionary: object)
-                #expect(envelope.protocolVersion == 2)
+                #expect(envelope.protocolVersion == CommandService.protocolVersion)
                 #expect(envelope.messageType == .request)
                 #expect(envelope.payload == .authImportSafari(request: AuthImportSafariRequest()))
 
@@ -62,7 +62,7 @@ struct AuthImportSafariCommandTests {
                 #expect(buffer == cookieBytes)
 
                 let reply = try GohEnvelope(
-                    protocolVersion: 2,
+                    protocolVersion: CommandService.protocolVersion,
                     requestID: envelope.requestID,
                     messageType: .reply,
                     payload: AuthImportSafariReply(importedCookieCount: 7))
@@ -106,7 +106,7 @@ struct AuthImportSafariCommandTests {
                 sentBytes = buffer
 
                 let reply = try GohEnvelope(
-                    protocolVersion: 2,
+                    protocolVersion: CommandService.protocolVersion,
                     requestID: envelope.requestID,
                     messageType: .reply,
                     payload: AuthImportSafariReply(importedCookieCount: 1))

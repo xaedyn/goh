@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 3,
+  "requestID": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F",
+  "messageType": "request",
+  "payload": {
+    "subscribe": {
+      "request": {
+        "scope": "job",
+        "jobID": 42
+      }
+    }
+  }
+}

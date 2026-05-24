@@ -6,6 +6,10 @@ import GohCore
 @Suite("Command schema wire forms")
 struct CommandTests {
 
+    private func wire<T: Encodable>(_ value: T) throws -> String {
+        String(decoding: try CommandCoding.encoder.encode(value), as: UTF8.self)
+    }
+
     private func roundTrip<T: Codable & Equatable>(_ value: T) throws -> T {
         try CommandCoding.decoder.decode(T.self, from: CommandCoding.encoder.encode(value))
     }
@@ -41,6 +45,53 @@ struct CommandTests {
         #expect(try roundTrip(reply) == reply)
     }
 
+    @Test("Subscribe request and progress reply round-trip")
+    func subscribeRequestAndReplyRoundTrip() throws {
+        let jobRequest = SubscribeRequest(scope: .job, jobID: 42)
+        #expect(try roundTrip(jobRequest) == jobRequest)
+
+        let allRequest = SubscribeRequest(scope: .all)
+        #expect(try roundTrip(allRequest) == allRequest)
+
+        let reply = SubscribeReply(revision: 7, snapshot: [])
+        #expect(try roundTrip(reply) == reply)
+    }
+
+    @Test("Progress event round-trips with lane-level detail")
+    func progressEventRoundTrip() throws {
+        let job = JobSummary(
+            id: 42,
+            url: "https://example.com/big.zip",
+            destination: "/Users/me/Downloads/big.zip",
+            state: .active,
+            progress: JobProgress(
+                bytesCompleted: 1024,
+                bytesTotal: 4096,
+                bytesPerSecond: 512),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            lastProgressAt: Date(timeIntervalSince1970: 1_700_000_001),
+            requestedConnectionCount: 8,
+            actualConnectionCount: 2)
+        let lane = TransferLaneProgress(
+            index: 1,
+            state: .active,
+            rangeStart: 1024,
+            rangeEnd: 2047,
+            bytesCompleted: 512,
+            bytesTotal: 1024,
+            bytesPerSecond: 256,
+            protocolName: "h2",
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_002))
+        let event = ProgressEvent(
+            sequence: 3,
+            revision: 9,
+            emittedAt: Date(timeIntervalSince1970: 1_700_000_003),
+            updateKind: .fullSnapshot,
+            snapshot: [ProgressSnapshot(job: job, lanes: [lane])])
+
+        #expect(try roundTrip(event) == event)
+    }
+
     @Test("every Command case round-trips")
     func commandRoundTrip() throws {
         let commands: [Command] = [
@@ -50,6 +101,7 @@ struct CommandTests {
             .resume(jobID: 3),
             .rm(request: RmRequest(jobID: 3)),
             .authImportSafari(request: AuthImportSafariRequest()),
+            .subscribe(request: SubscribeRequest(scope: .job, jobID: 3)),
         ]
         for command in commands {
             #expect(try roundTrip(command) == command)
@@ -62,5 +114,16 @@ struct CommandTests {
         #expect(try roundTrip(rm) == rm)
         let ls = LsReply(jobs: [])
         #expect(try roundTrip(ls) == ls)
+    }
+
+    @Test("progress subscription enums encode to their frozen wire strings")
+    func progressSubscriptionEnumWireStrings() throws {
+        #expect(try wire(SubscriptionScope.job) == "\"job\"")
+        #expect(try wire(SubscriptionScope.all) == "\"all\"")
+        #expect(try wire(ProgressUpdateKind.fullSnapshot) == "\"fullSnapshot\"")
+        #expect(try wire(TransferLaneState.pending) == "\"pending\"")
+        #expect(try wire(TransferLaneState.active) == "\"active\"")
+        #expect(try wire(TransferLaneState.completed) == "\"completed\"")
+        #expect(try wire(TransferLaneState.failed) == "\"failed\"")
     }
 }

@@ -23,7 +23,10 @@ struct CommandServiceTests {
     ) throws -> GohEnvelope<Reply> {
         let requestID = UUID()
         let request = GohEnvelope(
-            protocolVersion: 2, requestID: requestID, messageType: .request, payload: command)
+            protocolVersion: CommandService.protocolVersion,
+            requestID: requestID,
+            messageType: .request,
+            payload: command)
         let replyDictionary = try client.sendSync(XPCDictionary(request.xpcDictionary()))
         let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
             try GohEnvelope<Reply>(xpcDictionary: object)
@@ -57,7 +60,7 @@ struct CommandServiceTests {
         fileDescriptor: Int32? = nil
     ) throws -> xpc_object_t {
         let request = try GohEnvelope(
-            protocolVersion: 2,
+            protocolVersion: CommandService.protocolVersion,
             requestID: requestID,
             messageType: .request,
             payload: Command.authImportSafari(request: AuthImportSafariRequest())
@@ -228,10 +231,10 @@ struct CommandServiceTests {
 
         let requestID = UUID()
         let request = makeEnvelopeDictionary(
-            protocolVersion: 3,
+            protocolVersion: UInt64(CommandService.protocolVersion + 1),
             requestID: requestID,
             messageType: "request",
-            payload: Data(#"{"futureCommand":{"shape":"unknown-to-v2"}}"#.utf8))
+            payload: Data(#"{"futureCommand":{"shape":"unknown-to-v3"}}"#.utf8))
         let replyDictionary = try client.sendSync(XPCDictionary(request))
         let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
             try GohEnvelope<GohError>(xpcDictionary: object)
@@ -249,7 +252,7 @@ struct CommandServiceTests {
 
         let requestID = UUID()
         let request = GohEnvelope(
-            protocolVersion: 2,
+            protocolVersion: CommandService.protocolVersion,
             requestID: requestID,
             messageType: .notification,
             payload: Command.ls)

@@ -11,7 +11,7 @@ import XPC
 public struct CommandService: Sendable {
 
     /// The protocol version this daemon speaks.
-    public static let protocolVersion: UInt32 = 2
+    public static let protocolVersion: UInt32 = 3
 
     private let dispatcher: CommandDispatcher
     private let authImportSafari: (@Sendable (Int32) -> CommandOutcome)?
