@@ -54,15 +54,18 @@ public struct DownloadEngine: Sendable {
     private let session: URLSession
     private let checkpointStore: CheckpointStore?
     private let control: DownloadControl?
+    private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
 
     public init(
         session: URLSession,
         checkpointStore: CheckpointStore? = nil,
-        control: DownloadControl? = nil
+        control: DownloadControl? = nil,
+        cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil
     ) {
         self.session = session
         self.checkpointStore = checkpointStore
         self.control = control
+        self.cookieHeaderProvider = cookieHeaderProvider
     }
 
     /// Downloads the job with `jobID`, driving it to a terminal state. Never
@@ -120,7 +123,7 @@ public struct DownloadEngine: Sendable {
         // start streaming in the same round-trip. A server that doesn't honour
         // ranges replies `200` with the full body — this stream is then the
         // whole file and the engine consumes it as a single connection.
-        var request = URLRequest(url: url)
+        var request = request(for: url, job: job)
         request.setValue("bytes=0-", forHTTPHeaderField: "Range")
         let (response, stream) = try await session.streamingResponse(
             for: request,
@@ -265,7 +268,7 @@ public struct DownloadEngine: Sendable {
         completedBeforeRange: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant
     ) async throws -> UInt64 {
-        var request = URLRequest(url: url)
+        var request = request(for: url, job: job)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
         request.setValue(validator, forHTTPHeaderField: "If-Range")
@@ -475,7 +478,7 @@ public struct DownloadEngine: Sendable {
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics
     ) async throws {
-        var request = URLRequest(url: url)
+        var request = request(for: url, job: job)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
         let (http, stream) = try await session.streamingResponse(
@@ -582,6 +585,14 @@ public struct DownloadEngine: Sendable {
             strongETag: Self.strongETag(response),
             lastModified: Self.lastModified(response))
         return DownloadCheckpointRecorder(store: checkpointStore, checkpoint: checkpoint)
+    }
+
+    private func request(for url: URL, job: JobSummary) -> URLRequest {
+        var request = URLRequest(url: url)
+        if let cookieHeader = cookieHeaderProvider?(job.id, url), !cookieHeader.isEmpty {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        return request
     }
 
     private static func progress(

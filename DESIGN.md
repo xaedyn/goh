@@ -1358,6 +1358,13 @@ bare domains match only the exact host. This may under-send a cookie if Safari
 stores a domain cookie without a leading dot, but it avoids leaking a host-only
 cookie to sibling subdomains. Source: <https://www.rfc-editor.org/rfc/rfc6265>.
 
+The download engine accepts a daemon-owned cookie-header provider keyed by
+`jobID` and request URL. The provider is consulted for the initial speculative
+range request, every follow-up range request, and resume requests, so auth does
+not drift between engine paths. The engine does not own cookie storage and does
+not persist credential material; it only attaches a non-empty header when the
+daemon supplies one.
+
 The still-open auth decisions are the user-visible `goh auth import safari`
 command shape, the Full Disk Access prompt wording, and the revocation behavior
 when the CLI can no longer open Safari's cookie file. The existing IPC lean from
