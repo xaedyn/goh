@@ -165,8 +165,13 @@ Current branch: `feat/safari-cookie-import`.
 
 PR #18 was made ready, reviewed, fixed, and squash-merged into `main` at
 `e5372af`. Slice 5 is open on a new feature branch. The parser and matching
-boundary are now concrete; pick up by settling the load-bearing import
-command/FDA contract before wiring XPC:
+boundary are now concrete. Review hardening caught one local-filesystem edge:
+`FileManager.isReadableFile` can accept directory candidates, so the Safari
+cookie locator now proves the path exists as a non-directory file before
+returning it. Fresh local verification on 2026-05-24:
+`swift build -Xswiftc -warnings-as-errors` and `swift test` (152 tests) pass.
+Pick up by settling the load-bearing import command/FDA contract before wiring
+XPC:
 
 - do not add `goh auth import safari` until its request/reply wire shape has an
   explicit design note;

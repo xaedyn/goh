@@ -16,7 +16,13 @@ public enum SafariCookieFileLocator {
         fileManager: FileManager = .default
     ) -> URL? {
         candidateURLs(homeDirectory: homeDirectory).first { candidate in
-            fileManager.isReadableFile(atPath: candidate.path)
+            var isDirectory = ObjCBool(false)
+            let exists = fileManager.fileExists(
+                atPath: candidate.path,
+                isDirectory: &isDirectory)
+            return exists
+                && !isDirectory.boolValue
+                && fileManager.isReadableFile(atPath: candidate.path)
         }
     }
 }

@@ -210,6 +210,20 @@ struct SafariBinaryCookiesTests {
         #expect(SafariCookieFileLocator.firstReadableCookieFile(homeDirectory: home) == container)
     }
 
+    @Test("Safari cookie file locator ignores directories at cookie paths")
+    func safariCookieFileLocatorIgnoresDirectories() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appending(path: "goh-safari-cookie-locator-directory-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let container = SafariCookieFileLocator.candidateURLs(homeDirectory: home)[0]
+        try FileManager.default.createDirectory(
+            at: container,
+            withIntermediateDirectories: true)
+
+        #expect(SafariCookieFileLocator.firstReadableCookieFile(homeDirectory: home) == nil)
+    }
+
     private func cookie(
         domain: String,
         name: String,
