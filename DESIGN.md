@@ -1853,6 +1853,29 @@ window as foreground downloads, but re-subscribes with `scope: all`. If the
 window elapses, `top` exits `1` with daemon-unavailable guidance instead of the
 foreground "download continues" note, because `top` did not create durable work.
 
+## Release Packaging
+
+Slice 9 proceeds in reversible layers. The in-repo Homebrew formula is validated
+in CI with `ruby -c Formula/goh.rb` and `brew style Formula/goh.rb`, catching
+formula syntax and style drift on every PR before a tagged release exists.
+
+The first release-artifact workflow is intentionally unsigned. It runs on manual
+dispatch, `v*` tag pushes, and PRs that touch packaging or build inputs. It
+builds `goh` and `gohd` with SwiftPM on the pinned `macos-26` runner, stages an
+arm64 tarball containing `bin/goh`, `bin/gohd`, the reference LaunchAgent plist,
+`LICENSE`, and `README.md`, then uploads the tarball and a SHA-256 checksum as
+workflow artifacts. The packaging logic lives in `Scripts/package-release.sh` so
+the exact artifact shape is runnable locally and by CI without duplicating shell
+steps in YAML.
+
+This workflow does **not** create a GitHub Release, fill the stable Homebrew
+formula SHA, sign binaries, notarize binaries, or staple notarization tickets.
+Those steps require real release credentials, certificate identity choices, and
+secret names; they will land in a separate release-pipeline PR once the signing
+inputs are available. Until then, the uploaded artifacts are reproducibility
+checks and release-candidate materials, not the final trusted distribution
+channel.
+
 ## Dependencies
 
 - **`apple/swift-http-types`** (pre-approved) — HTTP message modeling.
