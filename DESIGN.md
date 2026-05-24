@@ -361,7 +361,12 @@ hosts and explicit corruption tests.
 `add` performs automatic adoption only when URL, destination, validators, and
 checkpoint metadata match exactly. Otherwise it creates a fresh job and leaves
 the kept file alone. No explicit "adopt partial" flag is added to the v1 request
-schema.
+schema. Adoption creates a new job id, rewrites the kept checkpoint under that
+new id before scheduling, and removes the old checkpoint after the new one is
+durably saved. The new `JobSummary` is seeded with the checkpoint's durable byte
+count so `ls` reports the retained work immediately. The follow-up engine
+request still uses `If-Range`; if the server returns a full `200` instead of
+`206`, the resumed job fails safely rather than overwriting the kept partial.
 
 The command path and engine coordinate through a daemon-local `DownloadControl`.
 For active jobs, `pause` and `rm --keep` block the command reply until the engine

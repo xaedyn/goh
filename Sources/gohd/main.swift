@@ -56,6 +56,7 @@ do {
         control: downloadControl)
     let dispatcher = CommandDispatcher(
         store: store, control: downloadControl,
+        checkpointStore: checkpointStore,
         onJobQueued: { jobID in
             Task { await engine.run(jobID: jobID, in: store) }
         })

@@ -404,6 +404,77 @@ struct DownloadEngineTests {
         #expect(checkpointStore.load(jobID: job.id).checkpoint != nil)
     }
 
+    @Test("add after rm keep adopts the kept partial and resumes it")
+    func addAfterRemoveKeepAdoptsPartial() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let validator = "\"adopt-kept-validator\""
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            headers: ["ETag": validator],
+            bodyChunkSize: 256 << 10,
+            bodyChunkDelayMicroseconds: 20_000)
+
+        let store = JobStore()
+        let control = DownloadControl()
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        let engine = DownloadEngine(
+            session: mockSession(), checkpointStore: checkpointStore, control: control)
+        let engineTask = Mutex<Task<Void, Never>?>(nil)
+        let dispatcher = CommandDispatcher(
+            store: store,
+            control: control,
+            checkpointStore: checkpointStore,
+            onJobQueued: { id in
+                engineTask.withLock { task in
+                    task = Task { await engine.run(jobID: id, in: store) }
+                }
+            })
+
+        let destination = directory.appending(path: "out.bin")
+        guard case .job(let first) = dispatcher.reply(to: .add(request: AddRequest(
+            url: url, destination: destination.path, connectionCount: 1)))
+        else {
+            Issue.record("expected first add to create a job")
+            return
+        }
+        try await waitForState(.active, jobID: first.id, in: store)
+        guard case .removed = dispatcher.reply(to: .rm(request: RmRequest(
+            jobID: first.id, keepPartialFile: true)))
+        else {
+            Issue.record("expected rm --keep to remove the active job")
+            return
+        }
+        await engineTask.withLock { $0 }?.value
+        let kept = try #require(checkpointStore.load(jobID: first.id).checkpoint)
+        #expect(kept.completedPieces.isEmpty == false)
+
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            failRangeStartingAt: 0,
+            headers: ["ETag": validator],
+            requiredIfRange: validator)
+        guard case .job(let second) = dispatcher.reply(to: .add(request: AddRequest(
+            url: url, destination: destination.path, connectionCount: 1)))
+        else {
+            Issue.record("expected second add to adopt the kept job")
+            return
+        }
+        await engineTask.withLock { $0 }?.value
+
+        #expect(second.id == 2)
+        #expect(second.progress.bytesCompleted == kept.durableBytesCompleted)
+        #expect(store.job(id: second.id)?.state == .completed)
+        #expect(try Data(contentsOf: destination) == payload)
+        #expect(checkpointStore.load(jobID: first.id).checkpoint == nil)
+        #expect(checkpointStore.load(jobID: second.id).checkpoint == nil)
+    }
+
     @Test("a server without range support falls back to a single connection")
     func fallbackWhenNoRangeSupport() async throws {
         let directory = try temporaryDirectory()

@@ -10,8 +10,9 @@ session; update at the start of every PR and at the end of every session.
 - **Current slice:** Slice 3c, checkpoint/resume implementation. This branch now
   has checkpoint primitives, startup reconciliation, engine checkpoint writes,
   crash resume from the first missing byte, and live active `pause` / `rm`
-  control at checkpoint boundaries; retry policy and kept-partial adoption are
-  the next layer.
+  control at checkpoint boundaries. Kept partials from `rm --keep` are now
+  automatically adopted by a future matching `add`; retry policy is the next
+  layer.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -180,5 +181,9 @@ Implemented on `feat/checkpoint-resume` so far:
   wait until the engine reaches a checkpoint boundary, so `pause` cannot race an
   immediate `resume`; `rm` without keep deletes partial/checkpoint, while
   `rm --keep` preserves both.
+- `add` automatically adopts a kept checkpoint when URL, destination, file size,
+  and resume validator metadata are safe: the new job is seeded with durable
+  progress, the checkpoint is rewritten under the new job id before scheduling,
+  and the old checkpoint is removed after the new one is durable.
 
-Next: implement automatic kept-partial adoption on `add`, then retry policy.
+Next: implement retry policy.

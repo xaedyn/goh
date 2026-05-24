@@ -104,6 +104,22 @@ public struct DownloadCheckpoint: Codable, Sendable, Equatable {
             bytesPerSecond: 0)
     }
 
+    func adoptionProgress(url expectedURL: String, destination expectedDestination: String) -> JobProgress? {
+        guard isUsableForAdoption(url: expectedURL, destination: expectedDestination),
+              let completedBytes
+        else { return nil }
+        return JobProgress(
+            bytesCompleted: completedBytes,
+            bytesTotal: totalBytes,
+            bytesPerSecond: 0)
+    }
+
+    func adopted(jobID newJobID: UInt64) -> DownloadCheckpoint {
+        var checkpoint = self
+        checkpoint.jobID = newJobID
+        return checkpoint
+    }
+
     var durableBytesCompleted: UInt64? { completedBytes }
 
     var ifRangeValidator: String? {
@@ -155,7 +171,22 @@ public struct DownloadCheckpoint: Codable, Sendable, Equatable {
               jobID == job.id,
               url == job.url,
               destination == job.destination,
-              pieceSize == Self.defaultPieceSize,
+              isStructurallyUsable
+        else { return false }
+        return true
+    }
+
+    private func isUsableForAdoption(url expectedURL: String, destination expectedDestination: String) -> Bool {
+        guard version == Self.currentVersion,
+              url == expectedURL,
+              destination == expectedDestination,
+              isStructurallyUsable
+        else { return false }
+        return true
+    }
+
+    private var isStructurallyUsable: Bool {
+        guard pieceSize == Self.defaultPieceSize,
               ifRangeValidator != nil,
               let totalBytes,
               totalBytes >= partialFileSize,

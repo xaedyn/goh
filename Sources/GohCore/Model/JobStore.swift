@@ -49,7 +49,12 @@ public final class JobStore: Sendable {
     /// Creates a new job in `queued`, assigns it the next monotonic id, and
     /// returns its summary.
     public func create(
-        url: String, destination: String, requestedConnectionCount: UInt8
+        url: String,
+        destination: String,
+        requestedConnectionCount: UInt8,
+        progress: JobProgress = JobProgress(
+            bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+        lastProgressAt: Date? = nil
     ) -> JobSummary {
         withMutation { state in
             let id = state.nextID
@@ -59,9 +64,9 @@ public final class JobStore: Sendable {
                 url: url,
                 destination: destination,
                 state: .queued,
-                progress: JobProgress(bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+                progress: progress,
                 createdAt: Date(),
-                lastProgressAt: nil,
+                lastProgressAt: lastProgressAt,
                 requestedConnectionCount: requestedConnectionCount,
                 actualConnectionCount: 0)
             state.jobs.append(summary)

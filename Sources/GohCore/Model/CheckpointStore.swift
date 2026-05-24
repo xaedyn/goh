@@ -80,6 +80,25 @@ public struct CheckpointStore: Sendable {
         try FileManager.default.removeItem(at: url)
     }
 
+    /// Returns the newest kept checkpoint that can be adopted for `url` and
+    /// `destination`.
+    public func adoptionCandidate(url: String, destination: String) -> DownloadCheckpoint? {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL, includingPropertiesForKeys: nil)
+        else { return nil }
+
+        let candidates = urls.compactMap { fileURL -> DownloadCheckpoint? in
+            guard let jobID = Self.jobID(from: fileURL) else { return nil }
+            guard let checkpoint = load(jobID: jobID).checkpoint,
+                  checkpoint.adoptionProgress(url: url, destination: destination) != nil
+            else { return nil }
+            return checkpoint
+        }
+        return candidates.sorted { lhs, rhs in
+            lhs.updatedAt > rhs.updatedAt
+        }.first
+    }
+
     private func recoverToNil(_ url: URL) -> CheckpointLoadResult {
         let timestamp = Int(Date().timeIntervalSince1970)
         let sidecar = directoryURL.appending(
@@ -89,6 +108,13 @@ public struct CheckpointStore: Sendable {
         return CheckpointLoadResult(
             checkpoint: nil,
             corruptionSidecar: sidecarExists ? sidecar : nil)
+    }
+
+    private static func jobID(from url: URL) -> UInt64? {
+        let suffix = ".checkpoint.plist"
+        let filename = url.lastPathComponent
+        guard filename.hasSuffix(suffix) else { return nil }
+        return UInt64(filename.dropLast(suffix.count))
     }
 
     private static func fsync(path: String) throws {

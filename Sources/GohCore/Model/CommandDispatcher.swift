@@ -16,6 +16,7 @@ public struct CommandDispatcher: Sendable {
 
     private let store: JobStore
     private let control: DownloadControl?
+    private let checkpointStore: CheckpointStore?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
 
     /// Creates a dispatcher over `store`. `onJobQueued`, when provided, is called
@@ -25,10 +26,12 @@ public struct CommandDispatcher: Sendable {
     public init(
         store: JobStore,
         control: DownloadControl? = nil,
+        checkpointStore: CheckpointStore? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil
     ) {
         self.store = store
         self.control = control
+        self.checkpointStore = checkpointStore
         self.onJobQueued = onJobQueued
     }
 
@@ -44,12 +47,37 @@ public struct CommandDispatcher: Sendable {
                         code: .invalidArgument,
                         message: "connectionCount must be 1-16; got 0"))
                 }
+                let destination = request.destination
+                    ?? Self.defaultDestination(forURL: request.url)
+                let cappedConnectionCount = min(
+                    requestedConnectionCount, Self.maximumConnectionCount)
+                let checkpoint = checkpointStore?.adoptionCandidate(
+                    url: request.url, destination: destination)
+                let progress = checkpoint?.adoptionProgress(
+                    url: request.url, destination: destination)
                 let job = store.create(
                     url: request.url,
-                    destination: request.destination
-                        ?? Self.defaultDestination(forURL: request.url),
-                    requestedConnectionCount: min(
-                        requestedConnectionCount, Self.maximumConnectionCount))
+                    destination: destination,
+                    requestedConnectionCount: cappedConnectionCount,
+                    progress: progress ?? JobProgress(
+                        bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+                    lastProgressAt: progress == nil ? nil : checkpoint?.updatedAt)
+                var savedAdoptedCheckpoint = false
+                do {
+                    if let checkpoint, let checkpointStore {
+                        try checkpointStore.save(checkpoint.adopted(jobID: job.id))
+                        savedAdoptedCheckpoint = checkpoint.jobID != job.id
+                        if checkpoint.jobID != job.id {
+                            try checkpointStore.delete(jobID: checkpoint.jobID)
+                        }
+                    }
+                } catch {
+                    if savedAdoptedCheckpoint {
+                        try? checkpointStore?.delete(jobID: job.id)
+                    }
+                    try? store.remove(id: job.id)
+                    throw error
+                }
                 onJobQueued?(job.id)
                 return .job(job)
 
