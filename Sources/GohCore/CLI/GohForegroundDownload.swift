@@ -21,6 +21,8 @@ public struct GohForegroundDownloadSession {
 
 public enum GohXPCNotificationInboxError: Error, Sendable, Equatable {
     case malformedProgressNotification(String)
+    case sessionInvalidated(String)
+    case interrupted
 }
 
 public final class GohXPCNotificationInbox: @unchecked Sendable {
@@ -33,6 +35,11 @@ public final class GohXPCNotificationInbox: @unchecked Sendable {
 
     public init() {}
 
+    private func enqueue(_ message: Message) {
+        messages.withLock { $0.append(message) }
+        semaphore.signal()
+    }
+
     public func handle(_ message: XPCDictionary) -> XPCDictionary? {
         let decoded: Message
         do {
@@ -43,9 +50,16 @@ public final class GohXPCNotificationInbox: @unchecked Sendable {
         } catch {
             decoded = .failure(.malformedProgressNotification("\(error)"))
         }
-        messages.withLock { $0.append(decoded) }
-        semaphore.signal()
+        enqueue(decoded)
         return nil
+    }
+
+    public func sessionInvalidated(_ reason: String) {
+        enqueue(.failure(.sessionInvalidated(reason)))
+    }
+
+    public func interrupt() {
+        enqueue(.failure(.interrupted))
     }
 
     public func receive() throws -> GohEnvelope<ProgressEvent> {
@@ -57,57 +71,104 @@ public final class GohXPCNotificationInbox: @unchecked Sendable {
 public struct GohForegroundDownload {
     public var request: AddRequest
     public var session: GohForegroundDownloadSession
+    public var reconnect: (() throws -> GohForegroundDownloadSession)?
+    public var reconnectWindow: Duration
+    public var reconnectPollInterval: Duration
+    public var standardOutput: (String) -> Void
+    public var standardError: (String) -> Void
 
-    public init(request: AddRequest, session: GohForegroundDownloadSession) {
+    public init(
+        request: AddRequest,
+        session: GohForegroundDownloadSession,
+        reconnect: (() throws -> GohForegroundDownloadSession)? = nil,
+        reconnectWindow: Duration = .milliseconds(2_500),
+        reconnectPollInterval: Duration = .milliseconds(100),
+        standardOutput: @escaping (String) -> Void = { _ in },
+        standardError: @escaping (String) -> Void = { _ in }
+    ) {
         self.request = request
         self.session = session
+        self.reconnect = reconnect
+        self.reconnectWindow = reconnectWindow
+        self.reconnectPollInterval = reconnectPollInterval
+        self.standardOutput = standardOutput
+        self.standardError = standardError
     }
 
     public func run() -> GohCommandLineResult {
         do {
-            defer { session.cancel() }
+            var activeSession = session
+            defer { activeSession.cancel() }
 
             let (_, job): (UUID, JobSummary) = try sendCommand(
                 .add(request: request),
-                expecting: JobSummary.self)
-            let (subscribeRequestID, baseline): (UUID, SubscribeReply) = try sendCommand(
+                expecting: JobSummary.self,
+                using: activeSession)
+            var subscribeRequestID: UUID
+            let baseline: SubscribeReply
+            (subscribeRequestID, baseline) = try sendCommand(
                 .subscribe(request: SubscribeRequest(scope: .job, jobID: job.id)),
-                expecting: SubscribeReply.self)
+                expecting: SubscribeReply.self,
+                using: activeSession)
 
-            var output = Self.addedMessage(job)
-            output += baseline.snapshot.map(Self.progressLine).joined()
+            standardOutput(Self.addedMessage(job))
+            standardOutput(baseline.snapshot.map(Self.progressLine).joined())
             if let terminal = terminalResult(in: baseline.snapshot, jobID: job.id) {
-                return GohCommandLineResult(exitCode: terminal, standardOutput: output)
+                return GohCommandLineResult(exitCode: terminal)
             }
 
             while true {
-                let notification = try session.receiveNotification()
-                let event = try decodeNotification(
-                    notification,
-                    requestID: subscribeRequestID)
-                output += event.snapshot.map(Self.progressLine).joined()
-                if let terminal = terminalResult(in: event.snapshot, jobID: job.id) {
-                    return GohCommandLineResult(exitCode: terminal, standardOutput: output)
+                do {
+                    let notification = try activeSession.receiveNotification()
+                    let event = try decodeNotification(
+                        notification,
+                        requestID: subscribeRequestID)
+                    standardOutput(event.snapshot.map(Self.progressLine).joined())
+                    if let terminal = terminalResult(in: event.snapshot, jobID: job.id) {
+                        return GohCommandLineResult(exitCode: terminal)
+                    }
+                } catch GohXPCNotificationInboxError.interrupted {
+                    standardError(Self.detachMessage(jobID: job.id))
+                    return GohCommandLineResult(exitCode: 0)
+                } catch GohXPCNotificationInboxError.sessionInvalidated {
+                    standardError(Self.reconnectingMessage())
+                    guard let reconnected = try reconnect(to: job.id) else {
+                        standardError(Self.backgroundContinuationMessage(jobID: job.id))
+                        return GohCommandLineResult(exitCode: 0)
+                    }
+
+                    activeSession = reconnected.session
+                    subscribeRequestID = reconnected.requestID
+                    standardOutput(reconnected.baseline.snapshot.map(Self.progressLine).joined())
+                    if let terminal = terminalResult(
+                        in: reconnected.baseline.snapshot,
+                        jobID: job.id)
+                    {
+                        return GohCommandLineResult(exitCode: terminal)
+                    }
+                } catch GohXPCNotificationInboxError.malformedProgressNotification(let message) {
+                    throw ForegroundError(
+                        "daemon sent a malformed progress notification: \(message)")
                 }
             }
         } catch let error as GohError {
-            return GohCommandLineResult(
-                exitCode: 1,
-                standardError: Self.daemonErrorMessage(error))
+            standardError(Self.daemonErrorMessage(error))
+            return GohCommandLineResult(exitCode: 1)
         } catch let error as ForegroundError {
-            return GohCommandLineResult(
-                exitCode: 1,
-                standardError: "gohd returned an invalid reply: \(error.message)\n")
+            standardError("gohd returned an invalid reply: \(error.message)\n")
+            return GohCommandLineResult(exitCode: 1)
         } catch {
+            standardError(
+                "Could not reach gohd.\nStart the daemon with: brew services start goh\n\n\(error)\n")
             return GohCommandLineResult(
-                exitCode: 1,
-                standardError: "Could not reach gohd.\nStart the daemon with: brew services start goh\n\n\(error)\n")
+                exitCode: 1)
         }
     }
 
     private func sendCommand<Reply: Codable & Sendable>(
         _ command: Command,
-        expecting _: Reply.Type
+        expecting _: Reply.Type,
+        using session: GohForegroundDownloadSession
     ) throws -> (UUID, Reply) {
         let requestID = UUID()
         let request = try GohEnvelope(
@@ -140,6 +201,60 @@ public struct GohForegroundDownload {
             }
 
             throw ForegroundError("daemon returned an unrecognized reply")
+        }
+    }
+
+    private func reconnect(
+        to jobID: UInt64
+    ) throws -> (session: GohForegroundDownloadSession, requestID: UUID, baseline: SubscribeReply)? {
+        guard let reconnect else {
+            return nil
+        }
+
+        var reconnected: (
+            session: GohForegroundDownloadSession,
+            requestID: UUID,
+            baseline: SubscribeReply
+        )?
+        var reconnectedDaemonError: Error?
+        let outcome = XPCReconnect.attempt(
+            within: reconnectWindow,
+            pollInterval: reconnectPollInterval
+        ) {
+            do {
+                let candidate = try reconnect()
+                do {
+                    let (requestID, baseline): (UUID, SubscribeReply) = try sendCommand(
+                        .subscribe(request: SubscribeRequest(scope: .job, jobID: jobID)),
+                        expecting: SubscribeReply.self,
+                        using: candidate)
+                    reconnected = (candidate, requestID, baseline)
+                    return true
+                } catch let error as GohError {
+                    reconnectedDaemonError = error
+                    candidate.cancel()
+                    return true
+                } catch let error as ForegroundError {
+                    reconnectedDaemonError = error
+                    candidate.cancel()
+                    return true
+                } catch {
+                    candidate.cancel()
+                    return false
+                }
+            } catch {
+                return false
+            }
+        }
+
+        switch outcome {
+        case .reconnected:
+            if let reconnectedDaemonError {
+                throw reconnectedDaemonError
+            }
+            return reconnected
+        case .gaveUp:
+            return nil
         }
     }
 
@@ -181,6 +296,18 @@ public struct GohForegroundDownload {
 private extension GohForegroundDownload {
     static func addedMessage(_ summary: JobSummary) -> String {
         "Added job \(summary.id) (\(summary.state.rawValue)): \(summary.url) -> \(summary.destination)\n"
+    }
+
+    static func detachMessage(jobID: UInt64) -> String {
+        "^C - download continues in background as job \(jobID). 'goh ls' to check, 'goh rm \(jobID)' to cancel.\n"
+    }
+
+    static func reconnectingMessage() -> String {
+        "gohd connection lost; reconnecting...\n"
+    }
+
+    static func backgroundContinuationMessage(jobID: UInt64) -> String {
+        "download continues in background as job \(jobID). 'goh ls' to check.\n"
     }
 
     static func progressLine(_ snapshot: ProgressSnapshot) -> String {

@@ -240,18 +240,21 @@ public final class GohXPCClient {
     public init(
         machServiceName: String,
         mode: PeerValidationMode,
-        incomingMessageHandler: (@Sendable (XPCDictionary) -> XPCDictionary?)?
+        incomingMessageHandler: (@Sendable (XPCDictionary) -> XPCDictionary?)?,
+        cancellationHandler: (@Sendable (XPCRichError) -> Void)? = nil
     ) throws {
         // `XPCSession` is active on return — never call `activate()` (it traps).
         if let requirement = GohXPCService.peerRequirement(for: mode) {
             session = try XPCSession(
                 machService: machServiceName,
                 requirement: requirement,
-                incomingMessageHandler: incomingMessageHandler)
+                incomingMessageHandler: incomingMessageHandler,
+                cancellationHandler: cancellationHandler)
         } else {
             session = try XPCSession(
                 machService: machServiceName,
-                incomingMessageHandler: incomingMessageHandler)
+                incomingMessageHandler: incomingMessageHandler,
+                cancellationHandler: cancellationHandler)
         }
     }
 
@@ -265,11 +268,13 @@ public final class GohXPCClient {
     /// daemon-initiated messages.
     public init(
         endpoint: XPCEndpoint,
-        incomingMessageHandler: (@Sendable (XPCDictionary) -> XPCDictionary?)?
+        incomingMessageHandler: (@Sendable (XPCDictionary) -> XPCDictionary?)?,
+        cancellationHandler: (@Sendable (XPCRichError) -> Void)? = nil
     ) throws {
         session = try XPCSession(
             endpoint: endpoint,
-            incomingMessageHandler: incomingMessageHandler)
+            incomingMessageHandler: incomingMessageHandler,
+            cancellationHandler: cancellationHandler)
     }
 
     /// Sends `message` and returns the daemon's reply dictionary.

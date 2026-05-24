@@ -28,6 +28,8 @@ struct GohForegroundDownloadTests {
         let sentCommands = Mutex<[Command]>([])
         let subscribeRequestID = Mutex<UUID?>(nil)
         let notificationDelivered = Mutex(false)
+        let emittedOutput = Mutex("")
+        let emittedError = Mutex("")
 
         let session = GohForegroundDownloadSession(
             sendSync: { message in
@@ -54,6 +56,10 @@ struct GohForegroundDownloadTests {
                 }
             },
             receiveNotification: {
+                #expect(emittedOutput.withLock { output in
+                    output.contains("Added job 42")
+                        && output.contains("Job 42 active")
+                })
                 let shouldDeliver = notificationDelivered.withLock { delivered in
                     guard !delivered else { return false }
                     delivered = true
@@ -75,17 +81,350 @@ struct GohForegroundDownloadTests {
             cancel: {}
         )
 
-        let result = GohForegroundDownload(request: request, session: session).run()
+        let result = GohForegroundDownload(
+            request: request,
+            session: session,
+            standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
+            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+        ).run()
 
         #expect(sentCommands.withLock { $0 } == [
             .add(request: request),
             .subscribe(request: SubscribeRequest(scope: .job, jobID: 42)),
         ])
         #expect(result.exitCode == 0)
-        #expect(result.standardOutput.contains("Added job 42"))
-        #expect(result.standardOutput.contains("Job 42 active: 512 B/1 KB (50%) at 2 KB/s"))
-        #expect(result.standardOutput.contains("Job 42 completed: 1 KB/1 KB (100%) at 0 B/s"))
+        #expect(result.standardOutput == "")
         #expect(result.standardError == "")
+        #expect(emittedOutput.withLock { $0.contains("Added job 42") })
+        #expect(emittedOutput.withLock {
+            $0.contains("Job 42 active: 512 B/1 KB (50%) at 2 KB/s")
+        })
+        #expect(emittedOutput.withLock {
+            $0.contains("Job 42 completed: 1 KB/1 KB (100%) at 0 B/s")
+        })
+        #expect(emittedError.withLock { $0 } == "")
+    }
+
+    @Test("foreground interrupt detaches without cancelling the daemon job")
+    func interruptDetachesWithoutCancellingJob() throws {
+        let request = AddRequest(url: "https://example.com/file.zip")
+        let active = Self.makeJob(
+            id: 42,
+            state: .active,
+            progress: JobProgress(
+                bytesCompleted: 512,
+                bytesTotal: 1024,
+                bytesPerSecond: 2048))
+        let cancelCount = Mutex(0)
+        let emittedOutput = Mutex("")
+        let emittedError = Mutex("")
+
+        let session = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    switch envelope.payload {
+                    case .add:
+                        return try Self.reply(to: envelope, payload: active)
+                    case .subscribe:
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 1,
+                                snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                    default:
+                        Issue.record("unexpected command \(envelope.payload)")
+                        return try Self.reply(
+                            to: envelope,
+                            payload: GohError(code: .invalidArgument),
+                            messageType: .error)
+                    }
+                }
+            },
+            receiveNotification: {
+                throw GohXPCNotificationInboxError.interrupted
+            },
+            cancel: { cancelCount.withLock { $0 += 1 } }
+        )
+
+        let result = GohForegroundDownload(
+            request: request,
+            session: session,
+            standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
+            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+        ).run()
+
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == "")
+        #expect(result.standardError == "")
+        #expect(emittedOutput.withLock { $0.contains("Job 42 active") })
+        #expect(emittedError.withLock {
+            $0 == "^C - download continues in background as job 42. 'goh ls' to check, 'goh rm 42' to cancel.\n"
+        })
+        #expect(cancelCount.withLock { $0 } == 1)
+    }
+
+    @Test("foreground reconnect re-subscribes and resumes rendering")
+    func reconnectResubscribesAndResumesRendering() throws {
+        let request = AddRequest(url: "https://example.com/file.zip")
+        let active = Self.makeJob(
+            id: 42,
+            state: .active,
+            progress: JobProgress(
+                bytesCompleted: 512,
+                bytesTotal: 1024,
+                bytesPerSecond: 2048))
+        let completed = Self.makeJob(
+            id: 42,
+            state: .completed,
+            progress: JobProgress(
+                bytesCompleted: 1024,
+                bytesTotal: 1024,
+                bytesPerSecond: 0))
+        let sentCommands = Mutex<[Command]>([])
+        let reconnectCount = Mutex(0)
+        let reconnectedSubscribeRequestID = Mutex<UUID?>(nil)
+        let emittedOutput = Mutex("")
+        let emittedError = Mutex("")
+
+        let firstSession = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    sentCommands.withLock { $0.append(envelope.payload) }
+                    switch envelope.payload {
+                    case .add:
+                        return try Self.reply(to: envelope, payload: active)
+                    case .subscribe:
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 1,
+                                snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                    default:
+                        Issue.record("unexpected command \(envelope.payload)")
+                        return try Self.reply(
+                            to: envelope,
+                            payload: GohError(code: .invalidArgument),
+                            messageType: .error)
+                    }
+                }
+            },
+            receiveNotification: {
+                throw GohXPCNotificationInboxError.sessionInvalidated(
+                    "daemon session ended")
+            },
+            cancel: {}
+        )
+
+        let secondSession = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    sentCommands.withLock { $0.append(envelope.payload) }
+                    switch envelope.payload {
+                    case .subscribe:
+                        reconnectedSubscribeRequestID.withLock { $0 = envelope.requestID }
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 2,
+                                snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                    default:
+                        Issue.record("unexpected command \(envelope.payload)")
+                        return try Self.reply(
+                            to: envelope,
+                            payload: GohError(code: .invalidArgument),
+                            messageType: .error)
+                    }
+                }
+            },
+            receiveNotification: {
+                let requestID = try #require(reconnectedSubscribeRequestID.withLock { $0 })
+                return Self.notification(
+                    requestID: requestID,
+                    event: ProgressEvent(
+                        sequence: 1,
+                        revision: 3,
+                        emittedAt: Date(timeIntervalSince1970: 1_800_000_001),
+                        updateKind: .fullSnapshot,
+                        snapshot: [ProgressSnapshot(job: completed, lanes: [])]))
+            },
+            cancel: {}
+        )
+
+        let result = GohForegroundDownload(
+            request: request,
+            session: firstSession,
+            reconnect: {
+                reconnectCount.withLock { $0 += 1 }
+                return secondSession
+            },
+            reconnectWindow: .milliseconds(20),
+            reconnectPollInterval: .milliseconds(1),
+            standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
+            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+        ).run()
+
+        #expect(result.exitCode == 0)
+        #expect(sentCommands.withLock { $0 } == [
+            .add(request: request),
+            .subscribe(request: SubscribeRequest(scope: .job, jobID: 42)),
+            .subscribe(request: SubscribeRequest(scope: .job, jobID: 42)),
+        ])
+        #expect(reconnectCount.withLock { $0 } == 1)
+        #expect(emittedOutput.withLock {
+            $0.contains("Job 42 completed: 1 KB/1 KB (100%) at 0 B/s")
+        })
+        #expect(emittedError.withLock {
+            $0 == "gohd connection lost; reconnecting...\n"
+        })
+    }
+
+    @Test("foreground reconnect gives up with background guidance")
+    func reconnectGivesUpWithBackgroundGuidance() throws {
+        let request = AddRequest(url: "https://example.com/file.zip")
+        let active = Self.makeJob(
+            id: 42,
+            state: .active,
+            progress: JobProgress(
+                bytesCompleted: 512,
+                bytesTotal: 1024,
+                bytesPerSecond: 2048))
+        let emittedOutput = Mutex("")
+        let emittedError = Mutex("")
+
+        let session = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    switch envelope.payload {
+                    case .add:
+                        return try Self.reply(to: envelope, payload: active)
+                    case .subscribe:
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 1,
+                                snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                    default:
+                        Issue.record("unexpected command \(envelope.payload)")
+                        return try Self.reply(
+                            to: envelope,
+                            payload: GohError(code: .invalidArgument),
+                            messageType: .error)
+                    }
+                }
+            },
+            receiveNotification: {
+                throw GohXPCNotificationInboxError.sessionInvalidated(
+                    "daemon session ended")
+            },
+            cancel: {}
+        )
+
+        let result = GohForegroundDownload(
+            request: request,
+            session: session,
+            reconnect: {
+                throw GohXPCNotificationInboxError.sessionInvalidated(
+                    "daemon still unavailable")
+            },
+            reconnectWindow: .milliseconds(5),
+            reconnectPollInterval: .milliseconds(1),
+            standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
+            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+        ).run()
+
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == "")
+        #expect(result.standardError == "")
+        #expect(emittedOutput.withLock { $0.contains("Job 42 active") })
+        #expect(emittedError.withLock {
+            $0.contains("gohd connection lost; reconnecting...\n")
+                && $0.contains("download continues in background as job 42. 'goh ls' to check.\n")
+        })
+    }
+
+    @Test("foreground reconnect reports daemon errors after reconnecting")
+    func reconnectReportsDaemonErrorsAfterReconnect() throws {
+        let request = AddRequest(url: "https://example.com/file.zip")
+        let active = Self.makeJob(
+            id: 42,
+            state: .active,
+            progress: JobProgress(
+                bytesCompleted: 512,
+                bytesTotal: 1024,
+                bytesPerSecond: 2048))
+        let reconnectCount = Mutex(0)
+        let emittedOutput = Mutex("")
+        let emittedError = Mutex("")
+
+        let firstSession = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    switch envelope.payload {
+                    case .add:
+                        return try Self.reply(to: envelope, payload: active)
+                    case .subscribe:
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 1,
+                                snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                    default:
+                        Issue.record("unexpected command \(envelope.payload)")
+                        return try Self.reply(
+                            to: envelope,
+                            payload: GohError(code: .invalidArgument),
+                            messageType: .error)
+                    }
+                }
+            },
+            receiveNotification: {
+                throw GohXPCNotificationInboxError.sessionInvalidated(
+                    "daemon session ended")
+            },
+            cancel: {}
+        )
+
+        let secondSession = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    reconnectCount.withLock { $0 += 1 }
+                    return try Self.reply(
+                        to: envelope,
+                        payload: GohError(
+                            code: .jobNotFound,
+                            message: "job 42 is no longer tracked"),
+                        messageType: .error)
+                }
+            },
+            receiveNotification: {
+                Issue.record("should not wait for notifications after daemon error")
+                throw GohXPCNotificationInboxError.interrupted
+            },
+            cancel: {}
+        )
+
+        let result = GohForegroundDownload(
+            request: request,
+            session: firstSession,
+            reconnect: { secondSession },
+            reconnectWindow: .milliseconds(20),
+            reconnectPollInterval: .milliseconds(1),
+            standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
+            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+        ).run()
+
+        #expect(result.exitCode == 1)
+        #expect(reconnectCount.withLock { $0 } == 1)
+        #expect(emittedOutput.withLock { $0.contains("Job 42 active") })
+        #expect(emittedError.withLock {
+            $0 == "gohd connection lost; reconnecting...\ngohd: job 42 is no longer tracked\n"
+        })
     }
 
     private static func makeJob(

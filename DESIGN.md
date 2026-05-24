@@ -1766,7 +1766,9 @@ inside `GohCore`, not a full-screen terminal surface. That keeps the add +
 subscribe command sequence and progress-event handling unit-testable while the
 real `GohTUI` screen model remains reserved for the `goh top` slice. This is
 presentation scaffolding over the live subscription path, not a different wire
-or daemon behavior.
+or daemon behavior. The renderer writes each progress line through process I/O
+closures as soon as the baseline or notification arrives; it does not buffer the
+foreground session until terminal state.
 
 `goh top` sends `subscribe(scope: all)` and renders every snapshot until the
 user exits. It does not change job state.

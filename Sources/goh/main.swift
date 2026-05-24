@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 
 import GohCore
@@ -10,6 +11,35 @@ func write(_ text: String, to handle: FileHandle) {
     handle.write(Data(text.utf8))
 }
 
+func makeInterruptSource(_ handler: @escaping @Sendable () -> Void) -> DispatchSourceSignal {
+    signal(SIGINT, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(
+        signal: SIGINT,
+        queue: DispatchQueue.global(qos: .userInitiated))
+    source.setEventHandler(handler: handler)
+    source.resume()
+    return source
+}
+
+func makeForegroundSession(
+    inbox: GohXPCNotificationInbox,
+    validationMode: PeerValidationMode
+) throws -> GohForegroundDownloadSession {
+    let client = try GohXPCClient(
+        machServiceName: GohXPCService.machServiceName,
+        mode: validationMode,
+        incomingMessageHandler: { message in
+            inbox.handle(message)
+        },
+        cancellationHandler: { error in
+            inbox.sessionInvalidated("\(error)")
+        })
+    return GohForegroundDownloadSession(
+        sendSync: { message in try client.sendSync(message) },
+        receiveNotification: { try inbox.receive() },
+        cancel: { client.cancel() })
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 let validationMode = GohXPCService.peerValidationMode(
     environment: ProcessInfo.processInfo.environment)
@@ -18,18 +48,27 @@ let result = GohCommandLine(
     arguments: arguments,
     foreground: { request in
         let inbox = GohXPCNotificationInbox()
-        let client = try GohXPCClient(
-            machServiceName: GohXPCService.machServiceName,
-            mode: validationMode,
-            incomingMessageHandler: { message in
-                inbox.handle(message)
-            })
+        let interruptSource = makeInterruptSource {
+            inbox.interrupt()
+        }
+        defer { interruptSource.cancel() }
+
         return GohForegroundDownload(
             request: request,
-            session: GohForegroundDownloadSession(
-                sendSync: { message in try client.sendSync(message) },
-                receiveNotification: { try inbox.receive() },
-                cancel: { client.cancel() })
+            session: try makeForegroundSession(
+                inbox: inbox,
+                validationMode: validationMode),
+            reconnect: {
+                try makeForegroundSession(
+                    inbox: inbox,
+                    validationMode: validationMode)
+            },
+            standardOutput: { text in
+                write(text, to: .standardOutput)
+            },
+            standardError: { text in
+                write(text, to: .standardError)
+            }
         ).run()
     }
 ) { request in

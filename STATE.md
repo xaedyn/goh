@@ -248,10 +248,11 @@ This branch starts the foreground CLI subscriber flow (`goh <url>` as `add` plus
 `subscribe(scope: job, jobID:)` on one session). The first implementation pass
 adds a testable `GohForegroundDownload` runner, parses bare URLs through
 `GohCommandLine`, wires the real CLI to a notification inbox on
-`GohXPCClient(incomingMessageHandler:)`, and renders deterministic progress
-lines until terminal state. Remaining work: detach-on-Ctrl-C presentation and
-bounded reconnect behavior. Per-lane engine snapshots remain empty for now and
-should be filled when the TUI rendering path needs them.
+`GohXPCClient(incomingMessageHandler:)`, streams deterministic progress lines as
+baseline / notification payloads arrive, detaches cleanly on Ctrl-C with a
+background-job note, and uses the existing bounded reconnect helper to
+re-subscribe once after session loss. Per-lane engine snapshots remain empty for
+now and should be filled when the TUI rendering path needs them.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
