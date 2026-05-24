@@ -61,6 +61,11 @@ public struct ProgressBroker: Sendable {
                 snapshot: snapshot(scope: request.scope, jobID: request.jobID)))
     }
 
+    public mutating func unsubscribe(_ id: UUID) {
+        subscribers.removeValue(forKey: id)
+        subscriberOrder.removeAll { $0 == id }
+    }
+
     public mutating func publish(
         _ snapshot: ProgressSnapshot, at now: Date = Date()
     ) -> [ProgressBrokerDelivery] {

@@ -32,7 +32,9 @@ session; update at the start of every PR and at the end of every session.
   progress-model revisions, explicit `fullSnapshot` update events, 100 ms
   coalescing, foreground reconnect, and `goh top` subscription behavior. The
   current branch starts the implementation with the v3 wire schema, golden
-  fixtures, and protocol-version bump.
+  fixtures, protocol-version bump, session-aware XPC transport wrappers,
+  broker-backed `subscribe` replies and notifications, `JobStore` progress
+  publishing, and daemon composition through `ProgressBrokerHub`.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -225,15 +227,23 @@ PR #25 passed CI and was squash-merged into `main` at `c31283d`. The current
 branch starts the implementation by adding the protocol v3 wire schema:
 `Command.subscribe`, `SubscribeRequest`, `SubscribeReply`, `ProgressEvent`,
 `ProgressSnapshot`, `TransferLaneProgress`, and v3 golden fixtures. The daemon
-protocol constant moves to `3`; `subscribe` currently returns an explicit
-`invalidArgument` placeholder until the broker-backed streaming handler lands.
-The branch also adds the deterministic daemon-local `ProgressBroker` core:
-baseline subscription replies, exact scope validation, monotonic revisions,
-100 ms coalescing, latest-snapshot overwrite, and immediate removal flushes.
+protocol constant moves to `3`. The branch also adds the deterministic
+daemon-local `ProgressBroker` core: baseline subscription replies, exact scope
+validation, monotonic revisions, 100 ms coalescing, latest-snapshot overwrite,
+and immediate removal flushes. The latest implementation step wires that core
+through XPC and the daemon:
+`GohXPCListener` can expose the accepted session to handlers, `GohXPCClient`
+can receive daemon-initiated messages, `CommandService` handles `subscribe`
+with baseline replies plus notification envelopes on the same session,
+`ProgressBrokerHub` owns subscriber sinks and removes failed sends, and
+`JobStore` publishes empty-lane snapshots/removals into the hub. `gohd` now
+seeds the hub from the loaded catalog, passes it into `JobStore` and
+`CommandService`, and runs a 100 ms flush timer for coalesced progress.
 
-Next: wire `ProgressBroker` into `JobStore` / `CommandService` so `subscribe`
-can return the baseline and push notification envelopes on the validated XPC
-session.
+Next: implement the foreground CLI subscriber flow (`goh <url>` as `add` plus
+`subscribe(scope: job, jobID:)` on one session), including detach-on-Ctrl-C
+presentation and reconnect behavior. Per-lane engine snapshots remain empty for
+now and should be filled when the TUI rendering path needs them.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

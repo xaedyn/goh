@@ -15,13 +15,16 @@ public struct CommandService: Sendable {
 
     private let dispatcher: CommandDispatcher
     private let authImportSafari: (@Sendable (Int32) -> CommandOutcome)?
+    private let progress: ProgressBrokerHub?
 
     public init(
         dispatcher: CommandDispatcher,
-        authImportSafari: (@Sendable (Int32) -> CommandOutcome)? = nil
+        authImportSafari: (@Sendable (Int32) -> CommandOutcome)? = nil,
+        progress: ProgressBrokerHub? = nil
     ) {
         self.dispatcher = dispatcher
         self.authImportSafari = authImportSafari
+        self.progress = progress
     }
 
     /// Handles a request envelope dictionary and returns the reply envelope.
@@ -31,6 +34,14 @@ public struct CommandService: Sendable {
     /// primitive `requestID` read (`DESIGN.md` §4.3) and is deferred. Encoding
     /// the reply cannot fail for these well-formed payload types.
     public func handle(_ request: XPCDictionary) -> XPCDictionary? {
+        handle(request, session: nil)
+    }
+
+    /// Handles a request envelope with access to the accepted XPC session for
+    /// subscription commands that need server-initiated notifications.
+    public func handle(
+        _ request: XPCDictionary, session: GohXPCServerSession?
+    ) -> XPCDictionary? {
         request.withUnsafeUnderlyingDictionary { requestObject -> XPCDictionary? in
             guard let header = try? Self.decodeHeader(requestObject) else {
                 return nil
@@ -59,6 +70,11 @@ public struct CommandService: Sendable {
             switch envelope.payload {
             case .authImportSafari:
                 outcome = replyToAuthImportSafari(requestObject)
+            case .subscribe(let request):
+                return replyToSubscribe(
+                    request,
+                    requestID: envelope.requestID,
+                    session: session)
             default:
                 outcome = dispatcher.reply(to: envelope.payload)
             }
@@ -71,6 +87,67 @@ public struct CommandService: Sendable {
             }
             return XPCDictionary(reply)
         }
+    }
+
+    private func replyToSubscribe(
+        _ request: SubscribeRequest,
+        requestID: UUID,
+        session: GohXPCServerSession?
+    ) -> XPCDictionary? {
+        guard let progress else {
+            return errorReply(
+                requestID: requestID,
+                code: .invalidArgument,
+                message: "subscribe requires a progress subscription handler")
+        }
+        guard let session else {
+            return errorReply(
+                requestID: requestID,
+                code: .invalidArgument,
+                message: "subscribe requires an XPC session")
+        }
+
+        do {
+            let reply = try progress.subscribe(request) { event in
+                let notification = try Self.envelope(
+                    requestID: requestID,
+                    messageType: .notification,
+                    payload: event)
+                try session.send(XPCDictionary(notification))
+            }
+            return try XPCDictionary(Self.replyEnvelope(
+                requestID: requestID,
+                payload: reply))
+        } catch let error as GohError {
+            return errorReply(
+                requestID: requestID,
+                code: error.code,
+                message: error.message,
+                httpStatusCode: error.httpStatusCode)
+        } catch {
+            return errorReply(
+                requestID: requestID,
+                code: .cancelled,
+                message: "\(error)")
+        }
+    }
+
+    private func errorReply(
+        requestID: UUID,
+        code: ErrorCode,
+        message: String?,
+        httpStatusCode: Int? = nil
+    ) -> XPCDictionary? {
+        let error = GohError(
+            code: code,
+            message: message,
+            httpStatusCode: httpStatusCode)
+        guard let reply = try? Self.envelope(
+            requestID: requestID,
+            messageType: .error,
+            payload: error)
+        else { return nil }
+        return XPCDictionary(reply)
     }
 
     private func replyToAuthImportSafari(_ request: xpc_object_t) -> CommandOutcome {

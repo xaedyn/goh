@@ -38,12 +38,18 @@ public final class JobStore: Sendable {
 
     private let state: Mutex<State>
     private let writer: CatalogWriter?
+    private let progress: ProgressBrokerHub?
 
     /// Creates a store seeded from `catalog` and persisting mutations through
     /// `writer`. The defaults give an empty, non-persisting store.
-    public init(catalog: JobCatalog = .empty, writer: CatalogWriter? = nil) {
+    public init(
+        catalog: JobCatalog = .empty,
+        writer: CatalogWriter? = nil,
+        progress: ProgressBrokerHub? = nil
+    ) {
         self.state = Mutex(State(jobs: catalog.jobs, nextID: catalog.nextID))
         self.writer = writer
+        self.progress = progress
     }
 
     /// Creates a new job in `queued`, assigns it the next monotonic id, and
@@ -56,7 +62,7 @@ public final class JobStore: Sendable {
             bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
         lastProgressAt: Date? = nil
     ) -> JobSummary {
-        withMutation { state in
+        let summary = withMutation { state in
             let id = state.nextID
             state.nextID += 1
             let summary = JobSummary(
@@ -72,6 +78,8 @@ public final class JobStore: Sendable {
             state.jobs.append(summary)
             return summary
         }
+        publishProgress(summary)
+        return summary
     }
 
     /// Every job, in creation order.
@@ -125,17 +133,21 @@ public final class JobStore: Sendable {
     /// not `queued` — already claimed, or terminal — so a second caller cannot
     /// also start downloading it. Throws `jobNotFound` if no such job exists.
     public func start(id: UInt64) throws -> Bool {
-        try withMutation { state in
+        let (started, summary): (Bool, JobSummary?) = try withMutation { state in
             guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
                 throw GohError(code: .jobNotFound, message: "no job with id \(id)")
             }
             guard JobLifecycle.isLegal(from: state.jobs[index].state, to: .active) else {
-                return false
+                return (false, Optional<JobSummary>.none)
             }
             state.jobs[index].state = .active
             state.jobs[index].actualConnectionCount = 1  // single-connection in this slice
-            return true
+            return (true, state.jobs[index])
         }
+        if let summary {
+            publishProgress(summary)
+        }
+        return started
     }
 
     /// Records download progress for an `active` job.
@@ -217,8 +229,9 @@ public final class JobStore: Sendable {
             }
         }
 
-        return withMutation { state in
+        let (result, changedJobs) = withMutation { state in
             var result = StartupReconciliationResult()
+            var changedJobs: [JobSummary] = []
             for index in state.jobs.indices where state.jobs[index].state == .active {
                 let jobID = state.jobs[index].id
                 guard let decision = decisions[jobID] else { continue }
@@ -235,6 +248,7 @@ public final class JobStore: Sendable {
                     state.jobs[index].failedAt = nil
                     state.jobs[index].retryCount = nil
                     result.requeuedJobIDs.append(jobID)
+                    changedJobs.append(state.jobs[index])
                 case .fail(let message):
                     state.jobs[index].state = .failed
                     state.jobs[index].progress.bytesPerSecond = 0
@@ -247,10 +261,15 @@ public final class JobStore: Sendable {
                     state.jobs[index].retryEligible = true
                     state.jobs[index].retryCount = 0
                     result.failedJobIDs.append(jobID)
+                    changedJobs.append(state.jobs[index])
                 }
             }
-            return result
+            return (result, changedJobs)
         }
+        for job in changedJobs {
+            publishProgress(job)
+        }
+        return result
     }
 
     /// Removes the job's tracking record (`DESIGN.md` §3.5 "File ownership
@@ -262,6 +281,7 @@ public final class JobStore: Sendable {
             }
             state.jobs.remove(at: index)
         }
+        progress?.remove(jobID: id)
     }
 
     /// Runs `body` under the lock, then schedules a catalog save of the new
@@ -283,13 +303,18 @@ public final class JobStore: Sendable {
     private func mutateJob(
         id: UInt64, _ change: (inout JobSummary) -> Void
     ) throws -> JobSummary {
-        try withMutation { state in
+        let (summary, changed) = try withMutation { state in
             guard let index = state.jobs.firstIndex(where: { $0.id == id }) else {
                 throw GohError(code: .jobNotFound, message: "no job with id \(id)")
             }
+            let original = state.jobs[index]
             change(&state.jobs[index])
-            return state.jobs[index]
+            return (state.jobs[index], state.jobs[index] != original)
         }
+        if changed {
+            publishProgress(summary)
+        }
+        return summary
     }
 
     private static func unsafeResumeMessage(sidecar: URL?) -> String {
@@ -299,5 +324,9 @@ public final class JobStore: Sendable {
         }
         message += "; retry to start a fresh download"
         return message
+    }
+
+    private func publishProgress(_ summary: JobSummary) {
+        progress?.publish(ProgressSnapshot(job: summary, lanes: []))
     }
 }

@@ -16,6 +16,20 @@ extension GohXPCService {
     }
 }
 
+/// The daemon side of an accepted XPC session.
+public struct GohXPCServerSession: Sendable {
+    private let session: XPCSession
+
+    init(session: XPCSession) {
+        self.session = session
+    }
+
+    /// Sends a daemon-initiated message to the connected client.
+    public func send(_ message: XPCDictionary) throws {
+        try session.send(message: message)
+    }
+}
+
 /// A validated XPC listener.
 ///
 /// An XPC listener is active as soon as it is created — there is no separate
@@ -27,10 +41,31 @@ extension GohXPCService {
 public final class GohXPCListener {
     private let listener: XPCListener
 
+    private struct SessionAwareHandler: XPCPeerHandler {
+        let session: GohXPCServerSession
+        let handler: @Sendable (GohXPCServerSession, XPCDictionary) -> XPCDictionary?
+
+        func handleIncomingRequest(_ request: XPCDictionary) -> XPCDictionary? {
+            handler(session, request)
+        }
+    }
+
     private static func sessionHandler(
         _ handler: @escaping @Sendable (XPCDictionary) -> XPCDictionary?
     ) -> @Sendable (XPCListener.IncomingSessionRequest) -> XPCListener.IncomingSessionRequest.Decision {
         { request in request.accept(incomingMessageHandler: handler) }
+    }
+
+    private static func sessionAwareHandler(
+        _ handler: @escaping @Sendable (GohXPCServerSession, XPCDictionary) -> XPCDictionary?
+    ) -> @Sendable (XPCListener.IncomingSessionRequest) -> XPCListener.IncomingSessionRequest.Decision {
+        { request in
+            request.accept { session in
+                SessionAwareHandler(
+                    session: GohXPCServerSession(session: session),
+                    handler: handler)
+            }
+        }
     }
 
     /// A Mach-service listener for the daemon. `.enforced` binds the service
@@ -53,12 +88,43 @@ public final class GohXPCListener {
         }
     }
 
+    /// A Mach-service listener whose handler can send server-initiated messages
+    /// over the accepted session.
+    public init(
+        machServiceName: String,
+        mode: PeerValidationMode,
+        sessionHandler handler: @escaping @Sendable (
+            GohXPCServerSession, XPCDictionary
+        ) -> XPCDictionary?
+    ) throws {
+        // `XPCListener` is active on return — never call `activate()` (it traps).
+        if let requirement = GohXPCService.peerRequirement(for: mode) {
+            listener = try XPCListener(
+                service: machServiceName, requirement: requirement,
+                incomingSessionHandler: Self.sessionAwareHandler(handler))
+        } else {
+            listener = try XPCListener(
+                service: machServiceName,
+                incomingSessionHandler: Self.sessionAwareHandler(handler))
+        }
+    }
+
     /// An anonymous listener for in-process integration testing. Carries no peer
     /// requirement; a client connects to it through `endpoint`.
     public init(
         anonymousHandler handler: @escaping @Sendable (XPCDictionary) -> XPCDictionary?
     ) {
         listener = XPCListener(incomingSessionHandler: Self.sessionHandler(handler))
+    }
+
+    /// An anonymous listener whose handler can send server-initiated messages
+    /// over the accepted session.
+    public init(
+        anonymousSessionHandler handler: @escaping @Sendable (
+            GohXPCServerSession, XPCDictionary
+        ) -> XPCDictionary?
+    ) {
+        listener = XPCListener(incomingSessionHandler: Self.sessionAwareHandler(handler))
     }
 
     /// The endpoint a client connects to. Meaningful for anonymous listeners.
@@ -87,10 +153,41 @@ public final class GohXPCClient {
         }
     }
 
+    /// Connects to the daemon's Mach service with a handler for daemon-initiated
+    /// messages.
+    public init(
+        machServiceName: String,
+        mode: PeerValidationMode,
+        incomingMessageHandler: (@Sendable (XPCDictionary) -> XPCDictionary?)?
+    ) throws {
+        // `XPCSession` is active on return — never call `activate()` (it traps).
+        if let requirement = GohXPCService.peerRequirement(for: mode) {
+            session = try XPCSession(
+                machService: machServiceName,
+                requirement: requirement,
+                incomingMessageHandler: incomingMessageHandler)
+        } else {
+            session = try XPCSession(
+                machService: machServiceName,
+                incomingMessageHandler: incomingMessageHandler)
+        }
+    }
+
     /// Connects to an anonymous listener's `endpoint` — for in-process
     /// integration testing.
     public init(endpoint: XPCEndpoint) throws {
         session = try XPCSession(endpoint: endpoint)
+    }
+
+    /// Connects to an anonymous listener's `endpoint` with a handler for
+    /// daemon-initiated messages.
+    public init(
+        endpoint: XPCEndpoint,
+        incomingMessageHandler: (@Sendable (XPCDictionary) -> XPCDictionary?)?
+    ) throws {
+        session = try XPCSession(
+            endpoint: endpoint,
+            incomingMessageHandler: incomingMessageHandler)
     }
 
     /// Sends `message` and returns the daemon's reply dictionary.
