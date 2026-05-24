@@ -75,6 +75,64 @@ struct CommandDispatcherTests {
         #expect(summary.requestedConnectionCount == 16)
     }
 
+    @Test("add snapshots a matching imported cookie header unless opted out")
+    func addSnapshotsImportedCookieHeader() {
+        let importedCookies = ImportedCookieStore(cookies: [
+            SafariCookie(
+                domain: ".example.com",
+                name: "session",
+                path: "/files",
+                value: "abc",
+                flags: [.secure],
+                expiresAt: .distantFuture,
+                createdAt: Date(timeIntervalSinceReferenceDate: 0)),
+        ])
+        let dispatcher = CommandDispatcher(
+            store: JobStore(),
+            importedCookies: importedCookies)
+
+        guard case .job(let defaulted) = dispatcher.reply(to: .add(request: AddRequest(
+            url: "https://downloads.example.com/files/archive.zip")))
+        else {
+            Issue.record("expected .job")
+            return
+        }
+        guard case .job(let optedOut) = dispatcher.reply(to: .add(request: AddRequest(
+            url: "https://downloads.example.com/files/other.zip",
+            useImportedCookies: false)))
+        else {
+            Issue.record("expected .job")
+            return
+        }
+
+        #expect(importedCookies.header(forJobID: defaulted.id) == "session=abc")
+        #expect(importedCookies.header(forJobID: optedOut.id) == nil)
+    }
+
+    @Test("rm clears an imported cookie header for the removed job")
+    func rmClearsImportedCookieHeader() {
+        let importedCookies = ImportedCookieStore(cookies: [
+            SafariCookie(
+                domain: ".example.com",
+                name: "session",
+                path: "/",
+                value: "abc",
+                flags: [.secure],
+                expiresAt: .distantFuture,
+                createdAt: Date(timeIntervalSinceReferenceDate: 0)),
+        ])
+        let dispatcher = CommandDispatcher(
+            store: JobStore(),
+            importedCookies: importedCookies)
+
+        _ = dispatcher.reply(to: .add(request: AddRequest(url: "https://example.com/f")))
+        #expect(importedCookies.header(forJobID: 1) == "session=abc")
+
+        _ = dispatcher.reply(to: .rm(request: RmRequest(jobID: 1)))
+
+        #expect(importedCookies.header(forJobID: 1) == nil)
+    }
+
     @Test("ls replies with every job in creation order")
     func lsListsJobs() {
         let dispatcher = CommandDispatcher(store: JobStore())

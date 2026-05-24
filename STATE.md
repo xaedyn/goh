@@ -19,7 +19,9 @@ session; update at the start of every PR and at the end of every session.
   `Cookie` header serialization with conservative host-only handling for bare
   Safari domains. The third step adds a download-engine cookie-header provider
   hook so initial, range-parallel, and resume requests can carry daemon-supplied
-  cookies. No persistent cookie-store format or new IPC command has been added.
+  cookies. The fourth step wires the frozen `add.useImportedCookies` field to a
+  volatile per-job header snapshot and clears it on `rm`. No persistent
+  cookie-store format or new IPC command has been added.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -165,12 +167,10 @@ PR #18 was made ready, reviewed, fixed, and squash-merged into `main` at
 boundary are now concrete; pick up by settling the load-bearing import
 command/FDA contract before wiring XPC:
 
-- confirm how imported cookies are stored in-memory by the daemon before a
-  persistent store exists;
-- wire `add.useImportedCookies` to the in-memory jar/header provider once the
-  import command boundary is settled;
 - do not add `goh auth import safari` until its request/reply wire shape has an
   explicit design note;
+- connect the future import command to `ImportedCookieStore.replaceCookies(_:)`
+  and the daemon's `DownloadEngine.cookieHeaderProvider`;
 - keep Full Disk Access prompting and revocation handling user-clear;
 - avoid introducing a public persistent cookie-store format without an explicit
   design pass;

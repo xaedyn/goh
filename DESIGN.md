@@ -1365,6 +1365,15 @@ not drift between engine paths. The engine does not own cookie storage and does
 not persist credential material; it only attaches a non-empty header when the
 daemon supplies one.
 
+`CommandDispatcher` now bridges the already-frozen `add.useImportedCookies`
+field to that volatile store. When the field is absent or `true`, `add`
+snapshots the current matching `Cookie` header for the new job; when the field
+is `false`, it stores nothing. `rm` clears the per-job header. This keeps the
+wire default (`true`) meaningful without storing Safari cookies or derived
+headers on disk. Jobs restored after a daemon restart therefore need a fresh
+import before credentialed requests can be retried; that is intentional until a
+secure persistent credential-storage design exists.
+
 The still-open auth decisions are the user-visible `goh auth import safari`
 command shape, the Full Disk Access prompt wording, and the revocation behavior
 when the CLI can no longer open Safari's cookie file. The existing IPC lean from
