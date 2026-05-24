@@ -5,9 +5,10 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/cli-options-json`
+- **Branch:** `design/progress-subscription`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
-  `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`.
+  `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
+  CLI add options and JSON list — `main` at `58c2e73`.
 - **Current slice:** Slice 7, the `goh` CLI client. The slice starts from the
   shipped daemon, engine, auth import, Spotlight metadata, and sleep assertion
   foundation and fills out the command-line surface in `ROADMAP.md` §2-4:
@@ -24,7 +25,12 @@ session; update at the start of every PR and at the end of every session.
   subscription path exists, rather than pretending to be a background add.
   The follow-up CLI polish branch exposes already-frozen `add` options
   (`--output`, `--connections`, `--priority`, `--no-cookies`) and adds
-  `goh ls --json` over the existing `LsReply` payload.
+  `goh ls --json` over the existing `LsReply` payload. The current branch is the
+  final-audit design contract for the load-bearing progress subscription:
+  `Command.subscribe`, `SubscribeReply`, `ProgressEvent`, full in-scope
+  progress snapshots, progress-model revisions, explicit `fullSnapshot` update
+  events, 100 ms coalescing, foreground reconnect, and `goh top` subscription
+  behavior.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -182,7 +188,7 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/cli-options-json`.
+Current branch: `design/progress-subscription`.
 
 PR #23 was locally verified, opened, checked against CI, and squash-merged into
 `main` at `db9b82a`. CodeRabbit again posted only a non-actionable quota /
@@ -210,9 +216,19 @@ payload. Local gates for this branch:
   --no-cookies https://example.com/private.zip` with no daemon loaded — parses
   locally, then prints `brew services start goh` guidance and exits `1`
 
-Next: open the non-wire CLI polish PR, wait for CI/review, address findings, and
-then move to the load-bearing progress subscription design needed for foreground
-`goh <url>` and `goh top`.
+PR #24 passed CI and was squash-merged into `main` at `58c2e73`; CodeRabbit only
+posted the non-actionable quota / usage-credit warning.
+
+Current work: final-audit progress subscription design. `DESIGN.md` now freezes
+the intended `protocolVersion = 3` contract: `Command.subscribe`, full baseline
+`SubscribeReply`, pushed full-snapshot `ProgressEvent` notifications with
+lane-level progress, daemon progress-model `revision`s, explicit
+`updateKind == fullSnapshot`, a daemon-local `ProgressBroker` with 100 ms
+coalescing and terminal flushes, foreground `add`-then-subscribe behavior, and a
+2.5 s reconnect window.
+
+Next: review and merge PR #25, then implement the progress subscription and
+foreground/TUI client behavior test-first.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
