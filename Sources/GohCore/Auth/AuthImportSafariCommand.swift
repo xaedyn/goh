@@ -52,6 +52,15 @@ public struct AuthImportSafariCommand {
         _ candidates: [URL]
     ) -> (url: URL, fileDescriptor: Int32)? {
         for candidate in candidates {
+            var isDirectory = ObjCBool(false)
+            guard FileManager.default.fileExists(
+                atPath: candidate.path,
+                isDirectory: &isDirectory),
+                !isDirectory.boolValue
+            else {
+                continue
+            }
+
             let fd = open(candidate.path, O_RDONLY | O_CLOEXEC)
             if fd >= 0 {
                 return (candidate, fd)

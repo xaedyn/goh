@@ -76,4 +76,46 @@ struct AuthImportSafariCommandTests {
         #expect(result.standardOutput == "Imported 7 Safari cookies.\n")
         #expect(result.standardError == "")
     }
+
+    @Test("directory candidates are skipped before falling back to the legacy cookie file")
+    func directoryCandidateFallsBackToLegacyFile() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appending(path: "goh-auth-import-cli-directory-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let candidates = SafariCookieFileLocator.candidateURLs(homeDirectory: home)
+        try FileManager.default.createDirectory(
+            at: candidates[0],
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: candidates[1].deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        let legacyBytes = Array("legacy-cookie-bytes".utf8)
+        try Data(legacyBytes).write(to: candidates[1])
+
+        var sentBytes: [UInt8] = []
+        let result = AuthImportSafariCommand(homeDirectory: home) { request in
+            return try request.withUnsafeUnderlyingDictionary { object in
+                let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                let fd = try XPCEnvelope.fileDescriptor(
+                    object, XPCEnvelope.authSafariCookieFileKey)
+                defer { close(fd) }
+                var buffer = [UInt8](repeating: 0, count: legacyBytes.count)
+                let bytesRead = read(fd, &buffer, buffer.count)
+                #expect(bytesRead == legacyBytes.count)
+                sentBytes = buffer
+
+                let reply = try GohEnvelope(
+                    protocolVersion: 2,
+                    requestID: envelope.requestID,
+                    messageType: .reply,
+                    payload: AuthImportSafariReply(importedCookieCount: 1))
+                    .xpcDictionary()
+                return XPCDictionary(reply)
+            }
+        }.run()
+
+        #expect(result.exitCode == 0)
+        #expect(sentBytes == legacyBytes)
+    }
 }
