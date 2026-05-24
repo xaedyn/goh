@@ -5,13 +5,13 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `fix/core-correctness-gates`
-- **Last merged:** PR #14 — Slice 3b, range-parallel orchestration — `main`
-  at `721871b`.
-- **Current slice:** core correctness gates before 3c: make the engine and XPC
-  command path enforce the frozen contracts before adding live cancellation,
-  retry, and resumable partial-file control.
-- **Last merged before #14:** PR #13 — the `actualConnectionCount` §1 amendment.
+- **Branch:** `design/checkpoint-resume`
+- **Last merged:** PR #15 — core correctness gates — `main` at `dcdf709`.
+- **Current slice:** checkpoint/resume design before 3c: define daemon restart
+  reconciliation and the checkpoint manifest used by crash recovery, graceful
+  pause/resume, active `rm`, and retry.
+- **Last merged before #15:** PR #14 — Slice 3b, range-parallel orchestration —
+  `721871b`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
 
@@ -56,12 +56,8 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Roadmap from here
 
-- **Correctness gates** — incomplete fixed-length transfer rejection, range
-  response validation, protocol-version enforcement, and request validation.
-- **Open design decision before 3c** — how to reconcile persisted `active` jobs
-  on daemon restart before full checkpoint resume exists. Requeuing by truncating
-  and starting over would conflict with the documented checkpoint-resume promise,
-  so this should be surfaced rather than smuggled in.
+- **Checkpoint/resume design** — reconcile persisted `active` jobs on daemon
+  restart and freeze the checkpoint mechanism before 3c implementation.
 - **3c** — error / retry / cancellation: the retry policy (§2.2 Retry boundary),
   `pause` / `resume` interrupting and resuming a live transfer against the
   checkpoint, `rm` teardown with `keepPartialFile`.
@@ -156,27 +152,19 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `fix/core-correctness-gates`.
+Current branch: `design/checkpoint-resume`.
 
-Implemented and verified the correctness gates on PR #15:
+PR #15 was squash-merged into `main` at `dcdf709`.
 
-- Fixed-length chunk assembly now fails instead of digesting a short download.
-- Range workers validate exact `Content-Range` headers and fail short successful
-  bodies.
-- The initial speculative `Range: bytes=0-` response now also requires a full,
-  internally consistent `Content-Range` (`0...total - 1`) before the scheduler
-  trusts the reported total.
-- `CommandService` reads envelope headers before payload decode, rejects
-  incompatible `protocolVersion`, and rejects non-request message kinds.
-- `CommandDispatcher` rejects `connectionCount == 0` with `invalidArgument` and
-  caps values above `16`.
-- The CodeRabbit review comment on PR #15 was addressed: `MockURLProtocol`
-  returns `416` for invalid test `Range` requests instead of trapping on an
-  out-of-bounds `Data` slice.
+Started the checkpoint/resume design pass in `DESIGN.md` §Persistence:
 
-Verification: `swift test` passes 112 tests; `swift build -Xswiftc
--warnings-as-errors` passes.
+- startup reconciliation for persisted `active` jobs;
+- a daemon-owned checkpoint manifest under `checkpoints/`;
+- piece-map checkpoints at the 1 MiB boundary;
+- durable ordering for `pwrite` / fsync / manifest replacement;
+- HTTP validator rules for safe resume;
+- shared checkpoint semantics for crash recovery, `pause`, `resume`, and
+  `rm --keep`.
 
-Next: once PR #15 is merged, surface the daemon restart policy for persisted
-`active` jobs as the first 3c design question, then build daemon-path
-benchmarking so performance work measures the real product.
+Next: review the open questions in the draft, converge on the final answers,
+then rewrite the draft into settled design before implementing 3c.

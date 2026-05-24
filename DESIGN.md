@@ -193,8 +193,175 @@ either a different host or more diagnostic time is available.
 
 ## Persistence
 
-_TBD — `pwrite(2)` chunk writes indexed by range offset; `F_PREALLOCATE` for
-contiguous extents; `F_NOCACHE` above 1 GB; checkpoint to disk every 1 MB._
+`gohd` persists two daemon-owned data sets under
+`~/Library/Application Support/dev.goh.daemon/`:
+
+- `catalog.plist` — the job catalog (`JobCatalog`), written as a binary property
+  list with atomic durable replacement.
+- `checkpoints/` — the download-resume records drafted below.
+
+The catalog is the user-visible job model. A checkpoint is engine-owned recovery
+state: it exists only for unfinished jobs, may be rewritten often, and is deleted
+when a job reaches `completed`, reaches non-resumable `failed`, or is removed
+without `--keep`.
+
+### Checkpoint / Resume Draft — Round 1
+
+This subsection is a design draft for Slice 3c. It is not yet the frozen
+checkpoint contract; implementation waits until the open questions below are
+reviewed.
+
+#### Question 1 — What happens to persisted `active` jobs on daemon startup?
+
+**Options considered.**
+- *Restart from byte 0* — simple, but it lies about ROADMAP §7's resume promise
+  and can silently discard large partial downloads.
+- *Leave them `active` until a command touches them* — preserves bytes but emits a
+  state that is not true; no engine task owns the job after restart.
+- *Add a new `interrupted` state* — clear, but adding a `JobState` case is a
+  `protocolVersion` bump for v1.
+- *Reconcile at startup using checkpoints* — keep the v1 state machine and make
+  the daemon repair impossible persisted states before serving XPC.
+
+**Proposed answer.**
+On startup, `gohd` scans persisted jobs before scheduling any downloads:
+
+- `active` with a valid checkpoint becomes `queued` and is immediately eligible
+  for the engine. This is startup reconciliation, not a normal runtime
+  `active -> queued` transition.
+- `active` with a missing, corrupt, or validator-mismatched checkpoint becomes
+  `failed` with `GohError.code == .connectionFailed`, a message explaining that
+  resume metadata was unavailable or unsafe, and `retryEligible == true`.
+- `queued` jobs keep today's behavior and are scheduled normally.
+- `paused` jobs remain paused; user-paused jobs do not auto-resume, and
+  network-paused jobs are resumed only by the later path-monitor slice.
+
+**Open.**
+Should `failed` use `.connectionFailed` for unsafe checkpoint recovery, or is
+the right move to bump `protocolVersion` for a dedicated error code? The lean is
+to avoid a v1 bump: the code is less important than the explanatory message, and
+`retryEligible` already carries the "try again as a fresh job" signal.
+
+#### Question 2 — What does a checkpoint record contain?
+
+**Options considered.**
+- *Only a contiguous byte count* — safest and tiny, but range-parallel downloads
+  lose already-written out-of-order pieces after a crash.
+- *One file per range task* — maps to the implementation, not the file; range
+  splits can change between attempts.
+- *A piece map over the destination file* — stable across scheduler choices and
+  matches the 1 MiB checkpoint promise.
+
+**Proposed answer.**
+Use a versioned binary property list per job:
+`checkpoints/<jobID>.checkpoint.plist`. It is daemon-owned, not a public wire
+format, but carries `version` for migrations.
+
+The v1 checkpoint records:
+
+- `version`
+- `jobID`
+- `url`
+- `destination`
+- `partialFileSize`
+- `totalBytes`, once known
+- HTTP resume validators: strong `ETag` when present, `Last-Modified` when
+  present, and `Content-Length` / `Content-Range` total
+- `pieceSize == 1 MiB`
+- a completed-piece map, plus a final-piece length when `totalBytes` is known
+- `updatedAt`
+
+The piece map says "these byte ranges were written and made durable", not
+"these bytes are cryptographically verified". End-to-end integrity still comes
+from the final SHA-256 digest computed by the engine.
+
+**Open.**
+Should the first implementation persist the piece map as a compact bitset or as
+sorted intervals? The lean is sorted intervals for implementation clarity in
+v0.1; a bitset can replace it later behind a checkpoint `version` bump if large
+job catalogs show measurable overhead.
+
+#### Question 3 — When is a piece safe to mark complete?
+
+**Options considered.**
+- *Mark after `pwrite` returns* — fast, but a crash can leave the manifest ahead
+  of durable file bytes.
+- *Mark after the normal coalesced catalog save* — mixes job state with hot engine
+  checkpoints and makes the catalog save cadence a correctness boundary.
+- *Fsync the partial file, then atomically save the checkpoint* — slower, but the
+  manifest never promises bytes that the daemon has not forced to disk.
+
+**Proposed answer.**
+A piece becomes trusted only after:
+
+1. the engine writes the full piece at its file offset;
+2. the partial file is fsynced;
+3. the checkpoint manifest is atomically and durably replaced with that piece
+   marked complete.
+
+On restart, bytes present on disk but absent from the manifest are ignored and
+may be overwritten. This biases toward re-downloading at most the trailing
+uncheckpointed work rather than trusting ambiguous bytes.
+
+**Open.**
+The current `DownloadFile` fsyncs after cumulative 1 MiB of writes across all
+ranges. The checkpoint writer may need a piece-aware fsync API so the engine can
+make "piece complete" and "manifest updated" line up exactly.
+
+#### Question 4 — How does HTTP validation protect resumed bytes?
+
+**Options considered.**
+- *Trust URL + length only* — works often, but can splice bytes from two different
+  representations if the server changes content at the same URL.
+- *Require a strong validator for every resume* — safest, but disables resume for
+  servers that omit validators.
+- *Use the best available validator and fail closed on mismatch* — practical and
+  honest.
+
+**Proposed answer.**
+When resuming, the engine probes with a ranged request and validates the response
+against the checkpoint:
+
+- If a strong `ETag` exists, use `If-Range` with that ETag and require a `206`
+  response whose `Content-Range.total` matches `totalBytes`.
+- Else if `Last-Modified` exists, use `If-Range` with that date and require the
+  same total.
+- Else resume only inside the same daemon process; after daemon restart, fail the
+  checkpoint as unsafe rather than silently stitching unvalidated bytes.
+- If the server returns `200` to a resume probe, the representation changed or
+  ranges are unavailable. The job fails safely; it does not overwrite the partial
+  file as a hidden restart.
+
+**Open.**
+Some real-world servers send weak ETags for immutable assets. The first
+implementation should treat weak ETags as insufficient for crash resume unless
+real benchmark targets prove that too restrictive.
+
+#### Question 5 — How do pause, resume, and `rm --keep` share the checkpoint?
+
+**Options considered.**
+- *Separate mechanisms for crash, pause, and keep-partial* — easier to stage but
+  likely to diverge.
+- *One checkpoint mechanism for all interruption paths* — more up-front design,
+  but fewer truth tables.
+
+**Proposed answer.**
+3c uses one checkpoint mechanism:
+
+- `pause` asks the engine to stop at a checkpoint boundary, then transitions the
+  job to `paused`.
+- `resume` validates the checkpoint and re-enters the scheduler.
+- `rm` without `--keep` cancels active work and deletes the checkpoint plus the
+  daemon-owned partial file.
+- `rm --keep` stops at a checkpoint boundary and keeps both the partial file and
+  enough checkpoint metadata for a future `add` of the same URL/destination to
+  adopt it.
+
+**Open.**
+The existing `add` request has no explicit "adopt partial" flag. The lean is
+automatic adoption only when URL, destination, validators, and checkpoint all
+match exactly; otherwise `add` creates a fresh job and leaves the kept file
+alone.
 
 ## IPC
 
