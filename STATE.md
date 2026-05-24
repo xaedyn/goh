@@ -170,8 +170,8 @@ remaining adaptive host scheduling work to v0.2.
 
 Current branch: `feat/safari-auth-import-command`.
 
-PR #21 is open as a draft:
-<https://github.com/xaedyn/goh/pull/21>. Commit `0174c21` implements the frozen
+PR #21 is open and ready for review:
+<https://github.com/xaedyn/goh/pull/21>. It implements the frozen
 `protocolVersion = 2` `authImportSafari(request:)` command:
 
 - v2 request/reply structs, command enum case, and immutable golden fixtures;
@@ -180,7 +180,9 @@ PR #21 is open as a draft:
 - daemon-side fd read, Safari `Cookies.binarycookies` parse, and all-or-nothing
   `ImportedCookieStore` replacement through `SafariAuthImportHandler`;
 - CLI-side `goh auth import safari` file-open flow, FDA guidance, and "do not
-  send XPC when no Safari cookie file opens" behavior.
+  send XPC when no Safari cookie file opens" behavior;
+- CLI candidate filtering skips directories before falling back to the legacy
+  Safari cookie path.
 
 Local validation before opening PR #21:
 
