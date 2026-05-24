@@ -1,3 +1,6 @@
+import Foundation
+import GohCore
+
 // GohTUI — terminal UI module. Used by `goh top` and `goh <url>` progress.
 //
 // Bootstrap stub: exposes a module identifier. Real rendering lands in a later
@@ -7,4 +10,73 @@
 public enum GohTUI {
     /// The module's name. A placeholder identity until real functionality lands.
     public static let moduleName = "GohTUI"
+
+    public static func renderTopDashboard(snapshots: [ProgressSnapshot]) -> String {
+        let sorted = snapshots.sorted { $0.job.id < $1.job.id }
+        var lines = [
+            "goh top",
+            "\(sorted.count) \(sorted.count == 1 ? "job" : "jobs")",
+            "",
+        ]
+
+        guard !sorted.isEmpty else {
+            lines.append("No downloads yet.")
+            return lines.joined(separator: "\n")
+        }
+
+        lines.append("ID  STATE   PROGRESS             RATE    CONN  DESTINATION")
+        for snapshot in sorted {
+            let job = snapshot.job
+            lines.append([
+                pad(String(job.id), to: 4),
+                pad(job.state.rawValue, to: 8),
+                pad(progressText(job.progress), to: 21),
+                pad("\(formatBytes(job.progress.bytesPerSecond))/s", to: 8),
+                pad("\(job.actualConnectionCount)/\(job.requestedConnectionCount)", to: 6),
+                job.destination,
+            ].joined())
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func progressText(_ progress: JobProgress) -> String {
+        guard let total = progress.bytesTotal else {
+            return "\(formatBytes(progress.bytesCompleted))/?"
+        }
+        let percent = total == 0
+            ? 100
+            : Int((Double(progress.bytesCompleted) / Double(total) * 100).rounded())
+        return "\(formatBytes(progress.bytesCompleted))/\(formatBytes(total)) (\(percent)%)"
+    }
+
+    private static func formatBytes(_ bytes: UInt64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB", "PB"]
+        guard bytes >= 1024 else {
+            return "\(bytes) B"
+        }
+
+        var value = Double(bytes)
+        var unitIndex = 0
+        while value >= 1024, unitIndex < units.count - 1 {
+            value /= 1024
+            unitIndex += 1
+        }
+
+        let rounded = value.rounded()
+        if abs(value - rounded) < 0.05 {
+            return "\(Int(rounded)) \(units[unitIndex])"
+        }
+        return String(
+            format: "%.1f %@",
+            locale: Locale(identifier: "en_US_POSIX"),
+            value,
+            units[unitIndex])
+    }
+
+    private static func pad(_ text: String, to width: Int) -> String {
+        if text.count >= width {
+            return text
+        }
+        return text + String(repeating: " ", count: width - text.count)
+    }
 }
