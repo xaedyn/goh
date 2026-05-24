@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XPC
 
@@ -10,12 +11,17 @@ import XPC
 public struct CommandService: Sendable {
 
     /// The protocol version this daemon speaks.
-    public static let protocolVersion: UInt32 = 1
+    public static let protocolVersion: UInt32 = 2
 
     private let dispatcher: CommandDispatcher
+    private let authImportSafari: (@Sendable (Int32) -> CommandOutcome)?
 
-    public init(dispatcher: CommandDispatcher) {
+    public init(
+        dispatcher: CommandDispatcher,
+        authImportSafari: (@Sendable (Int32) -> CommandOutcome)? = nil
+    ) {
         self.dispatcher = dispatcher
+        self.authImportSafari = authImportSafari
     }
 
     /// Handles a request envelope dictionary and returns the reply envelope.
@@ -45,15 +51,44 @@ public struct CommandService: Sendable {
                         code: .invalidArgument,
                         message: "expected request messageType, got \(header.messageType.rawValue)")))
             }
-            guard
-                let envelope = try? GohEnvelope<Command>(xpcDictionary: requestObject),
-                let reply = try? Self.encodeReply(
-                    for: dispatcher.reply(to: envelope.payload),
-                    requestID: envelope.requestID)
-            else {
+            guard let envelope = try? GohEnvelope<Command>(xpcDictionary: requestObject) else {
+                return nil
+            }
+
+            let outcome: CommandOutcome
+            switch envelope.payload {
+            case .authImportSafari:
+                outcome = replyToAuthImportSafari(requestObject)
+            default:
+                outcome = dispatcher.reply(to: envelope.payload)
+            }
+
+            guard let reply = try? Self.encodeReply(
+                for: outcome,
+                requestID: envelope.requestID
+            ) else {
                 return nil
             }
             return XPCDictionary(reply)
+        }
+    }
+
+    private func replyToAuthImportSafari(_ request: xpc_object_t) -> CommandOutcome {
+        guard let authImportSafari else {
+            return .failure(GohError(
+                code: .invalidArgument,
+                message: "authImportSafari is not configured"))
+        }
+
+        do {
+            let fd = try XPCEnvelope.fileDescriptor(
+                request, XPCEnvelope.authSafariCookieFileKey)
+            defer { close(fd) }
+            return authImportSafari(fd)
+        } catch {
+            return .failure(GohError(
+                code: .invalidArgument,
+                message: "authImportSafari requires an auth.safariCookieFile XPC fd sibling"))
         }
     }
 
@@ -97,6 +132,8 @@ public struct CommandService: Sendable {
             return try replyEnvelope(requestID: requestID, payload: list)
         case .removed(let removed):
             return try replyEnvelope(requestID: requestID, payload: removed)
+        case .authImported(let reply):
+            return try replyEnvelope(requestID: requestID, payload: reply)
         case .failure(let error):
             return try envelope(
                 requestID: requestID, messageType: .error, payload: error)

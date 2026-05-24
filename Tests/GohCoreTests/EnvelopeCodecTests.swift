@@ -13,7 +13,7 @@ struct EnvelopeCodecTests {
         let note: String
     }
 
-    /// Loads a committed `protocolVersion = 1` golden fixture by name.
+    /// Loads a committed golden fixture by name.
     private func fixtureData(_ name: String) throws -> Data {
         let url = try #require(
             Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"),
@@ -38,6 +38,29 @@ struct EnvelopeCodecTests {
             GohEnvelope<TestPayload>.self, from: fixtureData("envelope-v1-reply"))
 
         #expect(envelope.messageType == .reply)
+    }
+
+    @Test("decodes the protocolVersion=2 auth import request fixture")
+    func decodesV2AuthImportRequestFixture() throws {
+        let envelope = try JSONDecoder().decode(
+            GohEnvelope<Command>.self,
+            from: fixtureData("envelope-v2-auth-import-safari-request"))
+
+        #expect(envelope.protocolVersion == 2)
+        #expect(envelope.requestID == UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"))
+        #expect(envelope.messageType == .request)
+        #expect(envelope.payload == .authImportSafari(request: AuthImportSafariRequest()))
+    }
+
+    @Test("decodes the protocolVersion=2 auth import reply fixture")
+    func decodesV2AuthImportReplyFixture() throws {
+        let envelope = try JSONDecoder().decode(
+            GohEnvelope<AuthImportSafariReply>.self,
+            from: fixtureData("envelope-v2-auth-import-safari-reply"))
+
+        #expect(envelope.protocolVersion == 2)
+        #expect(envelope.messageType == .reply)
+        #expect(envelope.payload == AuthImportSafariReply(importedCookieCount: 42))
     }
 
     @Test("an envelope round-trips through encode then decode unchanged")

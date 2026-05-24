@@ -83,7 +83,10 @@ do {
         checkpointStore: checkpointStore,
         importedCookies: importedCookies,
         queuedJobAdmission: { networkCoordinator.jobBecameQueued($0) })
-    let service = CommandService(dispatcher: dispatcher)
+    let authImportHandler = SafariAuthImportHandler(importedCookies: importedCookies)
+    let service = CommandService(
+        dispatcher: dispatcher,
+        authImportSafari: { authImportHandler.reply(fileDescriptor: $0) })
 
     let pathMonitor = NWPathMonitor()
     let pathQueue = DispatchQueue(label: "dev.goh.daemon.network-path")

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 import XPC
@@ -22,7 +23,7 @@ struct CommandServiceTests {
     ) throws -> GohEnvelope<Reply> {
         let requestID = UUID()
         let request = GohEnvelope(
-            protocolVersion: 1, requestID: requestID, messageType: .request, payload: command)
+            protocolVersion: 2, requestID: requestID, messageType: .request, payload: command)
         let replyDictionary = try client.sendSync(XPCDictionary(request.xpcDictionary()))
         let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
             try GohEnvelope<Reply>(xpcDictionary: object)
@@ -49,6 +50,25 @@ struct CommandServiceTests {
             }
         }
         return dictionary
+    }
+
+    private func makeAuthImportSafariRequest(
+        requestID: UUID,
+        fileDescriptor: Int32? = nil
+    ) throws -> xpc_object_t {
+        let request = try GohEnvelope(
+            protocolVersion: 2,
+            requestID: requestID,
+            messageType: .request,
+            payload: Command.authImportSafari(request: AuthImportSafariRequest())
+        ).xpcDictionary()
+        if let fileDescriptor {
+            XPCEnvelope.setFileDescriptor(
+                fileDescriptor,
+                forKey: XPCEnvelope.authSafariCookieFileKey,
+                in: request)
+        }
+        return request
     }
 
     @Test("an add command round-trips to a queued JobSummary reply")
@@ -89,14 +109,105 @@ struct CommandServiceTests {
         #expect(reply.payload.jobs.first?.url == "https://example.com/a")
     }
 
-    @Test("a request with an incompatible protocol version replies with protocolVersionMismatch")
-    func protocolVersionMismatchRepliesWithError() throws {
+    @Test("auth import without the Safari cookie fd replies with invalidArgument")
+    func authImportWithoutFileDescriptorRepliesWithInvalidArgument() throws {
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: JobStore()),
+            authImportSafari: { _ in
+                Issue.record("handler should not be called without the fd sibling")
+                return .authImported(AuthImportSafariReply(importedCookieCount: 0))
+            })
+        let listener = GohXPCListener(anonymousHandler: { service.handle($0) })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { listener.cancel(); client.cancel() }
+
+        let requestID = UUID()
+        let replyDictionary = try client.sendSync(XPCDictionary(
+            makeAuthImportSafariRequest(requestID: requestID)))
+        let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<GohError>(xpcDictionary: object)
+        }
+
+        #expect(reply.requestID == requestID)
+        #expect(reply.messageType == .error)
+        #expect(reply.payload.code == .invalidArgument)
+    }
+
+    @Test("auth import with a wrong-typed Safari cookie sibling replies with invalidArgument")
+    func authImportWithWrongTypedFileDescriptorRepliesWithInvalidArgument() throws {
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: JobStore()),
+            authImportSafari: { _ in
+                Issue.record("handler should not be called without an fd sibling")
+                return .authImported(AuthImportSafariReply(importedCookieCount: 0))
+            })
+        let listener = GohXPCListener(anonymousHandler: { service.handle($0) })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { listener.cancel(); client.cancel() }
+
+        let requestID = UUID()
+        let request = try makeAuthImportSafariRequest(requestID: requestID)
+        xpc_dictionary_set_int64(request, XPCEnvelope.authSafariCookieFileKey, 7)
+
+        let replyDictionary = try client.sendSync(XPCDictionary(request))
+        let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<GohError>(xpcDictionary: object)
+        }
+
+        #expect(reply.requestID == requestID)
+        #expect(reply.messageType == .error)
+        #expect(reply.payload.code == .invalidArgument)
+    }
+
+    @Test("auth import passes a duplicated Safari cookie fd to the handler")
+    func authImportPassesDuplicatedFileDescriptorToHandler() throws {
+        let payload = Array("cookie-bytes".utf8)
+        let fileURL = FileManager.default.temporaryDirectory
+            .appending(path: "goh-auth-import-fd-\(UUID().uuidString)")
+        try Data(payload).write(to: fileURL)
+        let fd = open(fileURL.path, O_RDONLY)
+        #expect(fd >= 0)
+        defer {
+            close(fd)
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: JobStore()),
+            authImportSafari: { duplicatedFD in
+                var buffer = [UInt8](repeating: 0, count: payload.count)
+                let bytesRead = read(duplicatedFD, &buffer, buffer.count)
+                guard bytesRead == payload.count, buffer == payload else {
+                    return .failure(GohError(
+                        code: .invalidArgument,
+                        message: "did not receive the expected fd contents"))
+                }
+                return .authImported(AuthImportSafariReply(importedCookieCount: 42))
+            })
+        let listener = GohXPCListener(anonymousHandler: { service.handle($0) })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { listener.cancel(); client.cancel() }
+
+        let requestID = UUID()
+        let replyDictionary = try client.sendSync(XPCDictionary(
+            makeAuthImportSafariRequest(requestID: requestID, fileDescriptor: fd)))
+        let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<AuthImportSafariReply>(xpcDictionary: object)
+        }
+
+        #expect(reply.requestID == requestID)
+        #expect(reply.messageType == .reply)
+        #expect(reply.payload.importedCookieCount == 42)
+    }
+
+    @Test("an old-version request replies with protocolVersionMismatch")
+    func oldProtocolVersionMismatchRepliesWithError() throws {
         let (listener, client) = try makeChannel()
         defer { listener.cancel(); client.cancel() }
 
         let requestID = UUID()
         let request = GohEnvelope(
-            protocolVersion: 2,
+            protocolVersion: 1,
             requestID: requestID,
             messageType: .request,
             payload: Command.ls)
@@ -111,16 +222,16 @@ struct CommandServiceTests {
     }
 
     @Test("a future-version request with an unknown payload still replies with protocolVersionMismatch")
-    func protocolVersionMismatchIsCheckedBeforePayloadDecode() throws {
+    func futureProtocolVersionMismatchIsCheckedBeforePayloadDecode() throws {
         let (listener, client) = try makeChannel()
         defer { listener.cancel(); client.cancel() }
 
         let requestID = UUID()
         let request = makeEnvelopeDictionary(
-            protocolVersion: 2,
+            protocolVersion: 3,
             requestID: requestID,
             messageType: "request",
-            payload: Data(#"{"futureCommand":{"shape":"unknown-to-v1"}}"#.utf8))
+            payload: Data(#"{"futureCommand":{"shape":"unknown-to-v2"}}"#.utf8))
         let replyDictionary = try client.sendSync(XPCDictionary(request))
         let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
             try GohEnvelope<GohError>(xpcDictionary: object)
@@ -138,7 +249,7 @@ struct CommandServiceTests {
 
         let requestID = UUID()
         let request = GohEnvelope(
-            protocolVersion: 1,
+            protocolVersion: 2,
             requestID: requestID,
             messageType: .notification,
             payload: Command.ls)
