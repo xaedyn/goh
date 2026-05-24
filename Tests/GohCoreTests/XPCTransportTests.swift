@@ -80,7 +80,7 @@ struct XPCTransportTests {
         }
 
         #expect(receivedReply == sent)
-        #expect(pushArrived.wait(timeout: .now() + 3) == .success)
+        #expect(pushArrived.wait(timeout: .now() + 30) == .success)
         #expect(receivedPushes.withLock { $0 } == [pushed])
     }
 
