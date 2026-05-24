@@ -5,15 +5,13 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/network-auto-pause`
-- **Last merged:** PR #17 — checkpoint-backed crash resume — `main` at
-  `d5db309`.
-- **Current slice:** Slice 4, network auto-pause. The slice starts from the
-  shipped checkpoint/resume engine and adds daemon-owned network policy:
-  cellular paths pause queued and active jobs as `PauseReason.network`, while
-  satisfied non-cellular paths resume only network-paused jobs. The first branch
-  pass has the core coordinator, daemon `NWPathMonitor` wiring, command queue
-  admission, and design notes in place. User-paused jobs remain manual.
+- **Branch:** `feat/safari-cookie-import`
+- **Last merged:** PR #18 — network auto-pause coordinator — `main` at
+  `e5372af`.
+- **Current slice:** Slice 5, Safari cookie import. The slice starts from the
+  shipped network auto-pause daemon and adds the Safari
+  `Cookies.binarycookies` parser plus the Full Disk Access import flow described
+  in `ROADMAP.md` §9 / `DESIGN.md` §Auth.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -61,9 +59,9 @@ remaining adaptive host scheduling work to v0.2.
 
 - **3c** — shipped in PR #17: checkpoint/resume implementation, error / retry /
   cancellation, live `pause` / `resume`, and `rm --keep` partial adoption.
-- **4** — in progress: `NWPathMonitor` cellular auto-pause (§12).
-- **5** — Safari cookie import: `binarycookies` parsing, the Full Disk Access
-  flow.
+- **4** — shipped in PR #18: `NWPathMonitor` cellular auto-pause (§12).
+- **5** — in progress: Safari cookie import: `binarycookies` parsing, the Full
+  Disk Access flow.
 - **6** — Spotlight tagging and sleep assertions.
 - **7** — the `goh` CLI client.
 - **8** — the TUI for `goh top`.
@@ -152,26 +150,17 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/network-auto-pause`.
+Current branch: `feat/safari-cookie-import`.
 
-PR #17 was squash-merged into `main` at `d5db309`. Slice 4 is open on the new
-branch. Implemented so far:
+PR #18 was made ready, reviewed, fixed, and squash-merged into `main` at
+`e5372af`. Slice 5 is open on a new feature branch. Pick up by designing the
+Safari cookie import boundary, then add parser fixtures and tests before
+implementation:
 
-- `NetworkPauseCoordinator` admits queued jobs, pauses queued/active jobs on
-  unavailable or cellular paths, resumes only `network`-paused jobs on
-  satisfied non-cellular paths, and handles the stale-cellular-stop race.
-- `CommandDispatcher` has a queue-admission hook so `add` / `resume` can return
-  the post-policy summary.
-- `gohd` owns an `NWPathMonitor`, maps `NWPath` to the coordinator's path state,
-  dispatches policy work onto a dedicated serial queue off the monitor callback,
-  and routes startup queued jobs through network admission.
-- `DESIGN.md` now records the v0.1 scheduling and network auto-pause policy.
-- Local review caught and fixed a path-update ordering issue: policy work no
-  longer goes to the global queue, so cellular/Wi-Fi updates apply in delivery
-  order while still not blocking the `NWPathMonitor` callback.
-- CodeRabbit's queued-admission race comment is fixed locally: after a queued
-  job is network-paused, the coordinator re-checks the latest path and
-  immediately resumes/schedules it if the path is now allowed.
-
-Next: PR #18 is open; after CI and review are green, make it ready and merge if
-the autonomous merge gates are still satisfied.
+- confirm the exact `Cookies.binarycookies` records needed for v0.1 download
+  auth;
+- keep Full Disk Access prompting and revocation handling user-clear;
+- avoid introducing a public persistent cookie-store format without an explicit
+  design pass;
+- leave unrelated untracked files (`AGENTS.md`,
+  `Benchmarks/diagnose-saturated.log`) untouched.
