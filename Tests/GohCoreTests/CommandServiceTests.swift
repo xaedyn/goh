@@ -1,5 +1,4 @@
 import Darwin
-import Dispatch
 import Foundation
 import Synchronization
 import Testing
@@ -174,23 +173,14 @@ struct CommandServiceTests {
         let service = CommandService(
             dispatcher: CommandDispatcher(store: store),
             progress: progress)
-        let listener = GohXPCListener(anonymousSessionHandler: { session, request in
-            service.handle(request, session: session)
-        })
         let notifications = Mutex<[GohEnvelope<ProgressEvent>]>([])
-        let notificationArrived = DispatchSemaphore(value: 0)
-        let client = try GohXPCClient(
-            endpoint: listener.endpoint,
-            incomingMessageHandler: { message in
-                if let envelope = try? message.withUnsafeUnderlyingDictionary({
-                    try GohEnvelope<ProgressEvent>(xpcDictionary: $0)
-                }) {
-                    notifications.withLock { $0.append(envelope) }
-                    notificationArrived.signal()
-                }
-                return nil
-            })
-        defer { listener.cancel(); client.cancel() }
+        let session = GohXPCServerSession(send: { message in
+            if let envelope = try? message.withUnsafeUnderlyingDictionary({
+                try GohEnvelope<ProgressEvent>(xpcDictionary: $0)
+            }) {
+                notifications.withLock { $0.append(envelope) }
+            }
+        })
 
         let requestID = UUID()
         let request = try GohEnvelope(
@@ -199,7 +189,7 @@ struct CommandServiceTests {
             messageType: .request,
             payload: Command.subscribe(request: SubscribeRequest(scope: .job, jobID: job.id))
         ).xpcDictionary()
-        let replyDictionary = try client.sendSync(XPCDictionary(request))
+        let replyDictionary = try #require(service.handle(XPCDictionary(request), session: session))
         let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
             try GohEnvelope<SubscribeReply>(xpcDictionary: object)
         }
@@ -216,7 +206,6 @@ struct CommandServiceTests {
 
         progress.publish(updatedSnapshot, at: Date(timeIntervalSince1970: 1_800_000_002))
 
-        #expect(notificationArrived.wait(timeout: .now() + 30) == .success)
         let received = try #require(notifications.withLock { $0.first })
         #expect(received.requestID == requestID)
         #expect(received.messageType == .notification)

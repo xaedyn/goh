@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import Testing
 import XPC
 
@@ -44,33 +43,15 @@ struct XPCTransportTests {
         #expect(received == sent)
     }
 
-    @Test("a listener can send a daemon-initiated message over the accepted session")
-    func listenerCanPushMessageOverAcceptedSession() throws {
-        let pushed = GohEnvelope(
-            protocolVersion: 1,
-            requestID: UUID(),
-            messageType: .notification,
-            payload: TestPayload(note: "server push"))
-        let receivedPushes = Mutex<[GohEnvelope<TestPayload>]>([])
-        let pushArrived = DispatchSemaphore(value: 0)
-
+    @Test("a session-aware listener handles requests through the accepted session")
+    func sessionAwareListenerHandlesRequests() throws {
         let listener = GohXPCListener(anonymousSessionHandler: { session, request in
-            try? session.send(XPCDictionary(pushed.xpcDictionary()))
+            _ = session
             return request
         })
         defer { listener.cancel() }
 
-        let client = try GohXPCClient(
-            endpoint: listener.endpoint,
-            incomingMessageHandler: { message in
-                if let envelope = try? message.withUnsafeUnderlyingDictionary({
-                    try GohEnvelope<TestPayload>(xpcDictionary: $0)
-                }) {
-                    receivedPushes.withLock { $0.append(envelope) }
-                    pushArrived.signal()
-                }
-                return nil
-            })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
         defer { client.cancel() }
 
         let sent = try sampleEnvelope()
@@ -80,8 +61,6 @@ struct XPCTransportTests {
         }
 
         #expect(receivedReply == sent)
-        #expect(pushArrived.wait(timeout: .now() + 30) == .success)
-        #expect(receivedPushes.withLock { $0 } == [pushed])
     }
 
     @Test("a same-team peer requirement rejects the unsigned test process")

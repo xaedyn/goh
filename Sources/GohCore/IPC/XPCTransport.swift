@@ -18,15 +18,24 @@ extension GohXPCService {
 
 /// The daemon side of an accepted XPC session.
 public struct GohXPCServerSession: Sendable {
-    private let session: XPCSession
+    private let sendMessage: @Sendable (XPCDictionary) throws -> Void
 
     init(session: XPCSession) {
-        self.session = session
+        self.sendMessage = { message in
+            try session.send(message: message)
+        }
+    }
+
+    /// Creates a server-session wrapper over a custom send function. This keeps
+    /// subscription notification encoding testable without depending on
+    /// anonymous-listener push delivery on every CI runner.
+    public init(send: @escaping @Sendable (XPCDictionary) throws -> Void) {
+        self.sendMessage = send
     }
 
     /// Sends a daemon-initiated message to the connected client.
     public func send(_ message: XPCDictionary) throws {
-        try session.send(message: message)
+        try sendMessage(message)
     }
 }
 
