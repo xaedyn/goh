@@ -11,8 +11,8 @@ session; update at the start of every PR and at the end of every session.
   has checkpoint primitives, startup reconciliation, engine checkpoint writes,
   crash resume from the first missing byte, and live active `pause` / `rm`
   control at checkpoint boundaries. Kept partials from `rm --keep` are now
-  automatically adopted by a future matching `add`; retry policy is the next
-  layer.
+  automatically adopted by a future matching `add`; retry eligibility now
+  follows the status-aware daemon policy in `DESIGN.md` §2.4.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -185,5 +185,10 @@ Implemented on `feat/checkpoint-resume` so far:
   and resume validator metadata are safe: the new job is seeded with durable
   progress, the checkpoint is rewritten under the new job id before scheduling,
   and the old checkpoint is removed after the new one is durable.
+- Retry eligibility is now explicit and status-aware: transient transport
+  failures, DNS failure, timeouts, disk-full, queue-full, checksum mismatch, and
+  HTTP 408 / 425 / 429 / 5xx are retryable; 401 / 403 are recorded as
+  `.unauthorized`, not generic `.httpStatus`.
 
-Next: implement retry policy.
+Next: make PR #17 ready for final review, or move on to Slice 4 network
+auto-pause once it merges.

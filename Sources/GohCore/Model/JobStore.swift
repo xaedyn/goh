@@ -173,8 +173,8 @@ public final class JobStore: Sendable {
     }
 
     /// Marks an `active` job `failed`, recording the error. `retryEligible` is
-    /// the daemon's judgement that a fresh attempt could succeed; 3a does not
-    /// retry, so `retryCount` is 0 (the retry policy is slice 3c).
+    /// the daemon's judgement that a fresh attempt could succeed. There is no
+    /// in-place retry operation, so `retryCount` is 0.
     public func fail(
         id: UInt64, error: GohError, retryEligible: Bool
     ) throws -> JobSummary {

@@ -71,6 +71,44 @@ struct DownloadEngineTests {
         #expect(final?.state == .failed)
         #expect(final?.error?.code == .httpStatus)
         #expect(final?.error?.httpStatusCode == 404)
+        #expect(final?.retryEligible == false)
+    }
+
+    @Test("an authentication HTTP status fails the job as unauthorized")
+    func authenticationHTTPStatusFailsAsUnauthorized() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        MockURLProtocol.stub(url, status: 401, body: Data("login required".utf8))
+
+        let store = JobStore()
+        let job = store.create(
+            url: url, destination: directory.appending(path: "out.bin").path,
+            requestedConnectionCount: 8)
+
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .failed)
+        #expect(final?.error?.code == .unauthorized)
+        #expect(final?.error?.httpStatusCode == nil)
+        #expect(final?.retryEligible == false)
+    }
+
+    @Test("retry policy marks transient HTTP statuses and checksum failures retryable")
+    func retryPolicyMarksTransientFailures() {
+        #expect(DownloadEngine.retryEligible(for: GohError(
+            code: .httpStatus, httpStatusCode: 408)))
+        #expect(DownloadEngine.retryEligible(for: GohError(
+            code: .httpStatus, httpStatusCode: 429)))
+        #expect(DownloadEngine.retryEligible(for: GohError(
+            code: .httpStatus, httpStatusCode: 503)))
+        #expect(DownloadEngine.retryEligible(for: GohError(
+            code: .checksumMismatch)))
+
+        #expect(DownloadEngine.retryEligible(for: GohError(
+            code: .httpStatus, httpStatusCode: 404)) == false)
     }
 
     @Test("a transport failure fails the job with the mapped error code")

@@ -1072,6 +1072,11 @@ Three boundaries fix what `GohError` is *not*:
   `retryEligible` field on a failed `JobSummary`. The daemon decides it: an
   `httpStatus` 503 is retryable, a 404 is not, and `code` alone cannot tell them
   apart, so the daemon states it rather than the consumer inferring it.
+- **HTTP retry policy is status-aware** — 408, 425, 429, and 5xx are marked
+  retryable; other HTTP statuses are not. 401 and 403 are not reported as
+  generic `httpStatus` failures at all: they map to `unauthorized`, with no
+  `httpStatusCode`, so the CLI can point users at credential import instead of a
+  blind retry.
 - **`rangeNotSupported` is not an `ErrorCode`** — a server that does not honour
   `Range` is not a failure; the daemon falls back to a single connection and the
   download proceeds. The downgrade is observable as `actualConnectionCount`

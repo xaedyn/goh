@@ -146,10 +146,7 @@ public struct DownloadEngine: Sendable {
                 job: job, store: store,
                 initialResponse: response, initialStream: stream)
         default:
-            throw GohError(
-                code: .httpStatus,
-                message: HTTPURLResponse.localizedString(forStatusCode: response.statusCode),
-                httpStatusCode: response.statusCode)
+            throw Self.httpFailure(statusCode: response.statusCode)
         }
     }
 
@@ -279,10 +276,7 @@ public struct DownloadEngine: Sendable {
                     code: .connectionFailed,
                     message: "the server returned a full representation instead of resuming")
             }
-            throw GohError(
-                code: .httpStatus,
-                message: HTTPURLResponse.localizedString(forStatusCode: http.statusCode),
-                httpStatusCode: http.statusCode)
+            throw Self.httpFailure(statusCode: http.statusCode)
         }
         try Self.validateContentRange(http, matches: range, total: total)
 
@@ -345,11 +339,7 @@ public struct DownloadEngine: Sendable {
         initialStream: AsyncThrowingStream<Data, Error>
     ) async throws {
         guard (200..<300).contains(initialResponse.statusCode) else {
-            throw GohError(
-                code: .httpStatus,
-                message: HTTPURLResponse.localizedString(
-                    forStatusCode: initialResponse.statusCode),
-                httpStatusCode: initialResponse.statusCode)
+            throw Self.httpFailure(statusCode: initialResponse.statusCode)
         }
 
         let total: UInt64? = initialResponse.expectedContentLength > 0
@@ -494,10 +484,7 @@ public struct DownloadEngine: Sendable {
                 trace.recordProtocol(index, networkProtocolName: metrics.networkProtocolName)
             })
         guard http.statusCode == 206 else {
-            throw GohError(
-                code: .httpStatus,
-                message: "the server did not honour the range request",
-                httpStatusCode: http.statusCode)
+            throw Self.httpFailure(statusCode: http.statusCode)
         }
         try Self.validateContentRange(http, matches: range, total: total)
         try await consumeRange(
@@ -606,8 +593,8 @@ public struct DownloadEngine: Sendable {
         return JobProgress(bytesCompleted: completed, bytesTotal: total, bytesPerSecond: rate)
     }
 
-    /// Maps a transport or disk error to a ``GohError``. The retry policy itself
-    /// is slice 3c; this mapping is the minimum needed to record a failure.
+    /// Maps a transport or disk error to a ``GohError``; retry eligibility is
+    /// decided separately by ``retryEligible(for:)``.
     static func mapError(_ error: any Error) -> GohError {
         if let gohError = error as? GohError { return gohError }
         if let urlError = error as? URLError {
@@ -639,6 +626,17 @@ public struct DownloadEngine: Sendable {
         return GohError(code: .connectionFailed, message: "\(error)")
     }
 
+    private static func httpFailure(statusCode: Int) -> GohError {
+        let message = HTTPURLResponse.localizedString(forStatusCode: statusCode)
+        switch statusCode {
+        case 401, 403:
+            return GohError(code: .unauthorized, message: message)
+        default:
+            return GohError(
+                code: .httpStatus, message: message, httpStatusCode: statusCode)
+        }
+    }
+
     /// Whether a fresh attempt could plausibly succeed — advisory (`DESIGN.md`
     /// §2.2 Retry boundary).
     static func retryEligible(for error: GohError) -> Bool {
@@ -646,8 +644,17 @@ public struct DownloadEngine: Sendable {
         case .connectionFailed, .timedOut, .dnsResolutionFailed, .diskFull, .queueFull:
             return true
         case .httpStatus:
-            return (error.httpStatusCode ?? 0) >= 500
-        case .tlsFailure, .unsupportedURL, .checksumMismatch, .destinationUnwritable,
+            switch error.httpStatusCode {
+            case 408, 425, 429:
+                return true
+            case let status?:
+                return status >= 500
+            case nil:
+                return false
+            }
+        case .checksumMismatch:
+            return true
+        case .tlsFailure, .unsupportedURL, .destinationUnwritable,
              .destinationPermissionDenied, .unauthorized, .jobNotFound,
              .protocolVersionMismatch, .cancelled, .invalidArgument:
             return false
