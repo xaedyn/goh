@@ -31,9 +31,14 @@ public final class GohXPCNotificationInbox: @unchecked Sendable {
     >
 
     private let messages = Mutex<[Message]>([])
+    private let interrupted = Mutex(false)
     private let semaphore = DispatchSemaphore(value: 0)
 
     public init() {}
+
+    public var isInterrupted: Bool {
+        interrupted.withLock { $0 }
+    }
 
     private func enqueue(_ message: Message) {
         messages.withLock { $0.append(message) }
@@ -59,6 +64,7 @@ public final class GohXPCNotificationInbox: @unchecked Sendable {
     }
 
     public func interrupt() {
+        interrupted.withLock { $0 = true }
         enqueue(.failure(.interrupted))
     }
 
@@ -74,6 +80,7 @@ public struct GohForegroundDownload {
     public var reconnect: (() throws -> GohForegroundDownloadSession)?
     public var reconnectWindow: Duration
     public var reconnectPollInterval: Duration
+    public var shouldInterrupt: () -> Bool
     public var standardOutput: (String) -> Void
     public var standardError: (String) -> Void
 
@@ -83,6 +90,7 @@ public struct GohForegroundDownload {
         reconnect: (() throws -> GohForegroundDownloadSession)? = nil,
         reconnectWindow: Duration = .milliseconds(2_500),
         reconnectPollInterval: Duration = .milliseconds(100),
+        shouldInterrupt: @escaping () -> Bool = { false },
         standardOutput: @escaping (String) -> Void = { _ in },
         standardError: @escaping (String) -> Void = { _ in }
     ) {
@@ -91,6 +99,7 @@ public struct GohForegroundDownload {
         self.reconnect = reconnect
         self.reconnectWindow = reconnectWindow
         self.reconnectPollInterval = reconnectPollInterval
+        self.shouldInterrupt = shouldInterrupt
         self.standardOutput = standardOutput
         self.standardError = standardError
     }
@@ -113,6 +122,10 @@ public struct GohForegroundDownload {
 
             standardOutput(Self.addedMessage(job))
             standardOutput(baseline.snapshot.map(Self.progressLine).joined())
+            if shouldInterrupt() {
+                standardError(Self.detachMessage(jobID: job.id))
+                return GohCommandLineResult(exitCode: 0)
+            }
             if let terminal = terminalResult(in: baseline.snapshot, jobID: job.id) {
                 return GohCommandLineResult(exitCode: terminal)
             }
@@ -132,19 +145,29 @@ public struct GohForegroundDownload {
                     return GohCommandLineResult(exitCode: 0)
                 } catch GohXPCNotificationInboxError.sessionInvalidated {
                     standardError(Self.reconnectingMessage())
-                    guard let reconnected = try reconnect(to: job.id) else {
+                    switch try reconnect(to: job.id) {
+                    case .interrupted:
+                        standardError(Self.detachMessage(jobID: job.id))
+                        return GohCommandLineResult(exitCode: 0)
+
+                    case .gaveUp:
                         standardError(Self.backgroundContinuationMessage(jobID: job.id))
                         return GohCommandLineResult(exitCode: 0)
-                    }
 
-                    activeSession = reconnected.session
-                    subscribeRequestID = reconnected.requestID
-                    standardOutput(reconnected.baseline.snapshot.map(Self.progressLine).joined())
-                    if let terminal = terminalResult(
-                        in: reconnected.baseline.snapshot,
-                        jobID: job.id)
-                    {
-                        return GohCommandLineResult(exitCode: terminal)
+                    case .reconnected(let session, let requestID, let baseline):
+                        activeSession = session
+                        subscribeRequestID = requestID
+                        standardOutput(baseline.snapshot.map(Self.progressLine).joined())
+                        if shouldInterrupt() {
+                            standardError(Self.detachMessage(jobID: job.id))
+                            return GohCommandLineResult(exitCode: 0)
+                        }
+                        if let terminal = terminalResult(
+                            in: baseline.snapshot,
+                            jobID: job.id)
+                        {
+                            return GohCommandLineResult(exitCode: terminal)
+                        }
                     }
                 } catch GohXPCNotificationInboxError.malformedProgressNotification(let message) {
                     throw ForegroundError(
@@ -204,11 +227,22 @@ public struct GohForegroundDownload {
         }
     }
 
-    private func reconnect(
-        to jobID: UInt64
-    ) throws -> (session: GohForegroundDownloadSession, requestID: UUID, baseline: SubscribeReply)? {
+    private enum ReconnectResult {
+        case reconnected(
+            session: GohForegroundDownloadSession,
+            requestID: UUID,
+            baseline: SubscribeReply
+        )
+        case gaveUp
+        case interrupted
+    }
+
+    private func reconnect(to jobID: UInt64) throws -> ReconnectResult {
+        if shouldInterrupt() {
+            return .interrupted
+        }
         guard let reconnect else {
-            return nil
+            return .gaveUp
         }
 
         var reconnected: (
@@ -217,10 +251,15 @@ public struct GohForegroundDownload {
             baseline: SubscribeReply
         )?
         var reconnectedDaemonError: Error?
+        var interrupted = false
         let outcome = XPCReconnect.attempt(
             within: reconnectWindow,
             pollInterval: reconnectPollInterval
         ) {
+            if shouldInterrupt() {
+                interrupted = true
+                return true
+            }
             do {
                 let candidate = try reconnect()
                 do {
@@ -240,21 +279,38 @@ public struct GohForegroundDownload {
                     return true
                 } catch {
                     candidate.cancel()
+                    if shouldInterrupt() {
+                        interrupted = true
+                        return true
+                    }
                     return false
                 }
             } catch {
+                if shouldInterrupt() {
+                    interrupted = true
+                    return true
+                }
                 return false
             }
         }
 
         switch outcome {
         case .reconnected:
+            if interrupted {
+                return .interrupted
+            }
             if let reconnectedDaemonError {
                 throw reconnectedDaemonError
             }
-            return reconnected
+            guard let reconnected else {
+                return .gaveUp
+            }
+            return .reconnected(
+                session: reconnected.session,
+                requestID: reconnected.requestID,
+                baseline: reconnected.baseline)
         case .gaveUp:
-            return nil
+            return .gaveUp
         }
     }
 

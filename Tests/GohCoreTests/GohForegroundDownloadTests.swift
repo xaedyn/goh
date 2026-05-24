@@ -427,6 +427,75 @@ struct GohForegroundDownloadTests {
         })
     }
 
+    @Test("foreground interrupt during reconnect detaches promptly")
+    func interruptDuringReconnectDetachesPromptly() throws {
+        let request = AddRequest(url: "https://example.com/file.zip")
+        let active = Self.makeJob(
+            id: 42,
+            state: .active,
+            progress: JobProgress(
+                bytesCompleted: 512,
+                bytesTotal: 1024,
+                bytesPerSecond: 2048))
+        let interrupted = Mutex(false)
+        let reconnectCount = Mutex(0)
+        let emittedOutput = Mutex("")
+        let emittedError = Mutex("")
+
+        let session = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    switch envelope.payload {
+                    case .add:
+                        return try Self.reply(to: envelope, payload: active)
+                    case .subscribe:
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 1,
+                                snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                    default:
+                        Issue.record("unexpected command \(envelope.payload)")
+                        return try Self.reply(
+                            to: envelope,
+                            payload: GohError(code: .invalidArgument),
+                            messageType: .error)
+                    }
+                }
+            },
+            receiveNotification: {
+                throw GohXPCNotificationInboxError.sessionInvalidated(
+                    "daemon session ended")
+            },
+            cancel: {}
+        )
+
+        let result = GohForegroundDownload(
+            request: request,
+            session: session,
+            reconnect: {
+                reconnectCount.withLock { $0 += 1 }
+                interrupted.withLock { $0 = true }
+                throw GohXPCNotificationInboxError.sessionInvalidated(
+                    "daemon still unavailable")
+            },
+            reconnectWindow: .seconds(1),
+            reconnectPollInterval: .milliseconds(100),
+            shouldInterrupt: { interrupted.withLock { $0 } },
+            standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
+            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+        ).run()
+
+        #expect(result.exitCode == 0)
+        #expect(reconnectCount.withLock { $0 } == 1)
+        #expect(emittedOutput.withLock { $0.contains("Job 42 active") })
+        #expect(emittedError.withLock {
+            $0 == "gohd connection lost; reconnecting...\n"
+                + "^C - download continues in background as job 42. 'goh ls' to check, 'goh rm 42' to cancel.\n"
+        })
+    }
+
     private static func makeJob(
         id: UInt64,
         state: JobState,

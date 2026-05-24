@@ -63,6 +63,9 @@ let result = GohCommandLine(
                     inbox: inbox,
                     validationMode: validationMode)
             },
+            shouldInterrupt: {
+                inbox.isInterrupted
+            },
             standardOutput: { text in
                 write(text, to: .standardOutput)
             },
