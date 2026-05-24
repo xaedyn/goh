@@ -12,21 +12,16 @@ func write(_ text: String, to handle: FileHandle) {
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
-switch arguments {
-case ["auth", "import", "safari"]:
-    let command = AuthImportSafariCommand { request in
-        let validationMode = GohXPCService.peerValidationMode(
-            environment: ProcessInfo.processInfo.environment)
-        let client = try GohXPCClient(
-            machServiceName: GohXPCService.machServiceName,
-            mode: validationMode)
-        defer { client.cancel() }
-        return try client.sendSync(request)
-    }
-    let result = command.run()
-    write(result.standardOutput, to: .standardOutput)
-    write(result.standardError, to: .standardError)
-    exit(result.exitCode)
-default:
-    print("goh")
-}
+let result = GohCommandLine(arguments: arguments) { request in
+    let validationMode = GohXPCService.peerValidationMode(
+        environment: ProcessInfo.processInfo.environment)
+    let client = try GohXPCClient(
+        machServiceName: GohXPCService.machServiceName,
+        mode: validationMode)
+    defer { client.cancel() }
+    return try client.sendSync(request)
+}.run()
+
+write(result.standardOutput, to: .standardOutput)
+write(result.standardError, to: .standardError)
+exit(result.exitCode)
