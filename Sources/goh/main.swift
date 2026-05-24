@@ -1,4 +1,5 @@
 import Darwin
+import Dispatch
 import Foundation
 
 import GohCore
@@ -10,11 +11,70 @@ func write(_ text: String, to handle: FileHandle) {
     handle.write(Data(text.utf8))
 }
 
-let arguments = Array(CommandLine.arguments.dropFirst())
+func makeInterruptSource(_ handler: @escaping @Sendable () -> Void) -> DispatchSourceSignal {
+    signal(SIGINT, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(
+        signal: SIGINT,
+        queue: DispatchQueue.global(qos: .userInitiated))
+    source.setEventHandler(handler: handler)
+    source.resume()
+    return source
+}
 
-let result = GohCommandLine(arguments: arguments) { request in
-    let validationMode = GohXPCService.peerValidationMode(
-        environment: ProcessInfo.processInfo.environment)
+func makeForegroundSession(
+    inbox: GohXPCNotificationInbox,
+    validationMode: PeerValidationMode
+) throws -> GohForegroundDownloadSession {
+    let client = try GohXPCClient(
+        machServiceName: GohXPCService.machServiceName,
+        mode: validationMode,
+        incomingMessageHandler: { message in
+            inbox.handle(message)
+        },
+        cancellationHandler: { error in
+            inbox.sessionInvalidated("\(error)")
+        })
+    return GohForegroundDownloadSession(
+        sendSync: { message in try client.sendSync(message) },
+        receiveNotification: { try inbox.receive() },
+        cancel: { client.cancel() })
+}
+
+let arguments = Array(CommandLine.arguments.dropFirst())
+let validationMode = GohXPCService.peerValidationMode(
+    environment: ProcessInfo.processInfo.environment)
+
+let result = GohCommandLine(
+    arguments: arguments,
+    foreground: { request in
+        let inbox = GohXPCNotificationInbox()
+        let interruptSource = makeInterruptSource {
+            inbox.interrupt()
+        }
+        defer { interruptSource.cancel() }
+
+        return GohForegroundDownload(
+            request: request,
+            session: try makeForegroundSession(
+                inbox: inbox,
+                validationMode: validationMode),
+            reconnect: {
+                try makeForegroundSession(
+                    inbox: inbox,
+                    validationMode: validationMode)
+            },
+            shouldInterrupt: {
+                inbox.isInterrupted
+            },
+            standardOutput: { text in
+                write(text, to: .standardOutput)
+            },
+            standardError: { text in
+                write(text, to: .standardError)
+            }
+        ).run()
+    }
+) { request in
     let client = try GohXPCClient(
         machServiceName: GohXPCService.machServiceName,
         mode: validationMode)

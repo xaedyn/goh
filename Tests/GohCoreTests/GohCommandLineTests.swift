@@ -32,6 +32,32 @@ struct GohCommandLineTests {
         #expect(result.standardError == "")
     }
 
+    @Test("bare URL runs the foreground download flow")
+    func bareURLRunsForegroundDownloadFlow() {
+        var captured: AddRequest?
+        var oneShotSendCount = 0
+
+        let result = GohCommandLine(
+            arguments: ["https://example.com/file.zip"],
+            foreground: { request in
+                captured = request
+                return GohCommandLineResult(
+                    exitCode: 0,
+                    standardOutput: "foreground flow\n")
+            },
+            send: { _ in
+                oneShotSendCount += 1
+                throw TestTransportError()
+            }
+        ).run()
+
+        #expect(captured == AddRequest(url: "https://example.com/file.zip"))
+        #expect(oneShotSendCount == 0)
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == "foreground flow\n")
+        #expect(result.standardError == "")
+    }
+
     @Test("add options populate the full add request")
     func addOptionsPopulateFullRequest() throws {
         let job = Self.makeJob(

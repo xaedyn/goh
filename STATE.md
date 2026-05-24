@@ -5,11 +5,12 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/progress-subscription`
+- **Branch:** `feat/foreground-progress-cli`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
-  subscription contract — `main` at `c31283d`.
+  subscription contract — `main` at `c31283d`; PR #26 — backend progress
+  subscription plumbing — `main` at `976775f`.
 - **Current slice:** Slice 7, the `goh` CLI client. The slice starts from the
   shipped daemon, engine, auth import, Spotlight metadata, and sleep assertion
   foundation and fills out the command-line surface in `ROADMAP.md` §2-4:
@@ -31,10 +32,11 @@ session; update at the start of every PR and at the end of every session.
   `SubscribeReply`, `ProgressEvent`, full in-scope progress snapshots,
   progress-model revisions, explicit `fullSnapshot` update events, 100 ms
   coalescing, foreground reconnect, and `goh top` subscription behavior. The
-  current branch starts the implementation with the v3 wire schema, golden
-  fixtures, protocol-version bump, session-aware XPC transport wrappers,
-  broker-backed `subscribe` replies and notifications, `JobStore` progress
-  publishing, and daemon composition through `ProgressBrokerHub`.
+  PR #26 shipped the v3 wire schema, golden fixtures, protocol-version bump,
+  session-aware XPC transport wrappers, broker-backed `subscribe` replies and
+  notifications, `JobStore` progress publishing, and daemon composition through
+  `ProgressBrokerHub`. The current branch implements foreground `goh <url>` as
+  `add` plus `subscribe(scope: job, jobID:)` on one session.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -192,7 +194,7 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/progress-subscription`.
+Current branch: `feat/foreground-progress-cli`.
 
 PR #23 was locally verified, opened, checked against CI, and squash-merged into
 `main` at `db9b82a`. CodeRabbit again posted only a non-actionable quota /
@@ -223,8 +225,8 @@ payload. Local gates for this branch:
 PR #24 passed CI and was squash-merged into `main` at `58c2e73`; CodeRabbit only
 posted the non-actionable quota / usage-credit warning.
 
-PR #25 passed CI and was squash-merged into `main` at `c31283d`. The current
-branch starts the implementation by adding the protocol v3 wire schema:
+PR #25 passed CI and was squash-merged into `main` at `c31283d`. PR #26 passed
+CI and was squash-merged into `main` at `976775f`. It added the protocol v3 wire schema:
 `Command.subscribe`, `SubscribeRequest`, `SubscribeReply`, `ProgressEvent`,
 `ProgressSnapshot`, `TransferLaneProgress`, and v3 golden fixtures. The daemon
 protocol constant moves to `3`. The branch also adds the deterministic
@@ -242,9 +244,14 @@ mutation-order gate so progress updates cannot race behind later removals.
 `gohd` now seeds the hub from the loaded catalog, passes it into `JobStore` and
 `CommandService`, and runs a 100 ms flush timer for coalesced progress.
 
-Next: implement the foreground CLI subscriber flow (`goh <url>` as `add` plus
-`subscribe(scope: job, jobID:)` on one session), including detach-on-Ctrl-C
-presentation and reconnect behavior. Per-lane engine snapshots remain empty for
+This branch starts the foreground CLI subscriber flow (`goh <url>` as `add` plus
+`subscribe(scope: job, jobID:)` on one session). The first implementation pass
+adds a testable `GohForegroundDownload` runner, parses bare URLs through
+`GohCommandLine`, wires the real CLI to a notification inbox on
+`GohXPCClient(incomingMessageHandler:)`, streams deterministic progress lines as
+baseline / notification payloads arrive, detaches cleanly on Ctrl-C with a
+background-job note, and uses the existing bounded reconnect helper to
+re-subscribe once after session loss. Per-lane engine snapshots remain empty for
 now and should be filled when the TUI rendering path needs them.
 
 Leave unrelated untracked files (`AGENTS.md`,
