@@ -1395,6 +1395,56 @@ native XPC file descriptor to `gohd`, so the daemon never needs Full Disk Access
 itself. Freezing the command/reply shape is a wire-contract decision and should
 be handled explicitly before the command lands.
 
+### Auth import command contract draft — round 1, not frozen
+
+**Question.** How should `goh auth import safari` cross the CLI/daemon boundary
+without giving the daemon Full Disk Access and without weakening the frozen wire
+rules?
+
+**Options considered.**
+- *Protocol v2 command with native fd sibling* — add an auth-import command in
+  the next protocol version. The interactive CLI opens Safari's readable cookie
+  file and sends that open descriptor as a native XPC sibling key; the daemon
+  parses the file and replaces its process-local `ImportedCookieStore`.
+- *Retrofit the command into `protocolVersion = 1` before v0.1 ships* — faster,
+  but it mutates the already-frozen command enum and golden fixtures.
+- *CLI parses cookies and sends structured cookie records* — avoids fd handling,
+  but moves credential material into the JSON payload and duplicates parser
+  ownership into the short-lived CLI path.
+- *Daemon holds Full Disk Access and opens the file itself* — simplest IPC, but
+  leaves a launchd-managed background agent with broad standing file access.
+
+**Proposed answer.** Use a new `protocolVersion = 2` command:
+`authImportSafari` with an empty JSON request payload and success reply
+`{ importedCookieCount: UInt32 }`. The request envelope carries one required
+native XPC sibling fd under a namespaced key such as `auth.safariCookieFile`.
+The CLI obtains that fd by opening the first readable URL returned by
+`SafariCookieFileLocator`; if open fails because Full Disk Access is missing or
+revoked, the CLI prints the permission remedy and does not send the command.
+The daemon rejects a missing or invalid fd with `invalidArgument`, parses valid
+bytes with `SafariBinaryCookiesParser`, and calls
+`ImportedCookieStore.replaceCookies(_:)`. Import is replace-all for v0.1, not
+merge.
+
+The platform mechanics support this shape: Apple's `xpc_fd_create` documentation
+states that boxing an fd duplicates it, so the sender can close the original
+after boxing; `xpc_fd_dup` returns an equivalent descriptor in the receiver,
+which must close it. `FileHandle(forReadingFrom:)` creates a handle that owns its
+local descriptor. Sources:
+<https://developer.apple.com/documentation/xpc/xpc_fd_create%28_%3A%29?language=objc>,
+<https://developer.apple.com/documentation/xpc/xpc_fd_dup%28_%3A%29?language=objc>,
+and <https://developer.apple.com/documentation/foundation/filehandle/init%28forreadingfromurl%3A%29>.
+
+**Open.**
+- Confirm the exact sibling key spelling before implementation; once shipped, it
+  is append-only under §4.3.
+- Confirm whether `authImportSafari` should be the command enum spelling or
+  whether a wider `auth` command namespace is worth the added nesting.
+- Confirm the user-facing FDA prompt text and exit code when the CLI cannot open
+  either Safari cookie path.
+- Confirm whether the success reply needs an optional warning count for skipped
+  malformed cookie records; the current parser is fail-fast, so the lean is no.
+
 ## Hashing
 
 _TBD — SHA-256 via CryptoKit, streamed through the chunk assembler during the

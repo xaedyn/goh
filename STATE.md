@@ -5,9 +5,9 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/safari-cookie-import`
-- **Last merged:** PR #18 — network auto-pause coordinator — `main` at
-  `e5372af`.
+- **Branch:** `design/auth-import-command`
+- **Last merged:** PR #19 — Safari cookie import foundation — `main` at
+  `281b490`.
 - **Current slice:** Slice 5, Safari cookie import. The slice starts from the
   shipped network auto-pause daemon and adds the Safari
   `Cookies.binarycookies` parser plus the Full Disk Access import flow described
@@ -25,7 +25,9 @@ session; update at the start of every PR and at the end of every session.
   Safari cookie-file locator for the modern container path plus legacy fallback.
   The sixth step composes one daemon-local `ImportedCookieStore` into both the
   dispatcher and `DownloadEngine`, so the already-built hooks are live in
-  `gohd` without adding a new command.
+  `gohd` without adding a new command. PR #19 shipped these non-wire
+  foundations. The current branch starts the load-bearing command/FDA contract
+  round for the remaining `goh auth import safari` surface.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -74,8 +76,9 @@ remaining adaptive host scheduling work to v0.2.
 - **3c** — shipped in PR #17: checkpoint/resume implementation, error / retry /
   cancellation, live `pause` / `resume`, and `rm --keep` partial adoption.
 - **4** — shipped in PR #18: `NWPathMonitor` cellular auto-pause (§12).
-- **5** — in progress: Safari cookie import: `binarycookies` parsing, the Full
-  Disk Access flow.
+- **5** — in progress: Safari cookie import foundation shipped in PR #19; the
+  remaining work is the `goh auth import safari` command/FDA contract and
+  implementation.
 - **6** — Spotlight tagging and sleep assertions.
 - **7** — the `goh` CLI client.
 - **8** — the TUI for `goh top`.
@@ -164,23 +167,24 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/safari-cookie-import`.
+Current branch: `design/auth-import-command`.
 
-PR #18 was made ready, reviewed, fixed, and squash-merged into `main` at
-`e5372af`. Slice 5 is open on a new feature branch. The parser and matching
-boundary are now concrete. Review hardening caught one local-filesystem edge:
-`FileManager.isReadableFile` can accept directory candidates, so the Safari
-cookie locator now proves the path exists as a non-directory file before
-returning it. The daemon now owns one `ImportedCookieStore` and passes it to
-the dispatcher plus engine cookie-header provider, so imported per-job headers
-will flow through the real daemon once the import command exists. Fresh local
-verification on 2026-05-24 after the daemon wiring:
-`swift build -Xswiftc -warnings-as-errors` and `swift test` (152 tests) pass.
-Pick up by settling the load-bearing import command/FDA contract before adding
-the new IPC command:
+PR #19 was made ready, self-reviewed, checked against CI, and squash-merged into
+`main` at `281b490`. CodeRabbit could not run an actionable review because the
+account hit the hourly limit and the organization was out of usage credits. The
+non-wire Safari cookie foundation is now on `main`: parser, matcher, volatile
+per-job headers, engine attachment, locator, and daemon composition.
+
+This branch begins the load-bearing `goh auth import safari` command/FDA design
+round. `DESIGN.md` contains a Round 1 draft, not a frozen contract: the proposed
+shape is a new `protocolVersion = 2` command, `authImportSafari`, with an empty
+JSON request, `{ importedCookieCount: UInt32 }` success reply, and a required
+native XPC fd sibling such as `auth.safariCookieFile`.
+
+Pick up by reviewing that draft before adding the IPC command:
 
 - do not add `goh auth import safari` until its request/reply wire shape has an
-  explicit design note;
+  approved design note;
 - connect the future import command to `ImportedCookieStore.replaceCookies(_:)`;
 - use `SafariCookieFileLocator` in the CLI-side FDA open flow;
 - keep Full Disk Access prompting and revocation handling user-clear;
