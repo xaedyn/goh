@@ -15,18 +15,22 @@ public struct GohCommandLineResult: Sendable, Equatable {
 
 public struct GohCommandLine {
     public typealias Sender = (XPCDictionary) throws -> XPCDictionary
+    public typealias Foreground = (AddRequest) throws -> GohCommandLineResult
 
     private let arguments: [String]
     private let homeDirectory: URL
+    private let foreground: Foreground?
     private let send: Sender
 
     public init(
         arguments: [String],
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        foreground: Foreground? = nil,
         send: @escaping Sender
     ) {
         self.arguments = arguments
         self.homeDirectory = homeDirectory
+        self.foreground = foreground
         self.send = send
     }
 
@@ -53,6 +57,14 @@ public struct GohCommandLine {
                 return GohCommandLineResult(
                     exitCode: 0,
                     standardOutput: Self.addedMessage(summary))
+
+            case .foreground(let request):
+                guard let foreground else {
+                    return GohCommandLineResult(
+                        exitCode: 1,
+                        standardError: "Foreground downloads are not configured.\n")
+                }
+                return try foreground(request)
 
             case .ls(.table):
                 let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
@@ -145,6 +157,7 @@ private enum ParsedCommand: Equatable {
     case help
     case authImportSafari
     case add(AddRequest)
+    case foreground(AddRequest)
     case ls(OutputFormat)
     case pause(UInt64)
     case resume(UInt64)
@@ -198,6 +211,9 @@ extension GohCommandLine {
         if arguments.count == 3, arguments[0] == "rm", arguments[2] == "--keep" {
             return .remove(
                 RmRequest(jobID: try parseJobID(arguments[1]), keepPartialFile: true))
+        }
+        if arguments.count == 1, let url = arguments.first, !url.hasPrefix("-") {
+            return .foreground(AddRequest(url: url))
         }
 
         throw ParseError(message: "unknown or incomplete command")
@@ -369,6 +385,7 @@ extension GohCommandLine {
         }
         text += """
         Usage:
+          goh <url>
           goh add [--output <path>] [--connections <1-16>] [--priority low|normal|high] [--no-cookies] <url>
           goh ls [--json]
           goh pause <id>

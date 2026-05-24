@@ -1761,6 +1761,13 @@ the session and prints the detach note already specified in IPC §1.4. A later
 `--cancel-on-interrupt` flag can issue `rm` before exiting, but the default is
 detach.
 
+The first foreground implementation uses a deterministic line-oriented renderer
+inside `GohCore`, not a full-screen terminal surface. That keeps the add +
+subscribe command sequence and progress-event handling unit-testable while the
+real `GohTUI` screen model remains reserved for the `goh top` slice. This is
+presentation scaffolding over the live subscription path, not a different wire
+or daemon behavior.
+
 `goh top` sends `subscribe(scope: all)` and renders every snapshot until the
 user exits. It does not change job state.
 

@@ -245,9 +245,13 @@ mutation-order gate so progress updates cannot race behind later removals.
 `CommandService`, and runs a 100 ms flush timer for coalesced progress.
 
 This branch starts the foreground CLI subscriber flow (`goh <url>` as `add` plus
-`subscribe(scope: job, jobID:)` on one session), including detach-on-Ctrl-C
-presentation and reconnect behavior. Per-lane engine snapshots remain empty for
-now and should be filled when the TUI rendering path needs them.
+`subscribe(scope: job, jobID:)` on one session). The first implementation pass
+adds a testable `GohForegroundDownload` runner, parses bare URLs through
+`GohCommandLine`, wires the real CLI to a notification inbox on
+`GohXPCClient(incomingMessageHandler:)`, and renders deterministic progress
+lines until terminal state. Remaining work: detach-on-Ctrl-C presentation and
+bounded reconnect behavior. Per-lane engine snapshots remain empty for now and
+should be filled when the TUI rendering path needs them.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

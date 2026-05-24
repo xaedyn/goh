@@ -11,10 +11,28 @@ func write(_ text: String, to handle: FileHandle) {
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
+let validationMode = GohXPCService.peerValidationMode(
+    environment: ProcessInfo.processInfo.environment)
 
-let result = GohCommandLine(arguments: arguments) { request in
-    let validationMode = GohXPCService.peerValidationMode(
-        environment: ProcessInfo.processInfo.environment)
+let result = GohCommandLine(
+    arguments: arguments,
+    foreground: { request in
+        let inbox = GohXPCNotificationInbox()
+        let client = try GohXPCClient(
+            machServiceName: GohXPCService.machServiceName,
+            mode: validationMode,
+            incomingMessageHandler: { message in
+                inbox.handle(message)
+            })
+        return GohForegroundDownload(
+            request: request,
+            session: GohForegroundDownloadSession(
+                sendSync: { message in try client.sendSync(message) },
+                receiveNotification: { try inbox.receive() },
+                cancel: { client.cancel() })
+        ).run()
+    }
+) { request in
     let client = try GohXPCClient(
         machServiceName: GohXPCService.machServiceName,
         mode: validationMode)
