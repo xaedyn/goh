@@ -1555,6 +1555,39 @@ decision and is deferred.
   jar. Fail-fast is simpler and safer until real Safari files prove a recovery
   path is needed.
 
+### Auth import command contract final audit — round 4
+
+This pass checks the candidate contract against the §4.3 wire-change checklist
+and the auth slice's security goals. It finds the contract ready to freeze once
+the design PR is reviewed and merged.
+
+- **Versioning:** adding `authImportSafari` is a new `Command` enum case, so the
+  design correctly moves to `protocolVersion = 2` instead of changing v1.
+- **Envelope compatibility:** the four canonical envelope keys remain unchanged.
+  `auth.safariCookieFile` is an append-only native XPC sibling key, not a
+  renamed or retyped envelope field.
+- **Payload compatibility:** v1 payload structs are untouched. The new v2
+  request is empty and the reply has one required success field,
+  `importedCookieCount`, because no older v2 client exists yet.
+- **Error-code compatibility:** the contract uses existing `invalidArgument`
+  failures for missing/wrong/unreadable fd and malformed cookie file. No new
+  `ErrorCode` case is introduced.
+- **Credential boundary:** the CLI, not `gohd`, owns Full Disk Access. The daemon
+  receives only an already-open fd and therefore does not need a broad standing
+  TCC grant.
+- **Persistence boundary:** no cookie jar, derived header, or job-auth-opt-in bit
+  is persisted. The design explicitly avoids promising credentialed resume after
+  daemon restart.
+- **Implementation test obligations:** the implementation PR must add immutable
+  v2 golden fixtures, command round-trip tests, XPC fd sibling encode/decode
+  tests, daemon rejection tests for missing/wrong fd siblings, parser success and
+  parse-failure command tests, and CLI-side tests for the "cannot open Safari
+  cookie file, do not send XPC" path when the CLI parser exists.
+
+No further design rounds are needed for the wire contract. The remaining FDA
+prompt prose can be polished in the CLI implementation slice without changing
+the request/reply schema or fd sibling key.
+
 ## Hashing
 
 _TBD — SHA-256 via CryptoKit, streamed through the chunk assembler during the

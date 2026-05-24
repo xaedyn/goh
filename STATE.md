@@ -176,9 +176,10 @@ non-wire Safari cookie foundation is now on `main`: parser, matcher, volatile
 per-job headers, engine attachment, locator, and daemon composition.
 
 This branch begins the load-bearing `goh auth import safari` command/FDA design
-round. `DESIGN.md` contains Round 1 draft notes, Round 2 review notes, and Round
-3 candidate conclusions, but the contract is not frozen until final audit and
-merge. The current candidate shape is a new `protocolVersion = 2` command,
+round. `DESIGN.md` contains Round 1 draft notes, Round 2 review notes, Round 3
+candidate conclusions, and a Round 4 final audit. The contract is ready to
+freeze once the design PR is reviewed and merged. The candidate shape is a new
+`protocolVersion = 2` command,
 `authImportSafari(request:)`, with an empty JSON request,
 `{ importedCookieCount: UInt32 }` success reply, and a required native XPC fd
 sibling key `auth.safariCookieFile`. Round 3 resolves the prior open questions:
@@ -195,6 +196,7 @@ Pick up by reviewing that draft before adding the IPC command:
 - keep Full Disk Access prompting and revocation handling user-clear;
 - avoid introducing a public persistent cookie-store format without an explicit
   design pass;
-- final-audit the Round 3 candidate conclusions before freezing/merging them;
+- if PR #20 CI/review stays clean, make it ready and merge it, then start the
+  implementation branch from updated `main`;
 - leave unrelated untracked files (`AGENTS.md`,
   `Benchmarks/diagnose-saturated.log`) untouched.
