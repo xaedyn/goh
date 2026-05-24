@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
+import Network
 
 import GohCore
 
@@ -25,6 +26,20 @@ func supportDirectoryURL() throws -> URL {
 
 func warn(_ message: String) {
     FileHandle.standardError.write(Data("gohd: \(message)\n".utf8))
+}
+
+private extension NetworkPathState {
+    init(path: NWPath) {
+        guard path.status == .satisfied else {
+            self = .unavailable
+            return
+        }
+        if path.usesInterfaceType(.cellular) {
+            self = .satisfiedCellular
+        } else {
+            self = .satisfiedNonCellular
+        }
+    }
 }
 
 do {
@@ -54,17 +69,33 @@ do {
         session: URLSession(configuration: GohCore.downloadSessionConfiguration()),
         checkpointStore: checkpointStore,
         control: downloadControl)
+    let scheduleJob: @Sendable (UInt64) -> Void = { jobID in
+        Task { await engine.run(jobID: jobID, in: store) }
+    }
+    let networkCoordinator = NetworkPauseCoordinator(
+        store: store, control: downloadControl, scheduleJob: scheduleJob)
     let dispatcher = CommandDispatcher(
         store: store, control: downloadControl,
         checkpointStore: checkpointStore,
-        onJobQueued: { jobID in
-            Task { await engine.run(jobID: jobID, in: store) }
-        })
+        queuedJobAdmission: { networkCoordinator.jobBecameQueued($0) })
     let service = CommandService(dispatcher: dispatcher)
 
-    // Resume any jobs that were still `queued` when the daemon last stopped.
+    let pathMonitor = NWPathMonitor()
+    let pathQueue = DispatchQueue(label: "dev.goh.daemon.network-path")
+    let pathPolicyQueue = DispatchQueue(label: "dev.goh.daemon.network-policy", qos: .utility)
+    pathMonitor.pathUpdateHandler = { path in
+        let pathState = NetworkPathState(path: path)
+        pathPolicyQueue.async {
+            networkCoordinator.handlePathUpdate(pathState)
+        }
+    }
+    pathMonitor.start(queue: pathQueue)
+    networkCoordinator.handlePathUpdate(NetworkPathState(path: pathMonitor.currentPath))
+
+    // Resume any jobs that were still `queued` when the daemon last stopped,
+    // subject to the current network policy.
     for job in store.allJobs() where job.state == .queued {
-        Task { await engine.run(jobID: job.id, in: store) }
+        networkCoordinator.jobBecameQueued(job.id)
     }
 
     let validationMode = GohXPCService.peerValidationMode(
@@ -80,13 +111,14 @@ do {
     signal(SIGTERM, SIG_IGN)
     let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     termination.setEventHandler {
+        pathMonitor.cancel()
         writer.flush()
         exit(0)
     }
     termination.resume()
 
     // The listener and the signal source are active; serve forever.
-    withExtendedLifetime((listener, termination)) {
+    withExtendedLifetime((listener, termination, pathMonitor)) {
         dispatchMain()
     }
 } catch {

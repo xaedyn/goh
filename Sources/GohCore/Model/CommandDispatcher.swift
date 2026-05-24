@@ -18,21 +18,26 @@ public struct CommandDispatcher: Sendable {
     private let control: DownloadControl?
     private let checkpointStore: CheckpointStore?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
+    private let queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)?
 
     /// Creates a dispatcher over `store`. `onJobQueued`, when provided, is called
     /// with a job's id whenever a command leaves that job `queued` — after
     /// `add`, and after a `resume` that returns a job to `queued` — so the
-    /// daemon can hand it to the download engine.
+    /// daemon can hand it to the download engine. `queuedJobAdmission`, when
+    /// provided, owns that admission step and may return a fresher summary after
+    /// applying daemon policy such as network auto-pause.
     public init(
         store: JobStore,
         control: DownloadControl? = nil,
         checkpointStore: CheckpointStore? = nil,
-        onJobQueued: (@Sendable (UInt64) -> Void)? = nil
+        onJobQueued: (@Sendable (UInt64) -> Void)? = nil,
+        queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil
     ) {
         self.store = store
         self.control = control
         self.checkpointStore = checkpointStore
         self.onJobQueued = onJobQueued
+        self.queuedJobAdmission = queuedJobAdmission
     }
 
     /// Handles `command`, mutating the job store, and returns the outcome.
@@ -78,8 +83,7 @@ public struct CommandDispatcher: Sendable {
                     try? store.remove(id: job.id)
                     throw error
                 }
-                onJobQueued?(job.id)
-                return .job(job)
+                return .job(admitQueuedJob(job))
 
             case .ls:
                 return .list(LsReply(jobs: store.allJobs()))
@@ -91,9 +95,9 @@ public struct CommandDispatcher: Sendable {
                 return .job(try store.pause(id: jobID))
 
             case .resume(let jobID):
-                let summary = try store.resume(id: jobID)
+                var summary = try store.resume(id: jobID)
                 if summary.state == .queued {
-                    onJobQueued?(jobID)
+                    summary = admitQueuedJob(summary)
                 }
                 return .job(summary)
 
@@ -124,5 +128,13 @@ public struct CommandDispatcher: Sendable {
             .appending(path: "Downloads")
             .appending(path: filename)
             .path
+    }
+
+    private func admitQueuedJob(_ summary: JobSummary) -> JobSummary {
+        if let admitted = queuedJobAdmission?(summary.id) {
+            return admitted
+        }
+        onJobQueued?(summary.id)
+        return summary
     }
 }

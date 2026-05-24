@@ -95,11 +95,11 @@ public final class JobStore: Sendable {
     /// Pauses a `queued` job immediately, or an `active` job after the engine
     /// has acknowledged its checkpoint boundary through ``DownloadControl``.
     /// `pause` of `paused` / `completed` / `failed` is the §3.3 no-op.
-    public func pause(id: UInt64) throws -> JobSummary {
+    public func pause(id: UInt64, reason: PauseReason = .user) throws -> JobSummary {
         try mutateJob(id: id) { job in
             guard JobLifecycle.isLegal(from: job.state, to: .paused) else { return }
             job.state = .paused
-            job.pauseReason = .user
+            job.pauseReason = reason
             job.actualConnectionCount = 0
         }
     }
