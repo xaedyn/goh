@@ -5,19 +5,20 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/release-packaging`
+- **Branch:** `chore/formula-validation`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
   subscription contract — `main` at `c31283d`; PR #26 — backend progress
   subscription plumbing — `main` at `976775f`; PR #27 — foreground progress
   CLI — `main` at `076bfaf`; PR #28 — top progress dashboard — `main` at
-  `0adf0a7`.
+  `0adf0a7`; PR #29 — release-packaging surface refresh — `main` at
+  `2e1c3c7`.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
-  release pipeline. The first release-packaging branch keeps the already-present
-  formula and README truthful against the now-implemented CLI while leaving
-  signing/notarization credentials out of scope until the release workflow can be
-  wired to real secrets.
+  release pipeline. The first branch shipped the formula/README truth refresh in
+  PR #29. The current branch adds CI validation for the in-repo Homebrew formula
+  so packaging drift is caught on every PR before the heavier credential-backed
+  signing and notarization workflow lands.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -113,6 +114,8 @@ remaining adaptive host scheduling work to v0.2.
 - **7** — shipped across PR #23, PR #24, and PR #27: the `goh` CLI client.
 - **8** — shipped in PR #28: the TUI for `goh top`.
 - **9** — in progress: Homebrew formula, signing, notarization, the release pipeline.
+  PR #29 refreshed the pre-release formula/docs surfaces. The current branch adds
+  formula validation to CI.
 
 ## Recent 3b validation notes
 
@@ -197,75 +200,32 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/release-packaging`.
+Current branch: `chore/formula-validation`.
 
-PR #23 was locally verified, opened, checked against CI, and squash-merged into
-`main` at `db9b82a`. CodeRabbit again posted only a non-actionable quota /
-usage-credit warning. The final PR #23 gates were:
+PR #29 passed CI and was squash-merged into `main` at `2e1c3c7`. It made the
+pre-release Homebrew formula and README match the implemented CLI/TUI: the
+formula now has a `head` stanza and a current `goh --help` smoke test, and the
+README no longer claims the CLI commands are placeholders.
 
+This branch continues Slice 9 by adding a `Validate Homebrew formula` step to
+CI. The step runs:
+
+- `ruby -c Formula/goh.rb`
+- `brew style Formula/goh.rb`
+
+Local gates before PR:
+
+- `ruby -c Formula/goh.rb`
+- `brew style Formula/goh.rb`
+- `git diff --check`
 - `swift build -Xswiftc -warnings-as-errors`
-- `swift test` — 175 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1496s, unified
-  0.1260s, overhead -15.8 %
+- `swift test` — 207 tests
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1937s, unified
+  0.1932s, overhead -0.2 %
 - `swift run goh --help`
-- `swift run goh ls` with no daemon loaded — prints `brew services start goh`
-  guidance and exits `1`
-- `swift run goh pause abc` — prints usage guidance and exits `64`
 
-The non-wire CLI polish branch is locally ready. It adds `add` option parsing
-for the already-frozen request fields and `ls --json` over the existing reply
-payload. Local gates for this branch:
-
-- `swift build -Xswiftc -warnings-as-errors`
-- `swift test` — 177 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1407s, unified
-  0.1283s, overhead -8.8 %
-- `swift run goh --help` — shows the new `add` options and `ls --json`
-- `swift run goh add --output /tmp/private.zip --connections 12 --priority high
-  --no-cookies https://example.com/private.zip` with no daemon loaded — parses
-  locally, then prints `brew services start goh` guidance and exits `1`
-
-PR #24 passed CI and was squash-merged into `main` at `58c2e73`; CodeRabbit only
-posted the non-actionable quota / usage-credit warning.
-
-PR #25 passed CI and was squash-merged into `main` at `c31283d`. PR #26 passed
-CI and was squash-merged into `main` at `976775f`. It added the protocol v3 wire schema:
-`Command.subscribe`, `SubscribeRequest`, `SubscribeReply`, `ProgressEvent`,
-`ProgressSnapshot`, `TransferLaneProgress`, and v3 golden fixtures. The daemon
-protocol constant moves to `3`. The branch also adds the deterministic
-daemon-local `ProgressBroker` core: baseline subscription replies, exact scope
-validation, monotonic revisions, 100 ms coalescing, latest-snapshot overwrite,
-and immediate removal flushes. The latest implementation step wires that core
-through XPC and the daemon:
-`GohXPCListener` can expose the accepted session to handlers, `GohXPCClient`
-can receive daemon-initiated messages, `CommandService` handles `subscribe`
-with baseline replies plus notification envelopes on the same session,
-`ProgressBrokerHub` owns subscriber sinks, removes failed sends, and now
-explicitly unsubscribes streams when their accepted XPC session is cancelled.
-`JobStore` publishes empty-lane snapshots/removals into the hub under a
-mutation-order gate so progress updates cannot race behind later removals.
-`gohd` now seeds the hub from the loaded catalog, passes it into `JobStore` and
-`CommandService`, and runs a 100 ms flush timer for coalesced progress.
-
-PR #27 shipped the foreground CLI subscriber flow (`goh <url>` as `add` plus
-`subscribe(scope: job, jobID:)` on one session). Its implementation
-adds a testable `GohForegroundDownload` runner, parses bare URLs through
-`GohCommandLine`, wires the real CLI to a notification inbox on
-`GohXPCClient(incomingMessageHandler:)`, streams deterministic progress lines as
-baseline / notification payloads arrive, detaches cleanly on Ctrl-C with a
-background-job note, and uses the existing bounded reconnect helper to
-re-subscribe once after session loss. Per-lane engine snapshots remain empty for
-now and should be filled when the TUI rendering path needs them.
-
-PR #27 passed CI and was squash-merged into `main` at `076bfaf`. PR #28 passed
-CI and was squash-merged into `main` at `0adf0a7`; it implemented `goh top` as
-an all-jobs progress subscriber with a pure `GohTUI` dashboard renderer, Ctrl-C
-monitor exit, and bounded reconnect.
-
-The current branch starts Slice 9 by making the Homebrew formula and README
-match the implemented CLI: add a formula `head` stanza for pre-release source
-installs, update the formula smoke test to `goh --help`, and remove README
-placeholder text that claimed the CLI commands did not exist.
+Next pickup: push and open the formula-validation PR, then merge it only if CI
+and comments are clean.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
