@@ -1,7 +1,8 @@
 # goh
 
-> **v0.1 — in development.** Not yet usable. The package skeleton builds and the
-> CI is green; the features described below do not exist yet.
+> **v0.1 — in development.** The daemon, download engine, CLI controls, foreground
+> progress, and `goh top` dashboard are in place. Release packaging is still in
+> progress; no tagged v0.1.0 artifact exists yet.
 >
 > Manifest floor: macOS 26.0 (rises to 26.5 on first dependent API).
 > Supported: macOS 26.5+.
@@ -20,8 +21,6 @@ OS-keychain auth, Spotlight integration, and a terminal UI worth using.
 
 ## Install
 
-> Placeholder — no release exists yet.
-
 ```sh
 brew install goh-cli/tap/goh
 brew services start goh
@@ -32,16 +31,15 @@ enable it explicitly with `brew services start goh`.
 
 ## Usage
 
-> Placeholder — these commands are not implemented yet.
-
 ```sh
-goh <url>          # foreground download with live progress
-goh add <url>      # background download, returns immediately
-goh ls             # list jobs
-goh pause <id>     # pause a job
-goh resume <id>    # resume a job
-goh rm <id>        # remove a job
-goh top            # live terminal dashboard
+goh <url>
+goh add [--output <path>] [--connections <1-16>] [--priority low|normal|high] [--no-cookies] <url>
+goh ls [--json]
+goh top
+goh pause <id>
+goh resume <id>
+goh rm [--keep] <id>
+goh auth import safari
 ```
 
 ## Requirements

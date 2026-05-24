@@ -5,16 +5,19 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/top-tui`
+- **Branch:** `feat/release-packaging`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
   subscription contract — `main` at `c31283d`; PR #26 — backend progress
   subscription plumbing — `main` at `976775f`; PR #27 — foreground progress
-  CLI — `main` at `076bfaf`.
-- **Current slice:** Slice 8, the `goh top` terminal dashboard. The slice starts
-  from the shipped progress subscription backend and foreground subscriber path
-  and builds the all-jobs monitor over `subscribe(scope: all)`.
+  CLI — `main` at `076bfaf`; PR #28 — top progress dashboard — `main` at
+  `0adf0a7`.
+- **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
+  release pipeline. The first release-packaging branch keeps the already-present
+  formula and README truthful against the now-implemented CLI while leaving
+  signing/notarization credentials out of scope until the release workflow can be
+  wired to real secrets.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -35,8 +38,8 @@ session; update at the start of every PR and at the end of every session.
   session-aware XPC transport wrappers, broker-backed `subscribe` replies and
   notifications, `JobStore` progress publishing, and daemon composition through
   `ProgressBrokerHub`. PR #27 implemented foreground `goh <url>` as `add` plus
-  `subscribe(scope: job, jobID:)` on one session. The current branch starts
-  Slice 8, the `goh top` dashboard over `subscribe(scope: all)`.
+  `subscribe(scope: job, jobID:)` on one session. PR #28 shipped the first
+  `goh top` dashboard over `subscribe(scope: all)`.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -108,8 +111,8 @@ remaining adaptive host scheduling work to v0.2.
   foundation, auth import command contract, and implementation.
 - **6** — shipped in PR #22: Spotlight tagging and sleep assertions.
 - **7** — shipped across PR #23, PR #24, and PR #27: the `goh` CLI client.
-- **8** — in progress: the TUI for `goh top`.
-- **9** — Homebrew formula, signing, notarization, the release pipeline.
+- **8** — shipped in PR #28: the TUI for `goh top`.
+- **9** — in progress: Homebrew formula, signing, notarization, the release pipeline.
 
 ## Recent 3b validation notes
 
@@ -194,7 +197,7 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/top-tui`.
+Current branch: `feat/release-packaging`.
 
 PR #23 was locally verified, opened, checked against CI, and squash-merged into
 `main` at `db9b82a`. CodeRabbit again posted only a non-actionable quota /
@@ -244,8 +247,8 @@ mutation-order gate so progress updates cannot race behind later removals.
 `gohd` now seeds the hub from the loaded catalog, passes it into `JobStore` and
 `CommandService`, and runs a 100 ms flush timer for coalesced progress.
 
-This branch starts the foreground CLI subscriber flow (`goh <url>` as `add` plus
-`subscribe(scope: job, jobID:)` on one session). The first implementation pass
+PR #27 shipped the foreground CLI subscriber flow (`goh <url>` as `add` plus
+`subscribe(scope: job, jobID:)` on one session). Its implementation
 adds a testable `GohForegroundDownload` runner, parses bare URLs through
 `GohCommandLine`, wires the real CLI to a notification inbox on
 `GohXPCClient(incomingMessageHandler:)`, streams deterministic progress lines as
@@ -254,10 +257,15 @@ background-job note, and uses the existing bounded reconnect helper to
 re-subscribe once after session loss. Per-lane engine snapshots remain empty for
 now and should be filled when the TUI rendering path needs them.
 
-PR #27 passed CI and was squash-merged into `main` at `076bfaf`. The current
-branch starts Slice 8: implement `goh top` as an all-jobs progress subscriber
-with a pure `GohTUI` dashboard renderer, Ctrl-C monitor exit, and bounded
-reconnect.
+PR #27 passed CI and was squash-merged into `main` at `076bfaf`. PR #28 passed
+CI and was squash-merged into `main` at `0adf0a7`; it implemented `goh top` as
+an all-jobs progress subscriber with a pure `GohTUI` dashboard renderer, Ctrl-C
+monitor exit, and bounded reconnect.
+
+The current branch starts Slice 9 by making the Homebrew formula and README
+match the implemented CLI: add a formula `head` stanza for pre-release source
+installs, update the formula smoke test to `goh --help`, and remove README
+placeholder text that claimed the CLI commands did not exist.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
