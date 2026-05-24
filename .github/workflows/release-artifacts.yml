@@ -1,0 +1,80 @@
+name: Release Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label to package. Defaults to the current ref name.
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/release-artifacts.yml"
+      - "Scripts/package-release.sh"
+      - "Package.swift"
+      - "Package.resolved"
+      - "Sources/**"
+      - "Resources/**"
+      - "README.md"
+      - "LICENSE"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package release artifacts
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain version
+        run: swift --version
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REF_VERSION: ${{ github.ref_name }}
+        run: |
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            version="$REQUESTED_VERSION"
+          elif [[ -n "$PR_NUMBER" ]]; then
+            version="pr-${PR_NUMBER}"
+          else
+            version="$REF_VERSION"
+          fi
+
+          if [[ -z "$version" ]]; then
+            echo "version must not be empty" >&2
+            exit 64
+          fi
+
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "version may contain only letters, numbers, dots, underscores, and hyphens" >&2
+            exit 64
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Package release artifacts
+        run: bash Scripts/package-release.sh "${{ steps.version.outputs.version }}" .build/release-artifacts
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: goh-${{ steps.version.outputs.version }}-macos-arm64
+          path: |
+            .build/release-artifacts/*.tar.gz
+            .build/release-artifacts/*.sha256
+          if-no-files-found: error

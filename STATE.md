@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `chore/formula-validation`
+- **Branch:** `chore/release-artifacts`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -13,12 +13,13 @@ session; update at the start of every PR and at the end of every session.
   subscription plumbing — `main` at `976775f`; PR #27 — foreground progress
   CLI — `main` at `076bfaf`; PR #28 — top progress dashboard — `main` at
   `0adf0a7`; PR #29 — release-packaging surface refresh — `main` at
-  `2e1c3c7`.
+  `2e1c3c7`; PR #30 — Homebrew formula validation in CI — `main` at
+  `5ad60b6`.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
   release pipeline. The first branch shipped the formula/README truth refresh in
-  PR #29. The current branch adds CI validation for the in-repo Homebrew formula
-  so packaging drift is caught on every PR before the heavier credential-backed
-  signing and notarization workflow lands.
+  PR #29. PR #30 added CI validation for the in-repo Homebrew formula. The
+  current branch adds an unsigned release-artifact workflow and a reusable local
+  packaging script, still leaving signing/notarization credentials out of scope.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -114,8 +115,9 @@ remaining adaptive host scheduling work to v0.2.
 - **7** — shipped across PR #23, PR #24, and PR #27: the `goh` CLI client.
 - **8** — shipped in PR #28: the TUI for `goh top`.
 - **9** — in progress: Homebrew formula, signing, notarization, the release pipeline.
-  PR #29 refreshed the pre-release formula/docs surfaces. The current branch adds
-  formula validation to CI.
+  PR #29 refreshed the pre-release formula/docs surfaces. PR #30 added formula
+  validation to CI. The current branch adds unsigned release artifacts and
+  checksums.
 
 ## Recent 3b validation notes
 
@@ -200,32 +202,44 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `chore/formula-validation`.
+Current branch: `chore/release-artifacts`.
 
-PR #29 passed CI and was squash-merged into `main` at `2e1c3c7`. It made the
-pre-release Homebrew formula and README match the implemented CLI/TUI: the
-formula now has a `head` stanza and a current `goh --help` smoke test, and the
-README no longer claims the CLI commands are placeholders.
+PR #30 passed CI and CodeRabbit, then was squash-merged into `main` at
+`5ad60b6`. It added a CI `Validate Homebrew formula` step that runs
+`ruby -c Formula/goh.rb` and `brew style Formula/goh.rb`.
 
-This branch continues Slice 9 by adding a `Validate Homebrew formula` step to
-CI. The step runs:
+This branch continues Slice 9 by adding the first release-artifact scaffold:
 
-- `ruby -c Formula/goh.rb`
-- `brew style Formula/goh.rb`
+- `Scripts/package-release.sh` builds `goh` and `gohd` in release mode, stages
+  `bin/goh`, `bin/gohd`, `Resources/dev.goh.daemon.plist`, `LICENSE`, and
+  `README.md`, then writes a `goh-<version>-macos-arm64.tar.gz` archive plus a
+  `.sha256` file.
+- `.github/workflows/release-artifacts.yml` runs that script on
+  `workflow_dispatch`, `v*` tag pushes, or PRs that touch packaging/build inputs,
+  then uploads the tarball/checksum as workflow artifacts.
+- `DESIGN.md` records the unsigned-artifact boundary: this does not create a
+  GitHub Release, fill formula SHA values, sign, notarize, or staple tickets.
+
+Next pickup: commit/push/open the release-artifact PR. Merge only if CI and
+comments are clean.
 
 Local gates before PR:
 
+- `bash -n Scripts/package-release.sh`
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release-artifacts.yml")'`
+- `bash Scripts/package-release.sh v0.1.0-test .build/release-artifacts-test`
+- `tar -tzf .build/release-artifacts-test/goh-v0.1.0-test-macos-arm64.tar.gz`
+  showed `LICENSE`, `README.md`, `Resources/dev.goh.daemon.plist`, `bin/goh`,
+  and `bin/gohd`.
+- `shasum -a 256 -c goh-v0.1.0-test-macos-arm64.tar.gz.sha256` — OK
 - `ruby -c Formula/goh.rb`
 - `brew style Formula/goh.rb`
 - `git diff --check`
 - `swift build -Xswiftc -warnings-as-errors`
 - `swift test` — 207 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1937s, unified
-  0.1932s, overhead -0.2 %
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1892s, unified
+  0.1878s, overhead -0.7 %
 - `swift run goh --help`
-
-Next pickup: push and open the formula-validation PR, then merge it only if CI
-and comments are clean.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
