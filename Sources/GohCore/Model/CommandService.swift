@@ -100,7 +100,7 @@ public struct CommandService: Sendable {
 
     /// Reads the frozen envelope keys needed for compatibility checks before
     /// decoding `payload`, so a future-version request with an incompatible
-    /// payload still receives the v1 mismatch error.
+    /// payload still receives a correlated version-mismatch error.
     private static func decodeHeader(_ request: xpc_object_t) throws -> Header {
         let rawVersion = try XPCEnvelope.uint64(request, XPCEnvelope.protocolVersionKey)
         guard rawVersion <= UInt64(UInt32.max) else {
