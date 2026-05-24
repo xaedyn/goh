@@ -227,9 +227,13 @@ branch starts the implementation by adding the protocol v3 wire schema:
 `ProgressSnapshot`, `TransferLaneProgress`, and v3 golden fixtures. The daemon
 protocol constant moves to `3`; `subscribe` currently returns an explicit
 `invalidArgument` placeholder until the broker-backed streaming handler lands.
+The branch also adds the deterministic daemon-local `ProgressBroker` core:
+baseline subscription replies, exact scope validation, monotonic revisions,
+100 ms coalescing, latest-snapshot overwrite, and immediate removal flushes.
 
-Next: finish verifying this v3 wire-schema slice, open its PR, then implement
-the `ProgressBroker` and daemon subscription path test-first.
+Next: wire `ProgressBroker` into `JobStore` / `CommandService` so `subscribe`
+can return the baseline and push notification envelopes on the validated XPC
+session.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
