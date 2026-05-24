@@ -1741,6 +1741,19 @@ a notification send fails because the peer is gone, the daemon removes that
 subscriber and does not change job state. This preserves IPC §2.3's rule:
 subscriber sessions are observers.
 
+Implementation keeps the pure coalescing model and the side-effecting XPC sends
+separate: `ProgressBroker` is deterministic and in-memory, while a thread-safe
+`ProgressBrokerHub` owns subscriber sinks. The hub removes a subscriber when its
+send throws, and the accepted XPC session's cancellation handler explicitly
+unsubscribes every stream registered on that session. That means an idle
+watcher does not linger forever waiting for the next progress event just to
+discover that its peer is gone. `JobStore` serializes each state mutation
+through its progress-broker side effect, so a late progress publish cannot race
+after a later removal and reintroduce a stale job to subscribers. It publishes
+empty-lane `ProgressSnapshot`s for every visible job mutation and terminal
+removal; richer per-lane engine snapshots can replace those empty lanes later
+without changing the v3 wire shape.
+
 Foreground `goh <url>` sends the already-frozen `add` request, receives the new
 `JobSummary`, then sends `subscribe(scope: job, jobID:)` on the same session and
 renders progress until the job reaches `completed` or `failed`. Ctrl-C closes

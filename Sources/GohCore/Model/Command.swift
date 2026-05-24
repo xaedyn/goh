@@ -8,6 +8,7 @@ public enum Command: Codable, Sendable, Equatable {
     case resume(jobID: UInt64)
     case rm(request: RmRequest)
     case authImportSafari(request: AuthImportSafariRequest)
+    case subscribe(request: SubscribeRequest)
 }
 
 /// The `add` command's request payload (`DESIGN.md` §3.1).

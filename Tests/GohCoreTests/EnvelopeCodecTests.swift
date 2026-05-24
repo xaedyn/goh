@@ -63,6 +63,45 @@ struct EnvelopeCodecTests {
         #expect(envelope.payload == AuthImportSafariReply(importedCookieCount: 42))
     }
 
+    @Test("decodes the protocolVersion=3 subscribe request fixture")
+    func decodesV3SubscribeRequestFixture() throws {
+        let envelope = try JSONDecoder().decode(
+            GohEnvelope<Command>.self,
+            from: fixtureData("envelope-v3-subscribe-request"))
+
+        #expect(envelope.protocolVersion == 3)
+        #expect(envelope.requestID == UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"))
+        #expect(envelope.messageType == .request)
+        #expect(envelope.payload == .subscribe(request: SubscribeRequest(scope: .job, jobID: 42)))
+    }
+
+    @Test("decodes the protocolVersion=3 subscribe reply fixture")
+    func decodesV3SubscribeReplyFixture() throws {
+        let envelope = try JSONDecoder().decode(
+            GohEnvelope<SubscribeReply>.self,
+            from: fixtureData("envelope-v3-subscribe-reply"))
+
+        #expect(envelope.protocolVersion == 3)
+        #expect(envelope.messageType == .reply)
+        #expect(envelope.payload == SubscribeReply(revision: 7, snapshot: []))
+    }
+
+    @Test("decodes the protocolVersion=3 progress notification fixture")
+    func decodesV3ProgressNotificationFixture() throws {
+        let envelope = try CommandCoding.decoder.decode(
+            GohEnvelope<ProgressEvent>.self,
+            from: fixtureData("envelope-v3-progress-notification"))
+
+        #expect(envelope.protocolVersion == 3)
+        #expect(envelope.messageType == .notification)
+        #expect(envelope.payload == ProgressEvent(
+            sequence: 1,
+            revision: 8,
+            emittedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updateKind: .fullSnapshot,
+            snapshot: []))
+    }
+
     @Test("an envelope round-trips through encode then decode unchanged")
     func roundTripsUnchanged() throws {
         let original = try JSONDecoder().decode(

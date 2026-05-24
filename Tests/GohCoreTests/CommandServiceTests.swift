@@ -1,9 +1,10 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 import XPC
 
-import GohCore
+@testable import GohCore
 
 @Suite("Command service over XPC")
 struct CommandServiceTests {
@@ -23,7 +24,10 @@ struct CommandServiceTests {
     ) throws -> GohEnvelope<Reply> {
         let requestID = UUID()
         let request = GohEnvelope(
-            protocolVersion: 2, requestID: requestID, messageType: .request, payload: command)
+            protocolVersion: CommandService.protocolVersion,
+            requestID: requestID,
+            messageType: .request,
+            payload: command)
         let replyDictionary = try client.sendSync(XPCDictionary(request.xpcDictionary()))
         let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
             try GohEnvelope<Reply>(xpcDictionary: object)
@@ -57,7 +61,7 @@ struct CommandServiceTests {
         fileDescriptor: Int32? = nil
     ) throws -> xpc_object_t {
         let request = try GohEnvelope(
-            protocolVersion: 2,
+            protocolVersion: CommandService.protocolVersion,
             requestID: requestID,
             messageType: .request,
             payload: Command.authImportSafari(request: AuthImportSafariRequest())
@@ -107,6 +111,170 @@ struct CommandServiceTests {
         #expect(reply.messageType == .reply)
         #expect(reply.payload.jobs.count == 1)
         #expect(reply.payload.jobs.first?.url == "https://example.com/a")
+    }
+
+    @Test("subscribe returns the progress broker's baseline reply")
+    func subscribeReturnsBaselineReply() throws {
+        let store = JobStore()
+        let created = store.create(
+            url: "https://example.com/big.zip",
+            destination: "/tmp/big.zip",
+            requestedConnectionCount: 8)
+        let job = JobSummary(
+            id: created.id,
+            url: created.url,
+            destination: created.destination,
+            state: created.state,
+            progress: created.progress,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastProgressAt: nil,
+            requestedConnectionCount: created.requestedConnectionCount,
+            actualConnectionCount: created.actualConnectionCount)
+        let snapshot = ProgressSnapshot(job: job, lanes: [])
+        let progress = ProgressBrokerHub(initialSnapshots: [snapshot])
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: store),
+            progress: progress)
+        let listener = GohXPCListener(anonymousSessionHandler: { session, request in
+            service.handle(request, session: session)
+        })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { listener.cancel(); client.cancel() }
+
+        let reply = try send(
+            .subscribe(request: SubscribeRequest(scope: .job, jobID: job.id)),
+            expecting: SubscribeReply.self,
+            over: client)
+
+        #expect(reply.messageType == .reply)
+        #expect(reply.payload == SubscribeReply(revision: 0, snapshot: [snapshot]))
+    }
+
+    @Test("subscribe pushes progress notifications over the same session")
+    func subscribePushesProgressNotifications() throws {
+        let store = JobStore()
+        let created = store.create(
+            url: "https://example.com/big.zip",
+            destination: "/tmp/big.zip",
+            requestedConnectionCount: 8)
+        let job = JobSummary(
+            id: created.id,
+            url: created.url,
+            destination: created.destination,
+            state: created.state,
+            progress: created.progress,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastProgressAt: nil,
+            requestedConnectionCount: created.requestedConnectionCount,
+            actualConnectionCount: created.actualConnectionCount)
+        let progress = ProgressBrokerHub(
+            cadence: 0.100,
+            initialSnapshots: [ProgressSnapshot(job: job, lanes: [])])
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: store),
+            progress: progress)
+        let notifications = Mutex<[GohEnvelope<ProgressEvent>]>([])
+        let session = GohXPCServerSession(send: { message in
+            if let envelope = try? message.withUnsafeUnderlyingDictionary({
+                try GohEnvelope<ProgressEvent>(xpcDictionary: $0)
+            }) {
+                notifications.withLock { $0.append(envelope) }
+            }
+        })
+
+        let requestID = UUID()
+        let request = try GohEnvelope(
+            protocolVersion: CommandService.protocolVersion,
+            requestID: requestID,
+            messageType: .request,
+            payload: Command.subscribe(request: SubscribeRequest(scope: .job, jobID: job.id))
+        ).xpcDictionary()
+        let replyDictionary = try #require(service.handle(XPCDictionary(request), session: session))
+        let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<SubscribeReply>(xpcDictionary: object)
+        }
+        #expect(reply.messageType == .reply)
+
+        var updatedJob = job
+        updatedJob.state = .active
+        updatedJob.progress = JobProgress(
+            bytesCompleted: 256,
+            bytesTotal: 1_024,
+            bytesPerSecond: 512)
+        updatedJob.lastProgressAt = Date(timeIntervalSince1970: 1_800_000_001)
+        let updatedSnapshot = ProgressSnapshot(job: updatedJob, lanes: [])
+
+        progress.publish(updatedSnapshot, at: Date(timeIntervalSince1970: 1_800_000_002))
+
+        let received = try #require(notifications.withLock { $0.first })
+        #expect(received.requestID == requestID)
+        #expect(received.messageType == .notification)
+        #expect(received.payload.sequence == 1)
+        #expect(received.payload.revision == 1)
+        #expect(received.payload.updateKind == .fullSnapshot)
+        #expect(received.payload.snapshot == [updatedSnapshot])
+    }
+
+    @Test("session cancellation unsubscribes progress notifications")
+    func sessionCancellationUnsubscribesProgressNotifications() throws {
+        let store = JobStore()
+        let created = store.create(
+            url: "https://example.com/big.zip",
+            destination: "/tmp/big.zip",
+            requestedConnectionCount: 8)
+        let job = JobSummary(
+            id: created.id,
+            url: created.url,
+            destination: created.destination,
+            state: created.state,
+            progress: created.progress,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastProgressAt: nil,
+            requestedConnectionCount: created.requestedConnectionCount,
+            actualConnectionCount: created.actualConnectionCount)
+        let progress = ProgressBrokerHub(
+            cadence: 0,
+            initialSnapshots: [ProgressSnapshot(job: job, lanes: [])])
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: store),
+            progress: progress)
+        let notifications = Mutex<[GohEnvelope<ProgressEvent>]>([])
+        let cancellationHandlers = Mutex<[(@Sendable () -> Void)]>([])
+        let session = GohXPCServerSession(
+            send: { message in
+                if let envelope = try? message.withUnsafeUnderlyingDictionary({
+                    try GohEnvelope<ProgressEvent>(xpcDictionary: $0)
+                }) {
+                    notifications.withLock { $0.append(envelope) }
+                }
+            },
+            registerCancellationHandler: { handler in
+                cancellationHandlers.withLock { $0.append(handler) }
+            })
+
+        let request = try GohEnvelope(
+            protocolVersion: CommandService.protocolVersion,
+            requestID: UUID(),
+            messageType: .request,
+            payload: Command.subscribe(request: SubscribeRequest(scope: .job, jobID: job.id))
+        ).xpcDictionary()
+        #expect(service.handle(XPCDictionary(request), session: session) != nil)
+
+        for handler in cancellationHandlers.withLock({ $0 }) {
+            handler()
+        }
+
+        var updatedJob = job
+        updatedJob.state = .active
+        updatedJob.progress = JobProgress(
+            bytesCompleted: 256,
+            bytesTotal: 1_024,
+            bytesPerSecond: 512)
+        progress.publish(
+            ProgressSnapshot(job: updatedJob, lanes: []),
+            at: Date(timeIntervalSince1970: 1_800_000_002))
+
+        #expect(notifications.withLock { $0 }.isEmpty)
     }
 
     @Test("auth import without the Safari cookie fd replies with invalidArgument")
@@ -228,10 +396,10 @@ struct CommandServiceTests {
 
         let requestID = UUID()
         let request = makeEnvelopeDictionary(
-            protocolVersion: 3,
+            protocolVersion: UInt64(CommandService.protocolVersion + 1),
             requestID: requestID,
             messageType: "request",
-            payload: Data(#"{"futureCommand":{"shape":"unknown-to-v2"}}"#.utf8))
+            payload: Data(#"{"futureCommand":{"shape":"unknown-to-v3"}}"#.utf8))
         let replyDictionary = try client.sendSync(XPCDictionary(request))
         let reply = try replyDictionary.withUnsafeUnderlyingDictionary { object in
             try GohEnvelope<GohError>(xpcDictionary: object)
@@ -249,7 +417,7 @@ struct CommandServiceTests {
 
         let requestID = UUID()
         let request = GohEnvelope(
-            protocolVersion: 2,
+            protocolVersion: CommandService.protocolVersion,
             requestID: requestID,
             messageType: .notification,
             payload: Command.ls)

@@ -43,6 +43,26 @@ struct XPCTransportTests {
         #expect(received == sent)
     }
 
+    @Test("a session-aware listener handles requests through the accepted session")
+    func sessionAwareListenerHandlesRequests() throws {
+        let listener = GohXPCListener(anonymousSessionHandler: { session, request in
+            _ = session
+            return request
+        })
+        defer { listener.cancel() }
+
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { client.cancel() }
+
+        let sent = try sampleEnvelope()
+        let reply = try client.sendSync(XPCDictionary(sent.xpcDictionary()))
+        let receivedReply = try reply.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<TestPayload>(xpcDictionary: object)
+        }
+
+        #expect(receivedReply == sent)
+    }
+
     @Test("a same-team peer requirement rejects the unsigned test process")
     func sameTeamRequirementRejectsUnsignedPeer() throws {
         // Reject-direction coverage: the daemon-side per-message peer check

@@ -124,6 +124,11 @@ public struct CommandDispatcher: Sendable {
                 return .failure(GohError(
                     code: .invalidArgument,
                     message: "authImportSafari requires an auth.safariCookieFile XPC fd sibling"))
+
+            case .subscribe:
+                return .failure(GohError(
+                    code: .invalidArgument,
+                    message: "subscribe requires a progress subscription handler"))
             }
         } catch let error as GohError {
             return .failure(error)

@@ -51,7 +51,10 @@ do {
             + "the damaged file was kept at \(sidecar.path)")
     }
     let writer = CatalogWriter(store: catalogStore)
-    let store = JobStore(catalog: loaded.catalog, writer: writer)
+    let progress = ProgressBrokerHub(initialSnapshots: loaded.catalog.jobs.map {
+        ProgressSnapshot(job: $0, lanes: [])
+    })
+    let store = JobStore(catalog: loaded.catalog, writer: writer, progress: progress)
     let checkpointStore = CheckpointStore(
         directoryURL: supportDirectory.appending(path: "checkpoints", directoryHint: .isDirectory))
     let reconciliation = store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore)
@@ -99,7 +102,8 @@ do {
     let authImportHandler = SafariAuthImportHandler(importedCookies: importedCookies)
     let service = CommandService(
         dispatcher: dispatcher,
-        authImportSafari: { authImportHandler.reply(fileDescriptor: $0) })
+        authImportSafari: { authImportHandler.reply(fileDescriptor: $0) },
+        progress: progress)
 
     let pathMonitor = NWPathMonitor()
     let pathQueue = DispatchQueue(label: "dev.goh.daemon.network-path")
@@ -113,6 +117,14 @@ do {
     pathMonitor.start(queue: pathQueue)
     networkCoordinator.handlePathUpdate(NetworkPathState(path: pathMonitor.currentPath))
 
+    let progressFlushQueue = DispatchQueue(label: "dev.goh.daemon.progress-flush", qos: .utility)
+    let progressFlush = DispatchSource.makeTimerSource(queue: progressFlushQueue)
+    progressFlush.schedule(deadline: .now() + 0.1, repeating: 0.1)
+    progressFlush.setEventHandler {
+        progress.flushDue()
+    }
+    progressFlush.resume()
+
     // Resume any jobs that were still `queued` when the daemon last stopped,
     // subject to the current network policy.
     for job in store.allJobs() where job.state == .queued {
@@ -124,7 +136,9 @@ do {
     let listener = try GohXPCListener(
         machServiceName: GohXPCService.machServiceName,
         mode: validationMode,
-        handler: { service.handle($0) })
+        sessionHandler: { session, request in
+            service.handle(request, session: session)
+        })
 
     // Flush the catalog on a graceful stop — launchd sends SIGTERM. Handled on a
     // dispatch source, not a raw async-signal handler, so the flush runs in a
@@ -133,13 +147,14 @@ do {
     let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     termination.setEventHandler {
         pathMonitor.cancel()
+        progressFlush.cancel()
         writer.flush()
         exit(0)
     }
     termination.resume()
 
     // The listener and the signal source are active; serve forever.
-    withExtendedLifetime((listener, termination, pathMonitor)) {
+    withExtendedLifetime((listener, termination, pathMonitor, progressFlush)) {
         dispatchMain()
     }
 } catch {
