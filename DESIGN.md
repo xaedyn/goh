@@ -1863,10 +1863,12 @@ The first release-artifact workflow is intentionally unsigned. It runs on manual
 dispatch, `v*` tag pushes, and PRs that touch packaging or build inputs. It
 builds `goh` and `gohd` with SwiftPM on the pinned `macos-26` runner, stages an
 arm64 tarball containing `bin/goh`, `bin/gohd`, the reference LaunchAgent plist,
-`LICENSE`, and `README.md`, then uploads the tarball and a SHA-256 checksum as
-workflow artifacts. The packaging logic lives in `Scripts/package-release.sh` so
-the exact artifact shape is runnable locally and by CI without duplicating shell
-steps in YAML.
+`LICENSE`, and `README.md`, verifies the checksum, archive layout, LaunchAgent
+plist syntax, and packaged `goh --help`, then uploads the tarball and SHA-256
+checksum as workflow artifacts. The packaging logic lives in
+`Scripts/package-release.sh` and the smoke validation lives in
+`Scripts/verify-release-artifact.sh`, so the exact artifact shape is runnable
+locally and by CI without duplicating shell steps in YAML.
 
 This workflow does **not** create a GitHub Release, fill the stable Homebrew
 formula SHA, sign binaries, notarize binaries, or staple notarization tickets.
