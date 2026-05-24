@@ -52,9 +52,17 @@ public struct DownloadEngine: Sendable {
     private static let minChunk: UInt64 = 1 << 20
 
     private let session: URLSession
+    private let checkpointStore: CheckpointStore?
+    private let control: DownloadControl?
 
-    public init(session: URLSession) {
+    public init(
+        session: URLSession,
+        checkpointStore: CheckpointStore? = nil,
+        control: DownloadControl? = nil
+    ) {
         self.session = session
+        self.checkpointStore = checkpointStore
+        self.control = control
     }
 
     /// Downloads the job with `jobID`, driving it to a terminal state. Never
@@ -63,9 +71,22 @@ public struct DownloadEngine: Sendable {
         guard store.job(id: jobID) != nil else { return }
         // Claim the job atomically; only proceed if this call won the claim.
         guard (try? store.start(id: jobID)) == true else { return }
+        control?.register(jobID: jobID)
+        defer { control?.unregister(jobID: jobID) }
         guard let job = store.job(id: jobID) else { return }
         do {
-            try await download(job: job, store: store, trace: EngineDiagnostics())
+            if let checkpointStore,
+               let checkpoint = checkpointStore.load(jobID: jobID).checkpoint
+            {
+                try await resume(
+                    job: job, checkpoint: checkpoint, checkpointStore: checkpointStore,
+                    store: store, trace: EngineDiagnostics())
+            } else {
+                try await download(job: job, store: store, trace: EngineDiagnostics())
+            }
+            try? checkpointStore?.delete(jobID: jobID)
+        } catch let stop as DownloadControlStop {
+            handle(stop: stop, job: job)
         } catch let error as GohError {
             _ = try? store.fail(
                 id: jobID, error: error, retryEligible: Self.retryEligible(for: error))
@@ -73,6 +94,17 @@ public struct DownloadEngine: Sendable {
             let mapped = Self.mapError(error)
             _ = try? store.fail(
                 id: jobID, error: mapped, retryEligible: Self.retryEligible(for: mapped))
+        }
+    }
+
+    private func handle(stop: DownloadControlStop, job: JobSummary) {
+        switch stop {
+        case .pause:
+            return
+        case .remove(let keepPartialFile):
+            guard !keepPartialFile else { return }
+            try? checkpointStore?.delete(jobID: job.id)
+            try? FileManager.default.removeItem(atPath: job.destination)
         }
     }
 
@@ -107,17 +139,14 @@ public struct DownloadEngine: Sendable {
             }
             let total = contentRange.total
             try await fetchRanged(
-                job: job, store: store, url: url, total: total,
+                job: job, store: store, url: url, total: total, initialResponse: response,
                 firstRangeStream: stream, trace: trace)
         case 200..<300:
             try await fetchSingle(
                 job: job, store: store,
                 initialResponse: response, initialStream: stream)
         default:
-            throw GohError(
-                code: .httpStatus,
-                message: HTTPURLResponse.localizedString(forStatusCode: response.statusCode),
-                httpStatusCode: response.statusCode)
+            throw Self.httpFailure(statusCode: response.statusCode)
         }
     }
 
@@ -167,6 +196,141 @@ public struct DownloadEngine: Sendable {
         }
     }
 
+    private static func strongETag(_ response: HTTPURLResponse) -> String? {
+        guard let etag = response.value(forHTTPHeaderField: "ETag")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !etag.isEmpty,
+              !etag.lowercased().hasPrefix("w/")
+        else { return nil }
+        return etag
+    }
+
+    private static func lastModified(_ response: HTTPURLResponse) -> String? {
+        guard let lastModified = response.value(forHTTPHeaderField: "Last-Modified")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !lastModified.isEmpty
+        else { return nil }
+        return lastModified
+    }
+
+    // MARK: Resume
+
+    private func resume(
+        job: JobSummary, checkpoint: DownloadCheckpoint, checkpointStore: CheckpointStore,
+        store: JobStore, trace: EngineDiagnostics
+    ) async throws {
+        guard checkpoint.startupResumeProgress(for: job) != nil,
+              let total = checkpoint.totalBytes,
+              let validator = checkpoint.ifRangeValidator,
+              let missingRanges = checkpoint.missingByteRanges,
+              var completed = checkpoint.durableBytesCompleted,
+              let url = URL(string: job.url)
+        else {
+            throw GohError(
+                code: .connectionFailed,
+                message: "resume metadata was unavailable or unsafe")
+        }
+
+        _ = try store.setActualConnectionCount(id: job.id, 1)
+        let file = try DownloadFile(path: job.destination, expectedSize: total, truncate: false)
+        let recorder = DownloadCheckpointRecorder(store: checkpointStore, checkpoint: checkpoint)
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        do {
+            for range in missingRanges {
+                completed += try await downloadResumeRange(
+                    range: range, url: url, file: file, recorder: recorder,
+                    validator: validator, job: job, store: store, total: total,
+                    completedBeforeRange: completed, clock: clock, started: started)
+            }
+
+            try await verifyHash(file: file, total: total)
+            try file.finish()
+        } catch {
+            try? file.finish()
+            throw error
+        }
+        _ = try store.recordProgress(
+            id: job.id,
+            Self.progress(completed: total, total: total, elapsed: clock.now - started))
+        _ = try store.complete(id: job.id)
+        trace.summary()
+    }
+
+    private func downloadResumeRange(
+        range: ByteRange, url: URL, file: DownloadFile,
+        recorder: DownloadCheckpointRecorder, validator: String,
+        job: JobSummary, store: JobStore, total: UInt64,
+        completedBeforeRange: UInt64,
+        clock: ContinuousClock, started: ContinuousClock.Instant
+    ) async throws -> UInt64 {
+        var request = URLRequest(url: url)
+        let last = range.start + range.length - 1
+        request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
+        request.setValue(validator, forHTTPHeaderField: "If-Range")
+        let (http, stream) = try await session.streamingResponse(for: request)
+        guard http.statusCode == 206 else {
+            if (200..<300).contains(http.statusCode) {
+                throw GohError(
+                    code: .connectionFailed,
+                    message: "the server returned a full representation instead of resuming")
+            }
+            throw Self.httpFailure(statusCode: http.statusCode)
+        }
+        try Self.validateContentRange(http, matches: range, total: total)
+
+        var buffer = Data()
+        buffer.reserveCapacity(Self.bufferSize)
+        var written: UInt64 = 0
+
+        func flush() throws {
+            guard !buffer.isEmpty else { return }
+            let pieceStart = range.start + written
+            let pieceLength = UInt64(buffer.count)
+            try file.write(buffer, at: pieceStart)
+            try file.sync()
+            try recorder.recordCompletedPiece(start: pieceStart, length: pieceLength)
+            written += pieceLength
+            buffer.removeAll(keepingCapacity: true)
+            _ = try? store.recordProgress(
+                id: job.id,
+                Self.progress(
+                    completed: completedBeforeRange + written,
+                    total: total,
+                    elapsed: clock.now - started))
+            try control?.stopIfRequested(jobID: job.id)
+        }
+
+        for try await chunk in stream {
+            let alreadyHave = written + UInt64(buffer.count)
+            let remaining: UInt64 =
+                alreadyHave >= range.length ? 0 : range.length - alreadyHave
+            let toAppend: Data =
+                UInt64(chunk.count) <= remaining ? chunk : chunk.prefix(Int(remaining))
+            buffer.append(toAppend)
+            if buffer.count >= Self.bufferSize { try flush() }
+            if written + UInt64(buffer.count) >= range.length { break }
+        }
+        try flush()
+        guard written == range.length else {
+            throw GohError(
+                code: .connectionFailed,
+                message: "resume range ended after \(written) of \(range.length) expected bytes")
+        }
+        return written
+    }
+
+    private func verifyHash(file: DownloadFile, total: UInt64) async throws {
+        let assembler = ChunkAssembler(file: file, ranges: [ByteRange(start: 0, length: total)])
+        async let assembled = assembler.hashToCompletion()
+        assembler.advance(range: 0, writtenBytes: total)
+        assembler.finish()
+        if case .failed(let error) = await assembled {
+            throw error
+        }
+    }
+
     // MARK: Single connection
 
     private func fetchSingle(
@@ -175,11 +339,7 @@ public struct DownloadEngine: Sendable {
         initialStream: AsyncThrowingStream<Data, Error>
     ) async throws {
         guard (200..<300).contains(initialResponse.statusCode) else {
-            throw GohError(
-                code: .httpStatus,
-                message: HTTPURLResponse.localizedString(
-                    forStatusCode: initialResponse.statusCode),
-                httpStatusCode: initialResponse.statusCode)
+            throw Self.httpFailure(statusCode: initialResponse.statusCode)
         }
 
         let total: UInt64? = initialResponse.expectedContentLength > 0
@@ -201,6 +361,7 @@ public struct DownloadEngine: Sendable {
             completed += UInt64(buffer.count)
             buffer.removeAll(keepingCapacity: true)
             assembler.advance(range: 0, writtenBytes: completed)
+            try control?.stopIfRequested(jobID: job.id)
         }
 
         do {
@@ -238,6 +399,7 @@ public struct DownloadEngine: Sendable {
 
     private func fetchRanged(
         job: JobSummary, store: JobStore, url: URL, total: UInt64,
+        initialResponse: HTTPURLResponse,
         firstRangeStream: AsyncThrowingStream<Data, Error>,
         trace: EngineDiagnostics
     ) async throws {
@@ -248,6 +410,8 @@ public struct DownloadEngine: Sendable {
         let file = try DownloadFile(path: job.destination, expectedSize: total)
         let assembler = ChunkAssembler(file: file, ranges: ranges)
         async let assembled = assembler.hashToCompletion()
+        let checkpointRecorder = makeCheckpointRecorder(
+            job: job, total: total, response: initialResponse)
 
         let progress = RangeProgress(rangeCount: ranges.count)
         let clock = ContinuousClock()
@@ -261,6 +425,7 @@ public struct DownloadEngine: Sendable {
                     try await consumeRange(
                         index: 0, range: ranges[0], file: file,
                         assembler: assembler, progress: progress,
+                        checkpointRecorder: checkpointRecorder,
                         job: job, store: store, total: total,
                         clock: clock, started: started, trace: trace,
                         stream: firstRangeStream)
@@ -270,6 +435,7 @@ public struct DownloadEngine: Sendable {
                         try await downloadRange(
                             index: index, range: range, url: url, file: file,
                             assembler: assembler, progress: progress,
+                            checkpointRecorder: checkpointRecorder,
                             job: job, store: store, total: total,
                             clock: clock, started: started, trace: trace)
                     }
@@ -304,6 +470,7 @@ public struct DownloadEngine: Sendable {
     private func downloadRange(
         index: Int, range: ByteRange, url: URL, file: DownloadFile,
         assembler: ChunkAssembler, progress: RangeProgress,
+        checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics
@@ -317,15 +484,13 @@ public struct DownloadEngine: Sendable {
                 trace.recordProtocol(index, networkProtocolName: metrics.networkProtocolName)
             })
         guard http.statusCode == 206 else {
-            throw GohError(
-                code: .httpStatus,
-                message: "the server did not honour the range request",
-                httpStatusCode: http.statusCode)
+            throw Self.httpFailure(statusCode: http.statusCode)
         }
         try Self.validateContentRange(http, matches: range, total: total)
         try await consumeRange(
             index: index, range: range, file: file,
             assembler: assembler, progress: progress,
+            checkpointRecorder: checkpointRecorder,
             job: job, store: store, total: total,
             clock: clock, started: started, trace: trace,
             stream: stream)
@@ -339,6 +504,7 @@ public struct DownloadEngine: Sendable {
     private func consumeRange(
         index: Int, range: ByteRange, file: DownloadFile,
         assembler: ChunkAssembler, progress: RangeProgress,
+        checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics,
@@ -351,10 +517,17 @@ public struct DownloadEngine: Sendable {
 
         func flush() throws {
             guard !buffer.isEmpty else { return }
+            let pieceStart = range.start + written
+            let pieceLength = UInt64(buffer.count)
             try trace.timed(index, .write) {
-                try file.write(buffer, at: range.start + written)
+                try file.write(buffer, at: pieceStart)
+                if checkpointRecorder != nil { try file.sync() }
             }
-            written += UInt64(buffer.count)
+            if let checkpointRecorder {
+                try checkpointRecorder.recordCompletedPiece(
+                    start: pieceStart, length: pieceLength)
+            }
+            written += pieceLength
             buffer.removeAll(keepingCapacity: true)
             trace.timed(index, .report) {
                 assembler.advance(range: index, writtenBytes: written)
@@ -364,6 +537,7 @@ public struct DownloadEngine: Sendable {
                     Self.progress(completed: overall, total: total,
                                   elapsed: clock.now - started))
             }
+            try control?.stopIfRequested(jobID: job.id)
         }
 
         var firstByteSeen = false
@@ -395,6 +569,21 @@ public struct DownloadEngine: Sendable {
         trace.rangeFinished(index, bytes: written)
     }
 
+    private func makeCheckpointRecorder(
+        job: JobSummary, total: UInt64, response: HTTPURLResponse
+    ) -> DownloadCheckpointRecorder? {
+        guard let checkpointStore else { return nil }
+        let checkpoint = DownloadCheckpoint(
+            jobID: job.id,
+            url: job.url,
+            destination: job.destination,
+            partialFileSize: 0,
+            totalBytes: total,
+            strongETag: Self.strongETag(response),
+            lastModified: Self.lastModified(response))
+        return DownloadCheckpointRecorder(store: checkpointStore, checkpoint: checkpoint)
+    }
+
     private static func progress(
         completed: UInt64, total: UInt64?, elapsed: Duration
     ) -> JobProgress {
@@ -404,8 +593,8 @@ public struct DownloadEngine: Sendable {
         return JobProgress(bytesCompleted: completed, bytesTotal: total, bytesPerSecond: rate)
     }
 
-    /// Maps a transport or disk error to a ``GohError``. The retry policy itself
-    /// is slice 3c; this mapping is the minimum needed to record a failure.
+    /// Maps a transport or disk error to a ``GohError``; retry eligibility is
+    /// decided separately by ``retryEligible(for:)``.
     static func mapError(_ error: any Error) -> GohError {
         if let gohError = error as? GohError { return gohError }
         if let urlError = error as? URLError {
@@ -437,6 +626,17 @@ public struct DownloadEngine: Sendable {
         return GohError(code: .connectionFailed, message: "\(error)")
     }
 
+    private static func httpFailure(statusCode: Int) -> GohError {
+        let message = HTTPURLResponse.localizedString(forStatusCode: statusCode)
+        switch statusCode {
+        case 401, 403:
+            return GohError(code: .unauthorized, message: message)
+        default:
+            return GohError(
+                code: .httpStatus, message: message, httpStatusCode: statusCode)
+        }
+    }
+
     /// Whether a fresh attempt could plausibly succeed — advisory (`DESIGN.md`
     /// §2.2 Retry boundary).
     static func retryEligible(for error: GohError) -> Bool {
@@ -444,8 +644,17 @@ public struct DownloadEngine: Sendable {
         case .connectionFailed, .timedOut, .dnsResolutionFailed, .diskFull, .queueFull:
             return true
         case .httpStatus:
-            return (error.httpStatusCode ?? 0) >= 500
-        case .tlsFailure, .unsupportedURL, .checksumMismatch, .destinationUnwritable,
+            switch error.httpStatusCode {
+            case 408, 425, 429:
+                return true
+            case let status?:
+                return status >= 500
+            case nil:
+                return false
+            }
+        case .checksumMismatch:
+            return true
+        case .tlsFailure, .unsupportedURL, .destinationUnwritable,
              .destinationPermissionDenied, .unauthorized, .jobNotFound,
              .protocolVersionMismatch, .cancelled, .invalidArgument:
             return false

@@ -1,6 +1,23 @@
 import Foundation
 import Synchronization
 
+/// Summary of the daemon's startup repair pass over jobs that were `active`
+/// when the previous daemon process exited.
+public struct StartupReconciliationResult: Sendable, Equatable {
+    public var requeuedJobIDs: [UInt64]
+    public var failedJobIDs: [UInt64]
+
+    public init(requeuedJobIDs: [UInt64] = [], failedJobIDs: [UInt64] = []) {
+        self.requeuedJobIDs = requeuedJobIDs
+        self.failedJobIDs = failedJobIDs
+    }
+}
+
+private enum StartupReconciliationDecision: Sendable {
+    case requeue(progress: JobProgress, lastProgressAt: Date)
+    case fail(message: String)
+}
+
 /// The daemon's in-memory store of download jobs (`DESIGN.md` §2).
 ///
 /// Jobs are held behind a `Mutex` so the synchronous XPC dispatch path can reach
@@ -32,7 +49,12 @@ public final class JobStore: Sendable {
     /// Creates a new job in `queued`, assigns it the next monotonic id, and
     /// returns its summary.
     public func create(
-        url: String, destination: String, requestedConnectionCount: UInt8
+        url: String,
+        destination: String,
+        requestedConnectionCount: UInt8,
+        progress: JobProgress = JobProgress(
+            bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+        lastProgressAt: Date? = nil
     ) -> JobSummary {
         withMutation { state in
             let id = state.nextID
@@ -42,9 +64,9 @@ public final class JobStore: Sendable {
                 url: url,
                 destination: destination,
                 state: .queued,
-                progress: JobProgress(bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+                progress: progress,
                 createdAt: Date(),
-                lastProgressAt: nil,
+                lastProgressAt: lastProgressAt,
                 requestedConnectionCount: requestedConnectionCount,
                 actualConnectionCount: 0)
             state.jobs.append(summary)
@@ -62,17 +84,23 @@ public final class JobStore: Sendable {
         state.withLock { $0.jobs.first { $0.id == id } }
     }
 
-    /// Pauses a `queued` job with a `user` pause reason.
-    ///
-    /// This slice pauses only a `queued` job. `pause` of an `active` job is a
-    /// no-op — 3a cannot interrupt a live transfer (that is slice 3c), and
-    /// reporting `paused` while the engine still moves bytes would lie to
-    /// `goh ls`. `pause` of `paused` / `completed` / `failed` is the §3.3 no-op.
+    /// The job with `id`, throwing `jobNotFound` when none exists.
+    public func requireJob(id: UInt64) throws -> JobSummary {
+        guard let job = job(id: id) else {
+            throw GohError(code: .jobNotFound, message: "no job with id \(id)")
+        }
+        return job
+    }
+
+    /// Pauses a `queued` job immediately, or an `active` job after the engine
+    /// has acknowledged its checkpoint boundary through ``DownloadControl``.
+    /// `pause` of `paused` / `completed` / `failed` is the §3.3 no-op.
     public func pause(id: UInt64) throws -> JobSummary {
         try mutateJob(id: id) { job in
-            guard job.state == .queued else { return }
+            guard JobLifecycle.isLegal(from: job.state, to: .paused) else { return }
             job.state = .paused
             job.pauseReason = .user
+            job.actualConnectionCount = 0
         }
     }
 
@@ -145,8 +173,8 @@ public final class JobStore: Sendable {
     }
 
     /// Marks an `active` job `failed`, recording the error. `retryEligible` is
-    /// the daemon's judgement that a fresh attempt could succeed; 3a does not
-    /// retry, so `retryCount` is 0 (the retry policy is slice 3c).
+    /// the daemon's judgement that a fresh attempt could succeed. There is no
+    /// in-place retry operation, so `retryCount` is 0.
     public func fail(
         id: UInt64, error: GohError, retryEligible: Bool
     ) throws -> JobSummary {
@@ -158,6 +186,70 @@ public final class JobStore: Sendable {
             job.retryEligible = retryEligible
             job.retryCount = 0
             job.actualConnectionCount = 0
+        }
+    }
+
+    /// Repairs jobs that were persisted as `active` before a daemon restart.
+    ///
+    /// This is the one intentional `active → queued` path. It is not a normal
+    /// lifecycle transition: after a restart no engine task owns those jobs, so
+    /// the store either proves a checkpoint is safe enough to schedule or marks
+    /// the job failed with a retryable recovery error.
+    public func reconcileActiveJobsOnStartup(
+        checkpoints: CheckpointStore
+    ) -> StartupReconciliationResult {
+        let activeJobs = state.withLock { state in
+            state.jobs.filter { $0.state == .active }
+        }
+        guard !activeJobs.isEmpty else { return StartupReconciliationResult() }
+
+        var decisions: [UInt64: StartupReconciliationDecision] = [:]
+        for job in activeJobs {
+            let loaded = checkpoints.load(jobID: job.id)
+            if let checkpoint = loaded.checkpoint,
+               let progress = checkpoint.startupResumeProgress(for: job)
+            {
+                decisions[job.id] = .requeue(
+                    progress: progress, lastProgressAt: checkpoint.updatedAt)
+            } else {
+                decisions[job.id] = .fail(
+                    message: Self.unsafeResumeMessage(sidecar: loaded.corruptionSidecar))
+            }
+        }
+
+        return withMutation { state in
+            var result = StartupReconciliationResult()
+            for index in state.jobs.indices where state.jobs[index].state == .active {
+                let jobID = state.jobs[index].id
+                guard let decision = decisions[jobID] else { continue }
+                switch decision {
+                case .requeue(let progress, let lastProgressAt):
+                    state.jobs[index].state = .queued
+                    state.jobs[index].progress = progress
+                    state.jobs[index].lastProgressAt = lastProgressAt
+                    state.jobs[index].actualConnectionCount = 0
+                    state.jobs[index].pauseReason = nil
+                    state.jobs[index].completedAt = nil
+                    state.jobs[index].error = nil
+                    state.jobs[index].retryEligible = nil
+                    state.jobs[index].failedAt = nil
+                    state.jobs[index].retryCount = nil
+                    result.requeuedJobIDs.append(jobID)
+                case .fail(let message):
+                    state.jobs[index].state = .failed
+                    state.jobs[index].progress.bytesPerSecond = 0
+                    state.jobs[index].actualConnectionCount = 0
+                    state.jobs[index].pauseReason = nil
+                    state.jobs[index].completedAt = nil
+                    state.jobs[index].error = GohError(
+                        code: .connectionFailed, message: message)
+                    state.jobs[index].failedAt = Date()
+                    state.jobs[index].retryEligible = true
+                    state.jobs[index].retryCount = 0
+                    result.failedJobIDs.append(jobID)
+                }
+            }
+            return result
         }
     }
 
@@ -198,5 +290,14 @@ public final class JobStore: Sendable {
             change(&state.jobs[index])
             return state.jobs[index]
         }
+    }
+
+    private static func unsafeResumeMessage(sidecar: URL?) -> String {
+        var message = "resume metadata was unavailable or unsafe after daemon restart"
+        if let sidecar {
+            message += "; damaged checkpoint was kept at \(sidecar.path)"
+        }
+        message += "; retry to start a fresh download"
+        return message
     }
 }

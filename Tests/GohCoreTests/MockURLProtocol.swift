@@ -19,6 +19,16 @@ final class MockURLProtocol: URLProtocol {
         var truncateRangeStartingAt: Int?
         /// A range request beginning at this offset returns this Content-Range header.
         var contentRangeOverride: [Int: String] = [:]
+        /// Extra response headers, such as ETag or Last-Modified.
+        var headers: [String: String] = [:]
+        /// If set, ranged requests must send this If-Range value or the stub
+        /// returns a full `200` representation, matching HTTP's resume contract.
+        var requiredIfRange: String?
+        /// Test-only body pacing: when set, the response body is delivered in
+        /// chunks with a delay between chunks so command tests can interrupt
+        /// in-flight downloads deterministically.
+        var bodyChunkSize: Int?
+        var bodyChunkDelayMicroseconds: useconds_t = 0
     }
 
     private static let stubs = Mutex<[String: Stub]>([:])
@@ -28,14 +38,22 @@ final class MockURLProtocol: URLProtocol {
         _ url: String, status: Int = 200, body: Data,
         acceptsRanges: Bool = true, failRangeStartingAt: Int? = nil,
         truncateRangeStartingAt: Int? = nil,
-        contentRangeOverride: [Int: String] = [:]
+        contentRangeOverride: [Int: String] = [:],
+        headers: [String: String] = [:],
+        requiredIfRange: String? = nil,
+        bodyChunkSize: Int? = nil,
+        bodyChunkDelayMicroseconds: useconds_t = 0
     ) {
         stubs.withLock {
             $0[url] = Stub(
                 statusCode: status, body: body, failure: nil,
                 acceptsRanges: acceptsRanges, failRangeStartingAt: failRangeStartingAt,
                 truncateRangeStartingAt: truncateRangeStartingAt,
-                contentRangeOverride: contentRangeOverride)
+                contentRangeOverride: contentRangeOverride,
+                headers: headers,
+                requiredIfRange: requiredIfRange,
+                bodyChunkSize: bodyChunkSize,
+                bodyChunkDelayMicroseconds: bodyChunkDelayMicroseconds)
         }
     }
 
@@ -71,6 +89,13 @@ final class MockURLProtocol: URLProtocol {
                 client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
                 return
             }
+            if let requiredIfRange = stub.requiredIfRange,
+               request.value(forHTTPHeaderField: "If-Range") != requiredIfRange
+            {
+                deliver(
+                    url: url, status: 200, headers: headers(for: stub), body: stub.body)
+                return
+            }
             guard start >= 0, start < stub.body.count, end >= start else {
                 deliver(url: url, status: 416, headers: [
                     "Content-Range": "bytes */\(stub.body.count)",
@@ -81,18 +106,23 @@ final class MockURLProtocol: URLProtocol {
             let actualUpper = stub.truncateRangeStartingAt == start
                 ? min(upper, start + max(0, (upper - start) / 2)) : upper
             let slice = Data(stub.body[start...actualUpper])
-            deliver(url: url, status: 206, headers: [
-                "Content-Length": "\(slice.count)",
-                "Content-Range": stub.contentRangeOverride[start]
-                    ?? "bytes \(start)-\(upper)/\(stub.body.count)",
-            ], body: slice)
+            var headers = headers(for: stub)
+            headers["Content-Length"] = "\(slice.count)"
+            headers["Content-Range"] = stub.contentRangeOverride[start]
+                ?? "bytes \(start)-\(upper)/\(stub.body.count)"
+            deliver(url: url, status: 206, headers: headers, body: slice)
             return
         }
         deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: stub.body)
     }
 
     private func headers(for stub: Stub) -> [String: String] {
-        var headers = ["Content-Length": "\(stub.body.count)"]
+        var headers = stub.headers
+        headers["Content-Length"] = "\(stub.body.count)"
+        if let chunkSize = stub.bodyChunkSize {
+            headers["X-Goh-Test-Chunk-Size"] = "\(chunkSize)"
+            headers["X-Goh-Test-Chunk-Delay-Us"] = "\(stub.bodyChunkDelayMicroseconds)"
+        }
         if stub.acceptsRanges { headers["Accept-Ranges"] = "bytes" }
         return headers
     }
@@ -106,9 +136,30 @@ final class MockURLProtocol: URLProtocol {
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if let body, !body.isEmpty {
-            client?.urlProtocol(self, didLoad: body)
+            if let chunkSize = stubChunkSize(headers: headers), chunkSize > 0 {
+                var offset = body.startIndex
+                while offset < body.endIndex {
+                    let end = body.index(offset, offsetBy: chunkSize, limitedBy: body.endIndex)
+                        ?? body.endIndex
+                    client?.urlProtocol(self, didLoad: body[offset..<end])
+                    offset = end
+                    if let delay = stubDelay(headers: headers), delay > 0 {
+                        usleep(delay)
+                    }
+                }
+            } else {
+                client?.urlProtocol(self, didLoad: body)
+            }
         }
         client?.urlProtocolDidFinishLoading(self)
+    }
+
+    private func stubChunkSize(headers: [String: String]) -> Int? {
+        headers["X-Goh-Test-Chunk-Size"].flatMap(Int.init)
+    }
+
+    private func stubDelay(headers: [String: String]) -> useconds_t? {
+        headers["X-Goh-Test-Chunk-Delay-Us"].flatMap(useconds_t.init)
     }
 
     /// Parses `bytes=START-END` into integer offsets. The end may be omitted

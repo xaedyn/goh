@@ -26,11 +26,15 @@ public final class DownloadFile: Sendable {
 
     private let descriptor: Int32
     private let bytesSinceSync = Mutex<UInt64>(0)
+    private let closed = Mutex(false)
 
-    /// Opens — creating and truncating — the file at `path`. When `expectedSize`
-    /// is known, the file's extents are preallocated for contiguity.
-    public init(path: String, expectedSize: UInt64?) throws {
-        descriptor = open(path, O_RDWR | O_CREAT | O_TRUNC, 0o644)
+    /// Opens the file at `path`. Fresh downloads create and truncate; resumed
+    /// downloads open the existing partial without truncating it. When
+    /// `expectedSize` is known, the file's extents are preallocated for
+    /// contiguity.
+    public init(path: String, expectedSize: UInt64?, truncate: Bool = true) throws {
+        let flags = O_RDWR | O_CREAT | (truncate ? O_TRUNC : 0)
+        descriptor = open(path, flags, 0o644)
         guard descriptor >= 0 else {
             throw DownloadFileError.openFailed(path: path, errno: errno)
         }
@@ -61,7 +65,7 @@ public final class DownloadFile: Sendable {
             }
             return false
         }
-        if shouldSync { _ = fsync(descriptor) }
+        if shouldSync { try sync() }
     }
 
     /// Reads up to `count` bytes from `offset` — fewer only at end of file.
@@ -83,12 +87,24 @@ public final class DownloadFile: Sendable {
         return Data(buffer.prefix(got))
     }
 
-    /// fsyncs and closes the file.
-    public func finish() throws {
+    /// Makes all writes durable and resets the accumulated checkpoint counter.
+    public func sync() throws {
         guard fsync(descriptor) == 0 else {
             throw DownloadFileError.syncFailed(errno: errno)
         }
-        close(descriptor)
+        bytesSinceSync.withLock { $0 = 0 }
+    }
+
+    /// fsyncs and closes the file.
+    public func finish() throws {
+        let shouldClose = closed.withLock { closed in
+            guard !closed else { return false }
+            closed = true
+            return true
+        }
+        guard shouldClose else { return }
+        defer { close(descriptor) }
+        try sync()
     }
 
     /// Best-effort extent preallocation; failure is ignored — it is an

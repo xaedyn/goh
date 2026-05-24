@@ -7,6 +7,13 @@ import GohCore
 @Suite("Command dispatcher")
 struct CommandDispatcherTests {
 
+    private func temporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "goh-dispatcher-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
     @Test("add creates a queued job and replies with its summary")
     func addCreatesJob() {
         let dispatcher = CommandDispatcher(store: JobStore())
@@ -121,6 +128,86 @@ struct CommandDispatcherTests {
             onJobQueued: { id in signalled.withLock { $0.append(id) } })
         _ = dispatcher.reply(to: .add(request: AddRequest(url: "u")))
         #expect(signalled.withLock { $0 } == [1])
+    }
+
+    @Test("add adopts a kept checkpoint with the same URL and destination")
+    func addAdoptsKeptCheckpoint() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://example.com/large.iso"
+        let destination = directory.appending(path: "large.iso")
+        let partialSize: UInt64 = 2 << 20
+        try Data(count: Int(partialSize)).write(to: destination)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        let checkpointDate = Date(timeIntervalSince1970: 1_800_000_100)
+        try checkpointStore.save(DownloadCheckpoint(
+            jobID: 77,
+            url: url,
+            destination: destination.path,
+            partialFileSize: partialSize,
+            totalBytes: 4 << 20,
+            strongETag: "\"adopt-me\"",
+            completedPieces: [CheckpointPiece(start: 0, length: partialSize)],
+            updatedAt: checkpointDate))
+
+        let signalled = Mutex<[UInt64]>([])
+        let dispatcher = CommandDispatcher(
+            store: JobStore(),
+            checkpointStore: checkpointStore,
+            onJobQueued: { id in signalled.withLock { $0.append(id) } })
+
+        guard case .job(let summary) = dispatcher.reply(to: .add(request: AddRequest(
+            url: url, destination: destination.path)))
+        else {
+            Issue.record("expected .job")
+            return
+        }
+
+        #expect(summary.id == 1)
+        #expect(summary.state == .queued)
+        #expect(summary.progress.bytesCompleted == partialSize)
+        #expect(summary.progress.bytesTotal == 4 << 20)
+        #expect(summary.progress.bytesPerSecond == 0)
+        #expect(summary.lastProgressAt == checkpointDate)
+        #expect(signalled.withLock { $0 } == [1])
+        let adopted = try #require(checkpointStore.load(jobID: 1).checkpoint)
+        #expect(adopted.jobID == 1)
+        #expect(adopted.url == url)
+        #expect(adopted.destination == destination.path)
+        #expect(checkpointStore.load(jobID: 77).checkpoint == nil)
+    }
+
+    @Test("add ignores a kept checkpoint for a different URL")
+    func addIgnoresMismatchedKeptCheckpoint() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let destination = directory.appending(path: "large.iso")
+        let partialSize: UInt64 = 1 << 20
+        try Data(count: Int(partialSize)).write(to: destination)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        try checkpointStore.save(DownloadCheckpoint(
+            jobID: 77,
+            url: "https://example.com/other.iso",
+            destination: destination.path,
+            partialFileSize: partialSize,
+            totalBytes: 4 << 20,
+            strongETag: "\"do-not-adopt\"",
+            completedPieces: [CheckpointPiece(start: 0, length: partialSize)]))
+
+        let dispatcher = CommandDispatcher(
+            store: JobStore(), checkpointStore: checkpointStore)
+        guard case .job(let summary) = dispatcher.reply(to: .add(request: AddRequest(
+            url: "https://example.com/large.iso", destination: destination.path)))
+        else {
+            Issue.record("expected .job")
+            return
+        }
+
+        #expect(summary.progress.bytesCompleted == 0)
+        #expect(checkpointStore.load(jobID: 1).checkpoint == nil)
+        #expect(checkpointStore.load(jobID: 77).checkpoint != nil)
     }
 
     @Test("onJobQueued fires again when resume returns a job to queued")

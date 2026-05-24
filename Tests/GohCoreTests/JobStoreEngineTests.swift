@@ -78,14 +78,15 @@ struct JobStoreEngineTests {
         #expect(failed.retryCount == 0)
     }
 
-    @Test("pause of an active job is a no-op in this slice")
-    func pauseOfActiveJobIsNoOp() throws {
+    @Test("pause of an active job records a user pause after the engine stops")
+    func pauseOfActiveJobRecordsUserPause() throws {
         let store = JobStore()
         let job = queuedJob(store)
         _ = try store.start(id: job.id)
         let result = try store.pause(id: job.id)
-        #expect(result.state == .active)
-        #expect(result.pauseReason == nil)
+        #expect(result.state == .paused)
+        #expect(result.pauseReason == .user)
+        #expect(result.actualConnectionCount == 0)
     }
 
     @Test("pause still works on a queued job")
