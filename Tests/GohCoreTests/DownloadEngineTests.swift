@@ -178,6 +178,36 @@ struct DownloadEngineTests {
         #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
     }
 
+    @Test("download requests attach an imported cookie header from the provider")
+    func downloadRequestsAttachImportedCookies() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(2 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            requiredCookieHeader: "session=abc; pref=dark")
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 2)
+        let engine = DownloadEngine(
+            session: mockSession(),
+            cookieHeaderProvider: { jobID, requestURL in
+                guard jobID == job.id, requestURL.absoluteString == url else { return nil }
+                return "session=abc; pref=dark"
+            })
+
+        await engine.run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .completed)
+        #expect(final?.actualConnectionCount == 2)
+        #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
+    }
+
     @Test("a checkpointed job resumes from the first missing byte")
     func resumesFromCheckpoint() async throws {
         let directory = try temporaryDirectory()

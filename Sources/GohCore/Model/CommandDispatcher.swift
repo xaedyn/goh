@@ -17,6 +17,7 @@ public struct CommandDispatcher: Sendable {
     private let store: JobStore
     private let control: DownloadControl?
     private let checkpointStore: CheckpointStore?
+    private let importedCookies: ImportedCookieStore?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
     private let queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)?
 
@@ -30,12 +31,14 @@ public struct CommandDispatcher: Sendable {
         store: JobStore,
         control: DownloadControl? = nil,
         checkpointStore: CheckpointStore? = nil,
+        importedCookies: ImportedCookieStore? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil,
         queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil
     ) {
         self.store = store
         self.control = control
         self.checkpointStore = checkpointStore
+        self.importedCookies = importedCookies
         self.onJobQueued = onJobQueued
         self.queuedJobAdmission = queuedJobAdmission
     }
@@ -83,6 +86,11 @@ public struct CommandDispatcher: Sendable {
                     try? store.remove(id: job.id)
                     throw error
                 }
+                if request.useImportedCookies ?? true,
+                   let url = URL(string: request.url)
+                {
+                    importedCookies?.snapshotHeader(forJobID: job.id, url: url)
+                }
                 return .job(admitQueuedJob(job))
 
             case .ls:
@@ -109,6 +117,7 @@ public struct CommandDispatcher: Sendable {
                         reason: .remove(keepPartialFile: request.keepPartialFile ?? false))
                 }
                 try store.remove(id: request.jobID)
+                importedCookies?.removeHeader(forJobID: request.jobID)
                 return .removed(RmReply(removedJobID: request.jobID))
             }
         } catch let error as GohError {

@@ -63,12 +63,16 @@ do {
     }
 
     let downloadControl = DownloadControl()
+    let importedCookies = ImportedCookieStore()
     // The download engine runs a job whenever a command leaves it `queued` —
     // a fresh `add`, or a `resume`. Each run is its own detached task.
     let engine = DownloadEngine(
         session: URLSession(configuration: GohCore.downloadSessionConfiguration()),
         checkpointStore: checkpointStore,
-        control: downloadControl)
+        control: downloadControl,
+        cookieHeaderProvider: { jobID, _ in
+            importedCookies.header(forJobID: jobID)
+        })
     let scheduleJob: @Sendable (UInt64) -> Void = { jobID in
         Task { await engine.run(jobID: jobID, in: store) }
     }
@@ -77,6 +81,7 @@ do {
     let dispatcher = CommandDispatcher(
         store: store, control: downloadControl,
         checkpointStore: checkpointStore,
+        importedCookies: importedCookies,
         queuedJobAdmission: { networkCoordinator.jobBecameQueued($0) })
     let service = CommandService(dispatcher: dispatcher)
 

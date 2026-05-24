@@ -21,6 +21,9 @@ final class MockURLProtocol: URLProtocol {
         var contentRangeOverride: [Int: String] = [:]
         /// Extra response headers, such as ETag or Last-Modified.
         var headers: [String: String] = [:]
+        /// If set, non-HEAD requests must send this Cookie header or the stub
+        /// returns 401, so engine tests can verify credential attachment.
+        var requiredCookieHeader: String?
         /// If set, ranged requests must send this If-Range value or the stub
         /// returns a full `200` representation, matching HTTP's resume contract.
         var requiredIfRange: String?
@@ -40,6 +43,7 @@ final class MockURLProtocol: URLProtocol {
         truncateRangeStartingAt: Int? = nil,
         contentRangeOverride: [Int: String] = [:],
         headers: [String: String] = [:],
+        requiredCookieHeader: String? = nil,
         requiredIfRange: String? = nil,
         bodyChunkSize: Int? = nil,
         bodyChunkDelayMicroseconds: useconds_t = 0
@@ -50,7 +54,7 @@ final class MockURLProtocol: URLProtocol {
                 acceptsRanges: acceptsRanges, failRangeStartingAt: failRangeStartingAt,
                 truncateRangeStartingAt: truncateRangeStartingAt,
                 contentRangeOverride: contentRangeOverride,
-                headers: headers,
+                headers: headers, requiredCookieHeader: requiredCookieHeader,
                 requiredIfRange: requiredIfRange,
                 bodyChunkSize: bodyChunkSize,
                 bodyChunkDelayMicroseconds: bodyChunkDelayMicroseconds)
@@ -80,6 +84,12 @@ final class MockURLProtocol: URLProtocol {
         }
         if request.httpMethod == "HEAD" {
             deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: nil)
+            return
+        }
+        if let requiredCookieHeader = stub.requiredCookieHeader,
+           request.value(forHTTPHeaderField: "Cookie") != requiredCookieHeader
+        {
+            deliver(url: url, status: 401, headers: headers(for: stub), body: nil)
             return
         }
         if let header = request.value(forHTTPHeaderField: "Range"),

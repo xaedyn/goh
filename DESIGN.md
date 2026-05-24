@@ -1332,8 +1332,68 @@ download a few milliseconds earlier. This behavior uses the existing
 
 ## Auth
 
-_TBD — Safari `Cookies.binarycookies` import behind Full Disk Access, with a
-clear permission prompt and graceful handling of revocation._
+Slice 5 starts with a pure `GohCore` parser for Safari
+`Cookies.binarycookies`. The parser returns in-memory `SafariCookie` records
+(`domain`, `name`, `path`, `value`, flags, expiration, creation) and deliberately
+does **not** introduce a daemon-persisted cookie-store format or any new IPC
+command surface. That keeps the first auth commit reversible and lets the import
+flow decide the final user-visible contract separately.
+
+The parser follows the observed binarycookies shape documented by libyal's
+working specification and cross-checked against yt-dlp's maintained Safari
+parser: the file starts with `cook`, carries a big-endian page table, uses
+little-endian page and record fields, stores record-relative NUL-terminated
+string offsets, and encodes dates as Cocoa reference-date seconds. Sources:
+<https://github.com/libyal/dtformats/blob/main/documentation/Safari%20Cookies.asciidoc>
+and <https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/cookies.py>.
+
+Imported-cookie attachment is also an in-memory `GohCore` primitive:
+`SafariCookieJar` filters cookies for a request URL and serializes the `Cookie`
+header. It follows RFC 6265 for path matching, secure-cookie exclusion on
+non-HTTPS URLs, and header order (longer path first, then earlier creation
+time). Domain handling is intentionally conservative because
+`Cookies.binarycookies` exposes no separate host-only flag in the documented
+record fields: domains beginning with `.` match the exact host and subdomains;
+bare domains match only the exact host. This may under-send a cookie if Safari
+stores a domain cookie without a leading dot, but it avoids leaking a host-only
+cookie to sibling subdomains. Source: <https://www.rfc-editor.org/rfc/rfc6265>.
+
+The download engine accepts a daemon-owned cookie-header provider keyed by
+`jobID` and request URL. The provider is consulted for the initial speculative
+range request, every follow-up range request, and resume requests, so auth does
+not drift between engine paths. The engine does not own cookie storage and does
+not persist credential material; it only attaches a non-empty header when the
+daemon supplies one.
+
+`gohd` owns one process-local `ImportedCookieStore` and passes it to both the
+dispatcher and the engine. The dispatcher snapshots per-job headers at `add`
+time; the engine reads only those already-snapshotted headers while moving
+bytes. This keeps the daemon composition ready for the import command without
+giving the transport layer direct access to the parsed Safari jar.
+
+`CommandDispatcher` now bridges the already-frozen `add.useImportedCookies`
+field to that volatile store. When the field is absent or `true`, `add`
+snapshots the current matching `Cookie` header for the new job; when the field
+is `false`, it stores nothing. `rm` clears the per-job header. This keeps the
+wire default (`true`) meaningful without storing Safari cookies or derived
+headers on disk. Jobs restored after a daemon restart therefore need a fresh
+import before credentialed requests can be retried; that is intentional until a
+secure persistent credential-storage design exists.
+
+The Safari cookie-file locator is deliberately narrow: it checks the modern
+container path first
+(`~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies`)
+and the legacy path second (`~/Library/Cookies/Cookies.binarycookies`). The
+locator only finds a readable path; the interactive CLI still owns the Full Disk
+Access prompt and fd-open behavior.
+
+The still-open auth decisions are the user-visible `goh auth import safari`
+command shape, the Full Disk Access prompt wording, and the revocation behavior
+when the CLI can no longer open Safari's cookie file. The existing IPC lean from
+§5.2 remains: prefer the interactive `goh` binary opening the file and passing a
+native XPC file descriptor to `gohd`, so the daemon never needs Full Disk Access
+itself. Freezing the command/reply shape is a wire-contract decision and should
+be handled explicitly before the command lands.
 
 ## Hashing
 
