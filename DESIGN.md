@@ -1365,6 +1365,12 @@ not drift between engine paths. The engine does not own cookie storage and does
 not persist credential material; it only attaches a non-empty header when the
 daemon supplies one.
 
+`gohd` owns one process-local `ImportedCookieStore` and passes it to both the
+dispatcher and the engine. The dispatcher snapshots per-job headers at `add`
+time; the engine reads only those already-snapshotted headers while moving
+bytes. This keeps the daemon composition ready for the import command without
+giving the transport layer direct access to the parsed Safari jar.
+
 `CommandDispatcher` now bridges the already-frozen `add.useImportedCookies`
 field to that volatile store. When the field is absent or `true`, `add`
 snapshots the current matching `Cookie` header for the new job; when the field

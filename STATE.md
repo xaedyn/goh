@@ -23,6 +23,9 @@ session; update at the start of every PR and at the end of every session.
   volatile per-job header snapshot and clears it on `rm`. No persistent
   cookie-store format or new IPC command has been added. The fifth step adds the
   Safari cookie-file locator for the modern container path plus legacy fallback.
+  The sixth step composes one daemon-local `ImportedCookieStore` into both the
+  dispatcher and `DownloadEngine`, so the already-built hooks are live in
+  `gohd` without adding a new command.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -168,15 +171,17 @@ PR #18 was made ready, reviewed, fixed, and squash-merged into `main` at
 boundary are now concrete. Review hardening caught one local-filesystem edge:
 `FileManager.isReadableFile` can accept directory candidates, so the Safari
 cookie locator now proves the path exists as a non-directory file before
-returning it. Fresh local verification on 2026-05-24:
+returning it. The daemon now owns one `ImportedCookieStore` and passes it to
+the dispatcher plus engine cookie-header provider, so imported per-job headers
+will flow through the real daemon once the import command exists. Fresh local
+verification on 2026-05-24 after the daemon wiring:
 `swift build -Xswiftc -warnings-as-errors` and `swift test` (152 tests) pass.
-Pick up by settling the load-bearing import command/FDA contract before wiring
-XPC:
+Pick up by settling the load-bearing import command/FDA contract before adding
+the new IPC command:
 
 - do not add `goh auth import safari` until its request/reply wire shape has an
   explicit design note;
-- connect the future import command to `ImportedCookieStore.replaceCookies(_:)`
-  and the daemon's `DownloadEngine.cookieHeaderProvider`;
+- connect the future import command to `ImportedCookieStore.replaceCookies(_:)`;
 - use `SafariCookieFileLocator` in the CLI-side FDA open flow;
 - keep Full Disk Access prompting and revocation handling user-clear;
 - avoid introducing a public persistent cookie-store format without an explicit
