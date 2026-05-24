@@ -1332,8 +1332,28 @@ download a few milliseconds earlier. This behavior uses the existing
 
 ## Auth
 
-_TBD — Safari `Cookies.binarycookies` import behind Full Disk Access, with a
-clear permission prompt and graceful handling of revocation._
+Slice 5 starts with a pure `GohCore` parser for Safari
+`Cookies.binarycookies`. The parser returns in-memory `SafariCookie` records
+(`domain`, `name`, `path`, `value`, flags, expiration, creation) and deliberately
+does **not** introduce a daemon-persisted cookie-store format or any new IPC
+command surface. That keeps the first auth commit reversible and lets the import
+flow decide the final user-visible contract separately.
+
+The parser follows the observed binarycookies shape documented by libyal's
+working specification and cross-checked against yt-dlp's maintained Safari
+parser: the file starts with `cook`, carries a big-endian page table, uses
+little-endian page and record fields, stores record-relative NUL-terminated
+string offsets, and encodes dates as Cocoa reference-date seconds. Sources:
+<https://github.com/libyal/dtformats/blob/main/documentation/Safari%20Cookies.asciidoc>
+and <https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/cookies.py>.
+
+The still-open auth decisions are the user-visible `goh auth import safari`
+command shape, the Full Disk Access prompt wording, and the revocation behavior
+when the CLI can no longer open Safari's cookie file. The existing IPC lean from
+§5.2 remains: prefer the interactive `goh` binary opening the file and passing a
+native XPC file descriptor to `gohd`, so the daemon never needs Full Disk Access
+itself. Freezing the command/reply shape is a wire-contract decision and should
+be handled explicitly before the command lands.
 
 ## Hashing
 
