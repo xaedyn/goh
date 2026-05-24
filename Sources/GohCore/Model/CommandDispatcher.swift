@@ -119,6 +119,11 @@ public struct CommandDispatcher: Sendable {
                 try store.remove(id: request.jobID)
                 importedCookies?.removeHeader(forJobID: request.jobID)
                 return .removed(RmReply(removedJobID: request.jobID))
+
+            case .authImportSafari:
+                return .failure(GohError(
+                    code: .invalidArgument,
+                    message: "authImportSafari requires an auth.safariCookieFile XPC fd sibling"))
             }
         } catch let error as GohError {
             return .failure(error)

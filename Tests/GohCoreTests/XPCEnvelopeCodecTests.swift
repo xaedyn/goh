@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 import XPC
@@ -12,7 +13,7 @@ struct XPCEnvelopeCodecTests {
         let note: String
     }
 
-    /// Loads a committed `protocolVersion = 1` golden fixture by name.
+    /// Loads a committed golden fixture by name.
     private func fixtureData(_ name: String) throws -> Data {
         let url = try #require(
             Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"),
@@ -91,6 +92,49 @@ struct XPCEnvelopeCodecTests {
         let restored = try GohEnvelope<TestPayload>(xpcDictionary: dictionary)
         #expect(restored == original)
         #expect(XPCEnvelope.siblingKeys(in: dictionary) == ["fd0"])
+    }
+
+    @Test("an auth Safari cookie fd sibling duplicates an equivalent descriptor")
+    func authSafariCookieFileDescriptorSiblingDuplicates() throws {
+        var pipeFDs = [Int32](repeating: -1, count: 2)
+        #expect(pipe(&pipeFDs) == 0)
+        defer {
+            close(pipeFDs[0])
+            close(pipeFDs[1])
+        }
+
+        let dictionary = xpc_dictionary_create(nil, nil, 0)
+        XPCEnvelope.setFileDescriptor(
+            pipeFDs[0],
+            forKey: XPCEnvelope.authSafariCookieFileKey,
+            in: dictionary)
+
+        let duplicated = try XPCEnvelope.fileDescriptor(
+            dictionary,
+            XPCEnvelope.authSafariCookieFileKey)
+        defer { close(duplicated) }
+
+        let bytes = [UInt8]("ok".utf8)
+        #expect(write(pipeFDs[1], bytes, bytes.count) == bytes.count)
+
+        var readBuffer = [UInt8](repeating: 0, count: 2)
+        #expect(read(duplicated, &readBuffer, readBuffer.count) == readBuffer.count)
+        #expect(readBuffer == bytes)
+    }
+
+    @Test("fd sibling lookup rejects missing and wrong-typed entries")
+    func fileDescriptorSiblingRejectsMissingAndWrongType() throws {
+        let dictionary = xpc_dictionary_create(nil, nil, 0)
+
+        #expect(throws: XPCEnvelopeError.self) {
+            try XPCEnvelope.fileDescriptor(dictionary, XPCEnvelope.authSafariCookieFileKey)
+        }
+
+        xpc_dictionary_set_int64(dictionary, XPCEnvelope.authSafariCookieFileKey, 7)
+
+        #expect(throws: XPCEnvelopeError.self) {
+            try XPCEnvelope.fileDescriptor(dictionary, XPCEnvelope.authSafariCookieFileKey)
+        }
     }
 
     @Test("an unrecognised messageType is rejected, not crashed")

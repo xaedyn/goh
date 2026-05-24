@@ -11,7 +11,9 @@ import Foundation
 /// must never be renamed or retyped (see `DESIGN.md` §4.3).
 public struct GohEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
 
-    /// The wire-protocol version. `1` for the v0.1 contract.
+    /// The wire-protocol version. The daemon accepts only its current exact
+    /// version; older golden fixtures remain in the test suite as immutable
+    /// compatibility references.
     public let protocolVersion: UInt32
 
     /// Correlates a reply or notification to its originating request.

@@ -10,6 +10,8 @@ public enum CommandOutcome: Sendable, Equatable {
     case list(LsReply)
     /// `rm` — the removed job's id.
     case removed(RmReply)
+    /// `authImportSafari` — the number of imported cookies.
+    case authImported(AuthImportSafariReply)
     /// Any command — a structured failure.
     case failure(GohError)
 }

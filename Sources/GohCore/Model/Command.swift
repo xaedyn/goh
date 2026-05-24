@@ -7,6 +7,7 @@ public enum Command: Codable, Sendable, Equatable {
     case pause(jobID: UInt64)
     case resume(jobID: UInt64)
     case rm(request: RmRequest)
+    case authImportSafari(request: AuthImportSafariRequest)
 }
 
 /// The `add` command's request payload (`DESIGN.md` §3.1).
@@ -45,5 +46,22 @@ public struct RmRequest: Codable, Sendable, Equatable {
     public init(jobID: UInt64, keepPartialFile: Bool? = nil) {
         self.jobID = jobID
         self.keepPartialFile = keepPartialFile
+    }
+}
+
+/// The `authImportSafari` command's request payload (`DESIGN.md` §Auth).
+///
+/// The Safari cookie file itself is carried as a native XPC fd sibling named
+/// `auth.safariCookieFile`, never inside this JSON payload.
+public struct AuthImportSafariRequest: Codable, Sendable, Equatable {
+    public init() {}
+}
+
+/// The `authImportSafari` command's success reply payload (`DESIGN.md` §Auth).
+public struct AuthImportSafariReply: Codable, Sendable, Equatable {
+    public var importedCookieCount: UInt32
+
+    public init(importedCookieCount: UInt32) {
+        self.importedCookieCount = importedCookieCount
     }
 }

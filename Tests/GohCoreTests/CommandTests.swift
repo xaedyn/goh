@@ -32,6 +32,15 @@ struct CommandTests {
         #expect(try roundTrip(kept) == kept)
     }
 
+    @Test("AuthImportSafari request and reply round-trip")
+    func authImportSafariRequestAndReplyRoundTrip() throws {
+        let request = AuthImportSafariRequest()
+        #expect(try roundTrip(request) == request)
+
+        let reply = AuthImportSafariReply(importedCookieCount: 42)
+        #expect(try roundTrip(reply) == reply)
+    }
+
     @Test("every Command case round-trips")
     func commandRoundTrip() throws {
         let commands: [Command] = [
@@ -40,6 +49,7 @@ struct CommandTests {
             .pause(jobID: 3),
             .resume(jobID: 3),
             .rm(request: RmRequest(jobID: 3)),
+            .authImportSafari(request: AuthImportSafariRequest()),
         ]
         for command in commands {
             #expect(try roundTrip(command) == command)

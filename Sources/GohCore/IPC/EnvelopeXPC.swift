@@ -18,6 +18,8 @@ public enum XPCEnvelopeError: Error {
     case protocolVersionOutOfRange(UInt64)
     /// The `payload` bytes could not be decoded into the expected type.
     case payloadDecodingFailed(underlying: any Error)
+    /// A native XPC fd object could not be duplicated into this process.
+    case fileDescriptorDupFailed(String)
 }
 
 /// The XPC-dictionary wire mapping for ``GohEnvelope`` (see `DESIGN.md` §1.1,
@@ -27,6 +29,7 @@ public enum XPCEnvelope {
     static let requestIDKey = "requestID"
     static let messageTypeKey = "messageType"
     static let payloadKey = "payload"
+    public static let authSafariCookieFileKey = "auth.safariCookieFile"
 
     /// The four canonical envelope keys; the set is frozen by the wire contract.
     static let canonicalKeys: Set<String> = [
@@ -81,6 +84,24 @@ public enum XPCEnvelope {
             throw XPCEnvelopeError.wrongType(key)
         }
         return Data(bytes: bytes, count: length)
+    }
+
+    public static func setFileDescriptor(
+        _ fileDescriptor: Int32,
+        forKey key: String,
+        in dictionary: xpc_object_t
+    ) {
+        let fdObject = xpc_fd_create(fileDescriptor)
+        xpc_dictionary_set_value(dictionary, key, fdObject)
+    }
+
+    public static func fileDescriptor(_ dictionary: xpc_object_t, _ key: String) throws -> Int32 {
+        let fdObject = try requireValue(dictionary, key, XPC_TYPE_FD)
+        let duplicated = xpc_fd_dup(fdObject)
+        guard duplicated >= 0 else {
+            throw XPCEnvelopeError.fileDescriptorDupFailed(key)
+        }
+        return duplicated
     }
 }
 
