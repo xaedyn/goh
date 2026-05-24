@@ -53,8 +53,9 @@ across stable Xcode toolchains; the supported runtime OS is macOS 26.5+. See
 
 ## Status
 
-v0.1 is under active development. See [ROADMAP.md](ROADMAP.md) for scope and
-[DESIGN.md](DESIGN.md) for architecture decisions.
+v0.1 is under active development. See [ROADMAP.md](ROADMAP.md) for scope,
+[DESIGN.md](DESIGN.md) for architecture decisions, and [RELEASE.md](RELEASE.md)
+for release packaging status.
 
 ## License
 

@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `chore/release-artifact-verification`
+- **Branch:** `docs/release-signing-prereqs`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -14,13 +14,15 @@ session; update at the start of every PR and at the end of every session.
   CLI — `main` at `076bfaf`; PR #28 — top progress dashboard — `main` at
   `0adf0a7`; PR #29 — release-packaging surface refresh — `main` at
   `2e1c3c7`; PR #30 — Homebrew formula validation in CI — `main` at
-  `5ad60b6`; PR #31 — release artifact workflow — `main` at `e79c0bd`.
+  `5ad60b6`; PR #31 — release artifact workflow — `main` at `e79c0bd`;
+  PR #32 — release artifact verification — `main` at `b668aa0`.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
   release pipeline. The first branch shipped the formula/README truth refresh in
   PR #29. PR #30 added CI validation for the in-repo Homebrew formula. The
   PR #31 added an unsigned release-artifact workflow and a reusable local
-  packaging script. The current branch adds reusable artifact verification before
-  upload, still leaving signing/notarization credentials out of scope.
+  packaging script. PR #32 added reusable artifact verification before upload.
+  The current branch documents signing/notarization prerequisites and the
+  credential boundary for the remaining release work.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -117,8 +119,9 @@ remaining adaptive host scheduling work to v0.2.
 - **8** — shipped in PR #28: the TUI for `goh top`.
 - **9** — in progress: Homebrew formula, signing, notarization, the release pipeline.
   PR #29 refreshed the pre-release formula/docs surfaces. PR #30 added formula
-  validation to CI. PR #31 added unsigned release artifacts and checksums. The
-  current branch verifies the packaged artifact before upload.
+  validation to CI. PR #31 added unsigned release artifacts and checksums. PR #32
+  added packaged-artifact verification. The current branch documents signing and
+  notarization prerequisites.
 
 ## Recent 3b validation notes
 
@@ -203,40 +206,33 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `chore/release-artifact-verification`.
+Current branch: `docs/release-signing-prereqs`.
 
-PR #31 passed CI, the new `Package release artifacts` workflow, and CodeRabbit,
-then was squash-merged into `main` at `e79c0bd`. It added
-`Scripts/package-release.sh`, `.github/workflows/release-artifacts.yml`, and the
-DESIGN/STATE notes for unsigned release artifacts.
+PR #32 passed CI, the `Package release artifacts` workflow, and CodeRabbit, then
+was squash-merged into `main` at `b668aa0`. It added
+`Scripts/verify-release-artifact.sh` and runs it before artifact upload.
 
-This branch continues Slice 9 by adding reusable release artifact verification:
+This branch continues Slice 9 by documenting the remaining credential-backed
+release work:
 
-- `Scripts/verify-release-artifact.sh` verifies the checksum, extracts the
-  archive, checks for `LICENSE`, `README.md`, `Resources/dev.goh.daemon.plist`,
-  `bin/goh`, and `bin/gohd`, lints the plist, and runs packaged `goh --help`.
-- `.github/workflows/release-artifacts.yml` runs that verifier before uploading
-  workflow artifacts.
-- `DESIGN.md` now records the package verification boundary too.
+- `RELEASE.md` records what is already automated, the Developer ID certificate
+  and notarization secrets still needed, and the ZIP/PKG/DMG constraints Apple
+  documents for notarization and stapling.
+- `DESIGN.md` points to `RELEASE.md` for the credential prerequisites and
+  notarization packaging constraints.
 
-Next pickup: commit/push/open the release-artifact verification PR. Merge only
-if CI and comments are clean.
+Next pickup: commit/push/open the release-signing-prereqs PR. Merge only if CI
+and comments are clean.
 
 Local gates before PR:
 
-- `bash -n Scripts/package-release.sh`
-- `bash -n Scripts/verify-release-artifact.sh`
-- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release-artifacts.yml")'`
 - `git diff --check`
-- `bash Scripts/package-release.sh v0.1.0-verify .build/release-artifacts-verify`
-- `bash Scripts/verify-release-artifact.sh .build/release-artifacts-verify/goh-v0.1.0-verify-macos-arm64.tar.gz`
-  — checksum OK and packaged CLI smoke passed
 - `ruby -c Formula/goh.rb`
 - `brew style Formula/goh.rb`
 - `swift build -Xswiftc -warnings-as-errors`
 - `swift test` — 207 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1944s, unified
-  0.1976s, overhead +1.7 %
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1945s, unified
+  0.1944s, overhead -0.0 %
 - `swift run goh --help`
 
 Leave unrelated untracked files (`AGENTS.md`,

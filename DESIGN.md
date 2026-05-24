@@ -1876,7 +1876,8 @@ Those steps require real release credentials, certificate identity choices, and
 secret names; they will land in a separate release-pipeline PR once the signing
 inputs are available. Until then, the uploaded artifacts are reproducibility
 checks and release-candidate materials, not the final trusted distribution
-channel.
+channel. `RELEASE.md` records the credential prerequisites and the current
+notarization packaging constraints.
 
 ## Dependencies
 
