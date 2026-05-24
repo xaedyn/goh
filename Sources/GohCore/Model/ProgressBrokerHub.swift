@@ -30,11 +30,19 @@ public final class ProgressBrokerHub: Sendable {
     public func subscribe(
         _ request: SubscribeRequest,
         eventSink: @escaping EventSink
-    ) throws -> SubscribeReply {
+    ) throws -> ProgressBrokerSubscription {
         try state.withLock { state in
             let subscription = try state.broker.subscribe(request)
             state.sinks[subscription.id] = eventSink
-            return subscription.reply
+            return subscription
+        }
+    }
+
+    /// Removes a subscriber without waiting for a failed delivery.
+    public func unsubscribe(_ id: UUID) {
+        state.withLock { state in
+            state.sinks.removeValue(forKey: id)
+            state.broker.unsubscribe(id)
         }
     }
 

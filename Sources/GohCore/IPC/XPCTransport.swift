@@ -1,3 +1,5 @@
+import Foundation
+import Synchronization
 import XPC
 
 extension GohXPCService {
@@ -19,23 +21,95 @@ extension GohXPCService {
 /// The daemon side of an accepted XPC session.
 public struct GohXPCServerSession: Sendable {
     private let sendMessage: @Sendable (XPCDictionary) throws -> Void
+    private let registerCancellationHandler: @Sendable (
+        @escaping @Sendable () -> Void
+    ) -> Void
 
-    init(session: XPCSession) {
+    fileprivate init(
+        session: XPCSession,
+        cancellationHandlers: GohXPCSessionCancellationHandlers
+    ) {
         self.sendMessage = { message in
             try session.send(message: message)
+        }
+        self.registerCancellationHandler = { handler in
+            cancellationHandlers.register(handler)
         }
     }
 
     /// Creates a server-session wrapper over a custom send function. This keeps
     /// subscription notification encoding testable without depending on
     /// anonymous-listener push delivery on every CI runner.
-    public init(send: @escaping @Sendable (XPCDictionary) throws -> Void) {
+    init(
+        send: @escaping @Sendable (XPCDictionary) throws -> Void,
+        registerCancellationHandler: @escaping @Sendable (
+            @escaping @Sendable () -> Void
+        ) -> Void = { _ in }
+    ) {
         self.sendMessage = send
+        self.registerCancellationHandler = registerCancellationHandler
     }
 
     /// Sends a daemon-initiated message to the connected client.
     public func send(_ message: XPCDictionary) throws {
         try sendMessage(message)
+    }
+
+    /// Registers work to run when the accepted XPC session is cancelled.
+    public func onCancel(_ handler: @escaping @Sendable () -> Void) {
+        registerCancellationHandler(handler)
+    }
+}
+
+private final class GohXPCSessionCancellationHandlers: Sendable {
+    private struct State: Sendable {
+        var callbacks: [UUID: @Sendable () -> Void] = [:]
+        var cancelled = false
+    }
+
+    private let state = Mutex(State())
+
+    func register(_ handler: @escaping @Sendable () -> Void) {
+        let callImmediately = state.withLock { state in
+            guard !state.cancelled else { return true }
+            state.callbacks[UUID()] = handler
+            return false
+        }
+        if callImmediately {
+            handler()
+        }
+    }
+
+    func cancelAll() {
+        let callbacks = state.withLock { state in
+            guard !state.cancelled else {
+                let callbacks: [(@Sendable () -> Void)] = []
+                return callbacks
+            }
+            state.cancelled = true
+            let callbacks = Array(state.callbacks.values)
+            state.callbacks.removeAll()
+            return callbacks
+        }
+        for callback in callbacks {
+            callback()
+        }
+    }
+}
+
+private final class GohXPCServerSessionBox: Sendable {
+    private let session = Mutex<GohXPCServerSession?>(nil)
+
+    func set(_ value: GohXPCServerSession) {
+        session.withLock { $0 = value }
+    }
+
+    func handle(
+        _ handler: @Sendable (GohXPCServerSession, XPCDictionary) -> XPCDictionary?,
+        message: XPCDictionary
+    ) -> XPCDictionary? {
+        guard let current = session.withLock({ $0 }) else { return nil }
+        return handler(current, message)
     }
 }
 
@@ -50,15 +124,6 @@ public struct GohXPCServerSession: Sendable {
 public final class GohXPCListener {
     private let listener: XPCListener
 
-    private struct SessionAwareHandler: XPCPeerHandler {
-        let session: GohXPCServerSession
-        let handler: @Sendable (GohXPCServerSession, XPCDictionary) -> XPCDictionary?
-
-        func handleIncomingRequest(_ request: XPCDictionary) -> XPCDictionary? {
-            handler(session, request)
-        }
-    }
-
     private static func sessionHandler(
         _ handler: @escaping @Sendable (XPCDictionary) -> XPCDictionary?
     ) -> @Sendable (XPCListener.IncomingSessionRequest) -> XPCListener.IncomingSessionRequest.Decision {
@@ -69,11 +134,19 @@ public final class GohXPCListener {
         _ handler: @escaping @Sendable (GohXPCServerSession, XPCDictionary) -> XPCDictionary?
     ) -> @Sendable (XPCListener.IncomingSessionRequest) -> XPCListener.IncomingSessionRequest.Decision {
         { request in
-            request.accept { session in
-                SessionAwareHandler(
-                    session: GohXPCServerSession(session: session),
-                    handler: handler)
-            }
+            let cancellationHandlers = GohXPCSessionCancellationHandlers()
+            let sessionBox = GohXPCServerSessionBox()
+            let (decision, session) = request.accept(
+                incomingMessageHandler: { message in
+                    sessionBox.handle(handler, message: message)
+                },
+                cancellationHandler: { _ in
+                    cancellationHandlers.cancelAll()
+                })
+            sessionBox.set(GohXPCServerSession(
+                session: session,
+                cancellationHandlers: cancellationHandlers))
+            return decision
         }
     }
 

@@ -108,16 +108,19 @@ public struct CommandService: Sendable {
         }
 
         do {
-            let reply = try progress.subscribe(request) { event in
+            let subscription = try progress.subscribe(request) { event in
                 let notification = try Self.envelope(
                     requestID: requestID,
                     messageType: .notification,
                     payload: event)
                 try session.send(XPCDictionary(notification))
             }
+            session.onCancel {
+                progress.unsubscribe(subscription.id)
+            }
             return try XPCDictionary(Self.replyEnvelope(
                 requestID: requestID,
-                payload: reply))
+                payload: subscription.reply))
         } catch let error as GohError {
             return errorReply(
                 requestID: requestID,

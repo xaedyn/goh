@@ -4,7 +4,7 @@ import Synchronization
 import Testing
 import XPC
 
-import GohCore
+@testable import GohCore
 
 @Suite("Command service over XPC")
 struct CommandServiceTests {
@@ -213,6 +213,68 @@ struct CommandServiceTests {
         #expect(received.payload.revision == 1)
         #expect(received.payload.updateKind == .fullSnapshot)
         #expect(received.payload.snapshot == [updatedSnapshot])
+    }
+
+    @Test("session cancellation unsubscribes progress notifications")
+    func sessionCancellationUnsubscribesProgressNotifications() throws {
+        let store = JobStore()
+        let created = store.create(
+            url: "https://example.com/big.zip",
+            destination: "/tmp/big.zip",
+            requestedConnectionCount: 8)
+        let job = JobSummary(
+            id: created.id,
+            url: created.url,
+            destination: created.destination,
+            state: created.state,
+            progress: created.progress,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastProgressAt: nil,
+            requestedConnectionCount: created.requestedConnectionCount,
+            actualConnectionCount: created.actualConnectionCount)
+        let progress = ProgressBrokerHub(
+            cadence: 0,
+            initialSnapshots: [ProgressSnapshot(job: job, lanes: [])])
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: store),
+            progress: progress)
+        let notifications = Mutex<[GohEnvelope<ProgressEvent>]>([])
+        let cancellationHandlers = Mutex<[(@Sendable () -> Void)]>([])
+        let session = GohXPCServerSession(
+            send: { message in
+                if let envelope = try? message.withUnsafeUnderlyingDictionary({
+                    try GohEnvelope<ProgressEvent>(xpcDictionary: $0)
+                }) {
+                    notifications.withLock { $0.append(envelope) }
+                }
+            },
+            registerCancellationHandler: { handler in
+                cancellationHandlers.withLock { $0.append(handler) }
+            })
+
+        let request = try GohEnvelope(
+            protocolVersion: CommandService.protocolVersion,
+            requestID: UUID(),
+            messageType: .request,
+            payload: Command.subscribe(request: SubscribeRequest(scope: .job, jobID: job.id))
+        ).xpcDictionary()
+        #expect(service.handle(XPCDictionary(request), session: session) != nil)
+
+        for handler in cancellationHandlers.withLock({ $0 }) {
+            handler()
+        }
+
+        var updatedJob = job
+        updatedJob.state = .active
+        updatedJob.progress = JobProgress(
+            bytesCompleted: 256,
+            bytesTotal: 1_024,
+            bytesPerSecond: 512)
+        progress.publish(
+            ProgressSnapshot(job: updatedJob, lanes: []),
+            at: Date(timeIntervalSince1970: 1_800_000_002))
+
+        #expect(notifications.withLock { $0 }.isEmpty)
     }
 
     @Test("auth import without the Safari cookie fd replies with invalidArgument")

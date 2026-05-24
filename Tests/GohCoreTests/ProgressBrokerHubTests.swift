@@ -45,4 +45,21 @@ struct ProgressBrokerHubTests {
         #expect(failedAttempts.withLock { $0 } == 1)
         #expect(received.withLock { $0.map(\.sequence) } == [1, 2])
     }
+
+    @Test("explicit unsubscribe removes a subscriber without waiting for delivery failure")
+    func explicitUnsubscribeRemovesSubscriber() throws {
+        let hub = ProgressBrokerHub(
+            cadence: 0,
+            initialSnapshots: [ProgressSnapshot(job: job(id: 1), lanes: [])])
+        let received = Mutex<[ProgressEvent]>([])
+
+        let subscription = try hub.subscribe(SubscribeRequest(scope: .all)) { event in
+            received.withLock { $0.append(event) }
+        }
+
+        hub.unsubscribe(subscription.id)
+        hub.publish(ProgressSnapshot(job: job(id: 1, completed: 10), lanes: []))
+
+        #expect(received.withLock { $0 }.isEmpty)
+    }
 }

@@ -235,7 +235,8 @@ through XPC and the daemon:
 `GohXPCListener` can expose the accepted session to handlers, `GohXPCClient`
 can receive daemon-initiated messages, `CommandService` handles `subscribe`
 with baseline replies plus notification envelopes on the same session,
-`ProgressBrokerHub` owns subscriber sinks and removes failed sends, and
+`ProgressBrokerHub` owns subscriber sinks, removes failed sends, and now
+explicitly unsubscribes streams when their accepted XPC session is cancelled.
 `JobStore` publishes empty-lane snapshots/removals into the hub. `gohd` now
 seeds the hub from the loaded catalog, passes it into `JobStore` and
 `CommandService`, and runs a 100 ms flush timer for coalesced progress.

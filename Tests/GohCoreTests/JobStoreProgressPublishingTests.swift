@@ -20,8 +20,8 @@ struct JobStoreProgressPublishingTests {
         let baseline = try progress.subscribe(SubscribeRequest(scope: .all)) { event in
             received.withLock { $0.append(event) }
         }
-        #expect(baseline.snapshot.map(\.job.id) == [created.id])
-        #expect(baseline.snapshot.first?.job.state == .queued)
+        #expect(baseline.reply.snapshot.map(\.job.id) == [created.id])
+        #expect(baseline.reply.snapshot.first?.job.state == .queued)
 
         #expect(try store.start(id: created.id) == true)
         _ = try store.recordProgress(

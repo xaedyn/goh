@@ -1743,10 +1743,14 @@ subscriber sessions are observers.
 
 Implementation keeps the pure coalescing model and the side-effecting XPC sends
 separate: `ProgressBroker` is deterministic and in-memory, while a thread-safe
-`ProgressBrokerHub` owns subscriber sinks and removes a subscriber when its send
-throws. `JobStore` publishes empty-lane `ProgressSnapshot`s for every visible job
-mutation and terminal removal; richer per-lane engine snapshots can replace
-those empty lanes later without changing the v3 wire shape.
+`ProgressBrokerHub` owns subscriber sinks. The hub removes a subscriber when its
+send throws, and the accepted XPC session's cancellation handler explicitly
+unsubscribes every stream registered on that session. That means an idle
+watcher does not linger forever waiting for the next progress event just to
+discover that its peer is gone. `JobStore` publishes empty-lane
+`ProgressSnapshot`s for every visible job mutation and terminal removal; richer
+per-lane engine snapshots can replace those empty lanes later without changing
+the v3 wire shape.
 
 Foreground `goh <url>` sends the already-frozen `add` request, receives the new
 `JobSummary`, then sends `subscribe(scope: job, jobID:)` on the same session and
