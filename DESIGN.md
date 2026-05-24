@@ -1376,9 +1376,11 @@ field to that volatile store. When the field is absent or `true`, `add`
 snapshots the current matching `Cookie` header for the new job; when the field
 is `false`, it stores nothing. `rm` clears the per-job header. This keeps the
 wire default (`true`) meaningful without storing Safari cookies or derived
-headers on disk. Jobs restored after a daemon restart therefore need a fresh
-import before credentialed requests can be retried; that is intentional until a
-secure persistent credential-storage design exists.
+headers on disk. The import applies to subsequent `add` commands; existing jobs
+keep the header snapshot (or lack of one) they were created with. Jobs restored
+after a daemon restart lose volatile cookie headers and are not automatically
+reauthenticated; a user can re-import before creating a replacement job, and a
+future secure persistent credential-storage design can revisit automatic retry.
 
 The Safari cookie-file locator is deliberately narrow: it checks the modern
 container path first
@@ -1444,6 +1446,52 @@ and <https://developer.apple.com/documentation/foundation/filehandle/init%28forr
   either Safari cookie path.
 - Confirm whether the success reply needs an optional warning count for skipped
   malformed cookie records; the current parser is fail-fast, so the lean is no.
+
+### Auth import command contract review — round 2, not frozen
+
+**Review finding: import scope.** The Round 1 draft must not imply that a fresh
+import repairs already-created jobs. The current, deliberately non-persistent
+cookie model snapshots a per-job header at `add`, then the engine only reads
+that snapshot. Recomputing headers later would need a stored "this job opted into
+imported cookies" bit; without that bit, a later import could attach cookies to a
+job that was created with `useImportedCookies: false`. Round 2 therefore narrows
+the command's effect: `authImportSafari` replaces the daemon's process-local jar
+for **future `add` commands only**. Existing jobs keep their original auth state,
+and credentials do not survive daemon restart.
+
+**Review finding: command shape.** Keep the command enum flat:
+`authImportSafari(request: AuthImportSafariRequest)`. A nested `auth` command
+namespace would add abstraction before the CLI has any other auth subcommands.
+Future Chrome/Firefox import is already v0.2 scope and can justify a fresh
+protocol version if it needs one.
+
+**Review finding: fd sibling key.** Use `auth.safariCookieFile` as the exact
+native XPC sibling key. It is short, scoped to auth, names the resource rather
+than the implementation type, and leaves room for future siblings such as
+`auth.chromeCookieDatabase` without colliding with envelope keys.
+
+**Review finding: CLI failure behavior.** If the CLI cannot open either Safari
+cookie path, it should not send an XPC request. It exits unsuccessfully after
+printing the expected paths and a clear Full Disk Access remedy:
+grant Full Disk Access to the terminal app (or to `goh` when it is installed as
+a standalone binary), then rerun `goh auth import safari`. The exact numeric exit
+code belongs to the CLI slice, which has not yet defined command-line exit
+taxonomy; until then, the contract should avoid baking a number into the wire
+design.
+
+**Review finding: malformed records.** Keep the parser fail-fast for v0.1 and
+return only `{ importedCookieCount }` on success. Partial import of a corrupted
+credential file is surprising and harder to explain than an explicit failure.
+If real Safari files later show recoverable malformed records, add an optional
+warning field in a new round before implementation.
+
+**Open after round 2.**
+- Confirm that `protocolVersion = 2` is acceptable for the auth command rather
+  than treating pre-v0.1 v1 as still mutable.
+- Confirm the final user-facing FDA wording in the CLI implementation slice.
+- Confirm whether the "future adds only" import scope is acceptable for v0.1, or
+  whether we need a separate persistent job-auth-opt-in bit before shipping
+  credentialed resume across daemon restarts.
 
 ## Hashing
 
