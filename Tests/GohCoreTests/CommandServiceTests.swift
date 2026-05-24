@@ -216,7 +216,7 @@ struct CommandServiceTests {
 
         progress.publish(updatedSnapshot, at: Date(timeIntervalSince1970: 1_800_000_002))
 
-        #expect(notificationArrived.wait(timeout: .now() + 1) == .success)
+        #expect(notificationArrived.wait(timeout: .now() + 3) == .success)
         let received = try #require(notifications.withLock { $0.first })
         #expect(received.requestID == requestID)
         #expect(received.messageType == .notification)

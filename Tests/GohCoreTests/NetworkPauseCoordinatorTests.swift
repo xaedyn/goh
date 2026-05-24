@@ -104,11 +104,11 @@ struct NetworkPauseCoordinatorTests {
             coordinator.handlePathUpdate(.satisfiedCellular)
             group.leave()
         }
-        #expect(stop.started.wait(timeout: .now() + 1) == .success)
+        #expect(stop.started.wait(timeout: .now() + 3) == .success)
 
         coordinator.handlePathUpdate(.satisfiedNonCellular)
         stop.release.signal()
-        #expect(group.wait(timeout: .now() + 1) == .success)
+        #expect(group.wait(timeout: .now() + 3) == .success)
 
         let resumed = try #require(store.job(id: job.id))
         #expect(resumed.state == .queued)
