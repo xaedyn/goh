@@ -1610,6 +1610,31 @@ No further design rounds are needed for the wire contract. The remaining FDA
 prompt prose can be polished in the CLI implementation slice without changing
 the request/reply schema or fd sibling key.
 
+## CLI
+
+Slice 7 keeps the executable target thin: `Sources/goh/main.swift` owns only
+process I/O and the real XPC sender, while `GohCore` owns a testable
+`GohCommandLine` runner for parsing, request construction, reply decoding, and
+human output. This keeps every fire-and-forget verb unit-testable without
+spawning a process or binding the Mach service, and preserves the existing
+`goh auth import safari` path by routing that subcommand through the same runner.
+
+The first CLI implementation covers the one-shot control surface: `goh add`,
+`goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. These commands open
+one XPC session, send one request, print one reply, and exit as described in IPC
+§2.1. `goh <url>` is deliberately not implemented as a hidden alias for
+`goh add`: the roadmap promises foreground live progress, and DESIGN already
+places foreground downloads with the subscription commands. Until the progress
+subscription exists, users who want a detached download use `goh add <url>`.
+
+Exit codes are intentionally small for v0.1: success and `--help` return `0`;
+local usage errors return `64` (`EX_USAGE`); daemon-domain failures, malformed
+replies, and transport failures return `1`. A transport failure prints the
+first-run remedy `brew services start goh`; a protocol-version mismatch prints
+the restart remedy `brew services restart goh`. These are CLI presentation
+choices, not wire-contract fields, and can be refined before v0.1 without a
+`protocolVersion` bump.
+
 ## Hashing
 
 _TBD — SHA-256 via CryptoKit, streamed through the chunk assembler during the

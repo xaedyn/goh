@@ -13,6 +13,15 @@ session; update at the start of every PR and at the end of every session.
   foundation and fills out the command-line surface in `ROADMAP.md` §2-4:
   foreground `goh <url>`, `goh add`, `goh ls`, `goh pause`, `goh resume`,
   `goh rm`, and first-run daemon-service guidance.
+- **Slice 7 progress:** the first CLI implementation pass adds a testable
+  `GohCore` command-line runner for the one-shot control verbs: `goh add`,
+  `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
+  is now thin process I/O plus the real XPC sender, and the existing
+  `goh auth import safari` flow is routed through the same runner. The CLI
+  returns `64` for local usage errors, `1` for daemon/transport failures, and
+  prints `brew services start goh` guidance when the daemon is unreachable.
+  Foreground `goh <url>` remains deliberately deferred until the progress
+  subscription path exists, rather than pretending to be a background add.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -172,27 +181,22 @@ remaining adaptive host scheduling work to v0.2.
 
 Current branch: `feat/cli-client`.
 
-PR #22 was made ready, locally self-reviewed, checked against CI, and
-squash-merged into `main` at `5b3884d`. CodeRabbit was unavailable for an
-actionable review because the account/organization hit review quota and usage
-credit limits; the PR had no review findings to address. The final PR #22 gates
-were:
+Slice 7's first PR is locally ready. It test-drives the one-shot CLI control
+surface and records the CLI exit-code / first-run-guidance decision in
+`DESIGN.md`. Local gates for this branch:
 
 - `swift build -Xswiftc -warnings-as-errors`
-- `swift test` — 169 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1422s, unified
-  0.1264s, overhead -11.1 %
-- GitHub Actions `Build & test` passed
+- `swift test` — 175 tests
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1496s, unified
+  0.1260s, overhead -15.8 %
+- `swift run goh --help`
+- `swift run goh ls` with no daemon loaded — prints `brew services start goh`
+  guidance and exits `1`
+- `swift run goh pause abc` — prints usage guidance and exits `64`
 
-Slice 7 starts here. Pick up by test-driving the CLI surface in small pieces,
-preferably by keeping parsing/formatting/testable command runners in `GohCore`
-or another importable target while `Sources/goh/main.swift` remains thin:
-
-- `goh add <url>` and foreground `goh <url>` request construction;
-- `goh ls`, `pause`, `resume`, `rm` request construction and reply/error
-  formatting;
-- daemon connection errors and first-run `brew services start goh` guidance;
-- preserving the existing `goh auth import safari` flow from Slice 5.
+Next: open the PR, wait for CI/review, address findings, then continue Slice 7
+with the foreground `goh <url>` / live-progress subscription path and `goh top`
+prep.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
