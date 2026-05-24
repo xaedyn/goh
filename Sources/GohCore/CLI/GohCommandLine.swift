@@ -16,21 +16,25 @@ public struct GohCommandLineResult: Sendable, Equatable {
 public struct GohCommandLine {
     public typealias Sender = (XPCDictionary) throws -> XPCDictionary
     public typealias Foreground = (AddRequest) throws -> GohCommandLineResult
+    public typealias Top = () throws -> GohCommandLineResult
 
     private let arguments: [String]
     private let homeDirectory: URL
     private let foreground: Foreground?
+    private let top: Top?
     private let send: Sender
 
     public init(
         arguments: [String],
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         foreground: Foreground? = nil,
+        top: Top? = nil,
         send: @escaping Sender
     ) {
         self.arguments = arguments
         self.homeDirectory = homeDirectory
         self.foreground = foreground
+        self.top = top
         self.send = send
     }
 
@@ -65,6 +69,14 @@ public struct GohCommandLine {
                         standardError: "Foreground downloads are not configured.\n")
                 }
                 return try foreground(request)
+
+            case .top:
+                guard let top else {
+                    return GohCommandLineResult(
+                        exitCode: 1,
+                        standardError: "The top dashboard is not configured.\n")
+                }
+                return try top()
 
             case .ls(.table):
                 let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
@@ -158,6 +170,7 @@ private enum ParsedCommand: Equatable {
     case authImportSafari
     case add(AddRequest)
     case foreground(AddRequest)
+    case top
     case ls(OutputFormat)
     case pause(UInt64)
     case resume(UInt64)
@@ -194,6 +207,9 @@ extension GohCommandLine {
         }
         if arguments == ["ls", "--json"] {
             return .ls(.json)
+        }
+        if arguments == ["top"] {
+            return .top
         }
         if arguments.count == 2, arguments[0] == "pause" {
             return .pause(try parseJobID(arguments[1]))
@@ -388,6 +404,7 @@ extension GohCommandLine {
           goh <url>
           goh add [--output <path>] [--connections <1-16>] [--priority low|normal|high] [--no-cookies] <url>
           goh ls [--json]
+          goh top
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>

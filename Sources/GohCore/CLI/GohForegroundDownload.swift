@@ -3,7 +3,7 @@ import Foundation
 import Synchronization
 import XPC
 
-public struct GohForegroundDownloadSession {
+public struct GohProgressSubscriptionSession {
     public var sendSync: (XPCDictionary) throws -> XPCDictionary
     public var receiveNotification: () throws -> GohEnvelope<ProgressEvent>
     public var cancel: () -> Void
@@ -18,6 +18,8 @@ public struct GohForegroundDownloadSession {
         self.cancel = cancel
     }
 }
+
+public typealias GohForegroundDownloadSession = GohProgressSubscriptionSession
 
 public enum GohXPCNotificationInboxError: Error, Sendable, Equatable {
     case malformedProgressNotification(String)
