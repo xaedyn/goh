@@ -10,10 +10,11 @@ class Goh < Formula
   version "0.1.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
+  head "https://github.com/xaedyn/goh.git", branch: "main"
 
+  depends_on xcode: :build
   depends_on arch: :arm64
   depends_on macos: :tahoe
-  depends_on xcode: :build
 
   def install
     system "swift", "build", "--configuration", "release", "--disable-sandbox"
@@ -32,6 +33,7 @@ class Goh < Formula
   end
 
   test do
-    assert_equal "goh", shell_output(bin/"goh").strip
+    assert_path_exists bin/"gohd"
+    assert_match "goh top", shell_output("#{bin}/goh --help")
   end
 end
