@@ -163,6 +163,13 @@ A `200` response means the server didn't honour `Range`, so the stream is
 the full body and the engine consumes it as a single connection — no second
 request needed.
 
+The initial `206` must be internally consistent for an open-ended `bytes=0-`
+request: `Content-Range` has to start at 0 and end at `total - 1`. The engine
+may cancel that stream after range 0's allotted slice, but the header still
+proves the server accepted the open-ended request for the whole representation.
+If the first response advertises only a partial subrange, the job fails instead
+of inferring a total from a response shape the scheduler did not ask for.
+
 The downside is a small bandwidth waste at cancellation time — bytes already
 in flight on the open-ended stream when it's truncated, typically ≤ one TCP
 window. The upside compounds: one RTT saved on every download.

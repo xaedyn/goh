@@ -5,11 +5,12 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/download-range-parallel`
-- **Last merged:** PR #12 — Slice 3a, single-connection HTTP download — `main`
-  at `a051819`.
-- **Current slice:** 3b — range-parallel orchestration — **PR #14 open in
-  draft**, CI green; holding for the competitive benchmark run.
+- **Branch:** `fix/core-correctness-gates`
+- **Last merged:** PR #14 — Slice 3b, range-parallel orchestration — `main`
+  at `721871b`.
+- **Current slice:** core correctness gates before 3c: make the engine and XPC
+  command path enforce the frozen contracts before adding live cancellation,
+  retry, and resumable partial-file control.
 - **Last merged before #14:** PR #13 — the `actualConnectionCount` §1 amendment.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -25,7 +26,7 @@ session; update at the start of every PR and at the end of every session.
   still queued at startup.
 - 84 tests; the engine path is tested over a `URLProtocol` mock.
 
-## Slice 3b — range-parallel orchestration (PR #14, draft)
+## Slice 3b — range-parallel orchestration (shipped)
 
 Built, tested (101 tests), pushed:
 
@@ -50,14 +51,17 @@ Built, tested (101 tests), pushed:
   phase and the assembler/progress/store mutex phase. Off in normal runs;
   release builds flip it on without recompiling.
 
-The PR is **draft**, holding on engine investigation (see Pending questions).
-CI on the code-correctness path is green; the competitive re-run reproduced
-engine regressions (~2× slower than `curl` saturated, ~7× slower than `aria2c`
-amenable — three runs in tight agreement, structural not noise).
+Merged as PR #14. The final validated run accepted parity-for-v0.1 and moved the
+remaining adaptive host scheduling work to v0.2.
 
 ## Roadmap from here
 
-- **3b** — range-parallel orchestration.
+- **Correctness gates** — incomplete fixed-length transfer rejection, range
+  response validation, protocol-version enforcement, and request validation.
+- **Open design decision before 3c** — how to reconcile persisted `active` jobs
+  on daemon restart before full checkpoint resume exists. Requeuing by truncating
+  and starting over would conflict with the documented checkpoint-resume promise,
+  so this should be surfaced rather than smuggled in.
 - **3c** — error / retry / cancellation: the retry policy (§2.2 Retry boundary),
   `pause` / `resume` interrupting and resuming a live transfer against the
   checkpoint, `rm` teardown with `keepPartialFile`.
@@ -69,7 +73,7 @@ amenable — three runs in tight agreement, structural not noise).
 - **8** — the TUI for `goh top`.
 - **9** — Homebrew formula, signing, notarization, the release pipeline.
 
-## Pending questions for the user
+## Recent 3b validation notes
 
 - **3b validated — parity-for-v0.1 accepted.** See the validated-measurement
   comment on PR #14 for the full numbers and reasoning. Saturated criterion
@@ -152,26 +156,27 @@ amenable — three runs in tight agreement, structural not noise).
 
 ## Next-session handoff
 
-Slice 3b: saturated PARITY achieved (`goh` 7.056s vs `aria2c` 7.300s vs
-`curl` 6.223s; saturation check PASS), the slice's hardest target met. Two
-URLSession quirks documented in DESIGN.md §Transport were responsible
-(HEAD's `expectedContentLength = -1`, and default `Accept-Encoding`
-auto-decompression structurally incompatible with `Range`); a third change
-(chunked Data via `URLSession.dataTask` + delegate, replacing byte-by-byte
-`URLSession.bytes(for:)`) shipped as engine hygiene after being tested and
-falsified as the amenable-gap cause.
+Current branch: `fix/core-correctness-gates`.
 
-Three of the four original engine-bug hypotheses are now ruled out
-empirically: the connection cap was already 16 (peak-active=8 observed),
-`writeMs`+`reportMs` are negligible (mutex/disk path not the bottleneck),
-and AsyncBytes byte-iteration didn't change the amenable gap when replaced.
-The residual amenable gap (~5× slower than `aria2c` on archive.org) appears
-to be URLSession's HTTP/2-multiplexed behaviour against archive.org's
-per-stream rate-limiter — reproducible locally, not a goh code issue.
+Implemented and verified the correctness gates on PR #15:
 
-Next: 3b validated and un-drafted; CodeRabbit reviews on un-draft, address
-feedback, then merge. Validated-measurement comment posted to PR #14.
-v0.2 follow-ups filed: adaptive per-host range scheduling (the structural
-path past `aria2c`'s static `--max-connection-per-server`) and the HTTP/3
-re-trial against a host with better-tuned QUIC. Next slice after 3b: 3c —
-error / retry / cancellation.
+- Fixed-length chunk assembly now fails instead of digesting a short download.
+- Range workers validate exact `Content-Range` headers and fail short successful
+  bodies.
+- The initial speculative `Range: bytes=0-` response now also requires a full,
+  internally consistent `Content-Range` (`0...total - 1`) before the scheduler
+  trusts the reported total.
+- `CommandService` reads envelope headers before payload decode, rejects
+  incompatible `protocolVersion`, and rejects non-request message kinds.
+- `CommandDispatcher` rejects `connectionCount == 0` with `invalidArgument` and
+  caps values above `16`.
+- The CodeRabbit review comment on PR #15 was addressed: `MockURLProtocol`
+  returns `416` for invalid test `Range` requests instead of trapping on an
+  out-of-bounds `Data` slice.
+
+Verification: `swift test` passes 112 tests; `swift build -Xswiftc
+-warnings-as-errors` passes.
+
+Next: once PR #15 is merged, surface the daemon restart policy for persisted
+`active` jobs as the first 3c design question, then build daemon-path
+benchmarking so performance work measures the real product.

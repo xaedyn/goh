@@ -97,11 +97,15 @@ public struct DownloadEngine: Sendable {
             })
         switch response.statusCode {
         case 206:
-            guard let total = Self.totalFromContentRange(response) else {
+            guard let contentRange = Self.contentRange(response),
+                  contentRange.start == 0,
+                  contentRange.end == contentRange.total - 1
+            else {
                 throw GohError(
                     code: .connectionFailed,
-                    message: "the 206 response did not carry a usable Content-Range")
+                    message: "the initial 206 response did not carry a full Content-Range")
             }
+            let total = contentRange.total
             try await fetchRanged(
                 job: job, store: store, url: url, total: total,
                 firstRangeStream: stream, trace: trace)
@@ -117,19 +121,50 @@ public struct DownloadEngine: Sendable {
         }
     }
 
-    /// Parses `Content-Range: bytes START-END/TOTAL` and returns TOTAL. Returns
-    /// `nil` for unparseable, missing, or zero values — in which case the
-    /// caller treats the response as having no usable total.
-    private static func totalFromContentRange(_ response: HTTPURLResponse) -> UInt64? {
+    private struct ContentRange: Sendable, Equatable {
+        var start: UInt64
+        var end: UInt64
+        var total: UInt64
+    }
+
+    /// Parses `Content-Range: bytes START-END/TOTAL`. Returns `nil` for
+    /// unparseable, missing, empty, or internally inconsistent values.
+    private static func contentRange(_ response: HTTPURLResponse) -> ContentRange? {
         guard let value = response.value(forHTTPHeaderField: "Content-Range"),
               value.hasPrefix("bytes ")
         else { return nil }
         let payload = value.dropFirst("bytes ".count)
         guard let slash = payload.lastIndex(of: "/") else { return nil }
+        let rangePart = payload[..<slash]
+        guard let dash = rangePart.firstIndex(of: "-") else { return nil }
+        let startStr = rangePart[..<dash].trimmingCharacters(in: .whitespaces)
+        let endStr = rangePart[rangePart.index(after: dash)...]
+            .trimmingCharacters(in: .whitespaces)
         let totalStr = payload[payload.index(after: slash)...]
             .trimmingCharacters(in: .whitespaces)
-        guard let total = UInt64(totalStr), total > 0 else { return nil }
-        return total
+        guard
+            let start = UInt64(startStr),
+            let end = UInt64(endStr),
+            let total = UInt64(totalStr),
+            total > 0,
+            start <= end,
+            end < total
+        else { return nil }
+        return ContentRange(start: start, end: end, total: total)
+    }
+
+    private static func validateContentRange(
+        _ response: HTTPURLResponse, matches range: ByteRange, total: UInt64
+    ) throws {
+        guard let contentRange = contentRange(response),
+              contentRange.start == range.start,
+              contentRange.end == range.start + range.length - 1,
+              contentRange.total == total
+        else {
+            throw GohError(
+                code: .connectionFailed,
+                message: "the server returned a mismatched Content-Range")
+        }
     }
 
     // MARK: Single connection
@@ -287,6 +322,7 @@ public struct DownloadEngine: Sendable {
                 message: "the server did not honour the range request",
                 httpStatusCode: http.statusCode)
         }
+        try Self.validateContentRange(http, matches: range, total: total)
         try await consumeRange(
             index: index, range: range, file: file,
             assembler: assembler, progress: progress,
@@ -351,6 +387,11 @@ public struct DownloadEngine: Sendable {
             }
         }
         try flush()
+        guard written == range.length else {
+            throw GohError(
+                code: .connectionFailed,
+                message: "range \(index) ended after \(written) of \(range.length) expected bytes")
+        }
         trace.rangeFinished(index, bytes: written)
     }
 

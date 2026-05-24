@@ -15,6 +15,10 @@ final class MockURLProtocol: URLProtocol {
         var acceptsRanges: Bool = true
         /// A range request beginning at this offset fails — for failure tests.
         var failRangeStartingAt: Int?
+        /// A range request beginning at this offset returns a short successful body.
+        var truncateRangeStartingAt: Int?
+        /// A range request beginning at this offset returns this Content-Range header.
+        var contentRangeOverride: [Int: String] = [:]
     }
 
     private static let stubs = Mutex<[String: Stub]>([:])
@@ -22,12 +26,16 @@ final class MockURLProtocol: URLProtocol {
     /// Registers a successful response for `url`.
     static func stub(
         _ url: String, status: Int = 200, body: Data,
-        acceptsRanges: Bool = true, failRangeStartingAt: Int? = nil
+        acceptsRanges: Bool = true, failRangeStartingAt: Int? = nil,
+        truncateRangeStartingAt: Int? = nil,
+        contentRangeOverride: [Int: String] = [:]
     ) {
         stubs.withLock {
             $0[url] = Stub(
                 statusCode: status, body: body, failure: nil,
-                acceptsRanges: acceptsRanges, failRangeStartingAt: failRangeStartingAt)
+                acceptsRanges: acceptsRanges, failRangeStartingAt: failRangeStartingAt,
+                truncateRangeStartingAt: truncateRangeStartingAt,
+                contentRangeOverride: contentRangeOverride)
         }
     }
 
@@ -63,11 +71,20 @@ final class MockURLProtocol: URLProtocol {
                 client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
                 return
             }
+            guard start >= 0, start < stub.body.count, end >= start else {
+                deliver(url: url, status: 416, headers: [
+                    "Content-Range": "bytes */\(stub.body.count)",
+                ], body: nil)
+                return
+            }
             let upper = min(end, stub.body.count - 1)
-            let slice = Data(stub.body[start...upper])
+            let actualUpper = stub.truncateRangeStartingAt == start
+                ? min(upper, start + max(0, (upper - start) / 2)) : upper
+            let slice = Data(stub.body[start...actualUpper])
             deliver(url: url, status: 206, headers: [
                 "Content-Length": "\(slice.count)",
-                "Content-Range": "bytes \(start)-\(upper)/\(stub.body.count)",
+                "Content-Range": stub.contentRangeOverride[start]
+                    ?? "bytes \(start)-\(upper)/\(stub.body.count)",
             ], body: slice)
             return
         }
