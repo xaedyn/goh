@@ -1286,8 +1286,49 @@ walks both directions — engine production *and* consumer interrogation.
 
 ## Scheduling
 
-_TBD — job queue, range-connection scheduling, `nw_path_monitor`-driven
-auto-pause on cellular._
+v0.1 scheduling is daemon-local and conservative. A job that becomes `queued`
+through `add`, explicit `resume`, startup reconciliation, or daemon startup is
+admitted through the network policy before it is handed to the engine. When
+admitted, the daemon launches an engine task; the engine's atomic `start`
+transition remains the duplicate-run guard, so extra scheduling signals are
+harmless.
+
+The daemon owns one `NWPathMonitor`. The monitor callback only captures the new
+path and dispatches policy work off the monitor queue, so a graceful active-job
+stop cannot prevent later path updates from being delivered. Path updates are
+mapped to three internal states:
+
+- `status != .satisfied` → downloads unavailable;
+- `status == .satisfied && usesInterfaceType(.cellular)` → downloads unavailable;
+- `status == .satisfied` without cellular → downloads allowed.
+
+The cellular rule is intentionally conservative: Apple's `NWPath` documentation
+defines `usesInterfaceType(_:)` as whether connections using the path may send
+traffic over that interface, including paths eligible to use multiple
+interfaces. If cellular is in that set, `goh` does not spend the user's metered
+data. Sources: Apple `NWPathMonitor.start(queue:)`,
+`NWPathMonitor.pathUpdateHandler`, `NWPath.status`, and
+`NWPath.usesInterfaceType(_:)` documentation.
+
+On an unavailable path, queued jobs transition to `paused` with
+`pauseReason == network`. Active jobs first go through the same graceful stop
+coordination as command-driven `pause`: the engine reaches a checkpoint
+boundary, acknowledges through `DownloadControl`, then the coordinator records
+the `network` pause. On a satisfied non-cellular path, only jobs paused for
+`network` are resumed and rescheduled; jobs paused by the user remain paused.
+
+Path changes are allowed to race active stop coordination. If a cellular pause
+request is already waiting for the engine and Wi-Fi returns before the engine
+acknowledges, the coordinator still records the checkpoint-safe network pause,
+then immediately rechecks the latest path and resumes/reschedules the job. This
+keeps the store out of the invalid "active but no engine owns it" shape without
+stranding work on a stale cellular decision.
+
+Before the first path observation, queued jobs are not admitted; they are held
+as `network`-paused and released by the first satisfied non-cellular path. That
+startup bias favors avoiding surprise cellular transfers over starting a
+download a few milliseconds earlier. This behavior uses the existing
+`PauseReason.network` case and does not change `protocolVersion = 1`.
 
 ## Auth
 

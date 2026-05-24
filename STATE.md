@@ -5,14 +5,15 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/checkpoint-resume`
-- **Last merged:** PR #16 — checkpoint/resume design — `main` at `237c85e`.
-- **Current slice:** Slice 3c, checkpoint/resume implementation. This branch now
-  has checkpoint primitives, startup reconciliation, engine checkpoint writes,
-  crash resume from the first missing byte, and live active `pause` / `rm`
-  control at checkpoint boundaries. Kept partials from `rm --keep` are now
-  automatically adopted by a future matching `add`; retry eligibility now
-  follows the status-aware daemon policy in `DESIGN.md` §2.4.
+- **Branch:** `feat/network-auto-pause`
+- **Last merged:** PR #17 — checkpoint-backed crash resume — `main` at
+  `d5db309`.
+- **Current slice:** Slice 4, network auto-pause. The slice starts from the
+  shipped checkpoint/resume engine and adds daemon-owned network policy:
+  cellular paths pause queued and active jobs as `PauseReason.network`, while
+  satisfied non-cellular paths resume only network-paused jobs. The first branch
+  pass has the core coordinator, daemon `NWPathMonitor` wiring, command queue
+  admission, and design notes in place. User-paused jobs remain manual.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -58,11 +59,9 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Roadmap from here
 
-- **3c** — checkpoint/resume implementation, error / retry / cancellation: the
-  retry policy (§2.2 Retry boundary),
-  `pause` / `resume` interrupting and resuming a live transfer against the
-  checkpoint, `rm` teardown with `keepPartialFile`.
-- **4** — `NWPathMonitor` cellular auto-pause (§12).
+- **3c** — shipped in PR #17: checkpoint/resume implementation, error / retry /
+  cancellation, live `pause` / `resume`, and `rm --keep` partial adoption.
+- **4** — in progress: `NWPathMonitor` cellular auto-pause (§12).
 - **5** — Safari cookie import: `binarycookies` parsing, the Full Disk Access
   flow.
 - **6** — Spotlight tagging and sleep assertions.
@@ -153,42 +152,20 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/checkpoint-resume`.
+Current branch: `feat/network-auto-pause`.
 
-PR #16 was squash-merged into `main` at `237c85e`. The checkpoint/resume design
-choices are now settled locally for implementation:
+PR #17 was squash-merged into `main` at `d5db309`. Slice 4 is open on the new
+branch. Implemented so far:
 
-- unsafe checkpoint recovery uses `.connectionFailed` with a clear message and
-  `retryEligible == true`;
-- checkpoint pieces are sorted intervals in v0.1;
-- `DownloadFile` gets a piece-aware fsync boundary;
-- weak ETags are not sufficient for crash resume;
-- `rm --keep` partial adoption is automatic only on exact URL, destination,
-  validator, and checkpoint match.
+- `NetworkPauseCoordinator` admits queued jobs, pauses queued/active jobs on
+  unavailable or cellular paths, resumes only `network`-paused jobs on
+  satisfied non-cellular paths, and handles the stale-cellular-stop race.
+- `CommandDispatcher` has a queue-admission hook so `add` / `resume` can return
+  the post-policy summary.
+- `gohd` owns an `NWPathMonitor`, maps `NWPath` to the coordinator's path state,
+  dispatches policy work off the monitor callback queue, and routes startup
+  queued jobs through network admission.
+- `DESIGN.md` now records the v0.1 scheduling and network auto-pause policy.
 
-Implemented on `feat/checkpoint-resume` so far:
-
-- `DownloadCheckpoint` / `CheckpointStore` with binary plist persistence,
-  sorted durable intervals, corrupt-checkpoint sidecars, and validator-aware
-  startup safety checks.
-- `JobStore.reconcileActiveJobsOnStartup(checkpoints:)`, wired into `gohd`
-  before queued jobs are scheduled. Safe active checkpoints requeue; unsafe or
-  missing ones fail retryably with `.connectionFailed`.
-- `DownloadEngine` accepts a checkpoint store, records synced ranged-download
-  intervals into checkpoints, resumes a checkpointed job with `If-Range` from
-  missing byte ranges, and deletes the checkpoint after completion.
-- `DownloadControl` coordinates active `pause` and active `rm`: command replies
-  wait until the engine reaches a checkpoint boundary, so `pause` cannot race an
-  immediate `resume`; `rm` without keep deletes partial/checkpoint, while
-  `rm --keep` preserves both.
-- `add` automatically adopts a kept checkpoint when URL, destination, file size,
-  and resume validator metadata are safe: the new job is seeded with durable
-  progress, the checkpoint is rewritten under the new job id before scheduling,
-  and the old checkpoint is removed after the new one is durable.
-- Retry eligibility is now explicit and status-aware: transient transport
-  failures, DNS failure, timeouts, disk-full, queue-full, checksum mismatch, and
-  HTTP 408 / 425 / 429 / 5xx are retryable; 401 / 403 are recorded as
-  `.unauthorized`, not generic `.httpStatus`.
-
-Next: make PR #17 ready for final review, or move on to Slice 4 network
-auto-pause once it merges.
+Next: open the draft PR, check CI and review comments, then decide whether Slice
+4 needs a live daemon smoke test before readying the PR.
