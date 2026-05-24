@@ -163,9 +163,12 @@ branch. Implemented so far:
 - `CommandDispatcher` has a queue-admission hook so `add` / `resume` can return
   the post-policy summary.
 - `gohd` owns an `NWPathMonitor`, maps `NWPath` to the coordinator's path state,
-  dispatches policy work off the monitor callback queue, and routes startup
-  queued jobs through network admission.
+  dispatches policy work onto a dedicated serial queue off the monitor callback,
+  and routes startup queued jobs through network admission.
 - `DESIGN.md` now records the v0.1 scheduling and network auto-pause policy.
+- Local review caught and fixed a path-update ordering issue: policy work no
+  longer goes to the global queue, so cellular/Wi-Fi updates apply in delivery
+  order while still not blocking the `NWPathMonitor` callback.
 
-Next: open the draft PR, check CI and review comments, then decide whether Slice
-4 needs a live daemon smoke test before readying the PR.
+Next: PR #18 is open; after CI and review are green, make it ready and merge if
+the autonomous merge gates are still satisfied.

@@ -82,9 +82,10 @@ do {
 
     let pathMonitor = NWPathMonitor()
     let pathQueue = DispatchQueue(label: "dev.goh.daemon.network-path")
+    let pathPolicyQueue = DispatchQueue(label: "dev.goh.daemon.network-policy", qos: .utility)
     pathMonitor.pathUpdateHandler = { path in
         let pathState = NetworkPathState(path: path)
-        DispatchQueue.global(qos: .utility).async {
+        pathPolicyQueue.async {
             networkCoordinator.handlePathUpdate(pathState)
         }
     }

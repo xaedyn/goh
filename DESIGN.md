@@ -1294,9 +1294,9 @@ transition remains the duplicate-run guard, so extra scheduling signals are
 harmless.
 
 The daemon owns one `NWPathMonitor`. The monitor callback only captures the new
-path and dispatches policy work off the monitor queue, so a graceful active-job
-stop cannot prevent later path updates from being delivered. Path updates are
-mapped to three internal states:
+path and dispatches policy work onto a dedicated serial policy queue, so a
+graceful active-job stop cannot block the monitor callback and path policy still
+applies in delivery order. Path updates are mapped to three internal states:
 
 - `status != .satisfied` → downloads unavailable;
 - `status == .satisfied && usesInterfaceType(.cellular)` → downloads unavailable;
