@@ -24,6 +24,11 @@ jobs:
       - name: Toolchain version
         run: swift --version
 
+      - name: Validate Homebrew formula
+        run: |
+          ruby -c Formula/goh.rb
+          brew style Formula/goh.rb
+
       - name: Build (warnings as errors)
         run: swift build -Xswiftc -warnings-as-errors
 
