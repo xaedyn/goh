@@ -1347,6 +1347,17 @@ string offsets, and encodes dates as Cocoa reference-date seconds. Sources:
 <https://github.com/libyal/dtformats/blob/main/documentation/Safari%20Cookies.asciidoc>
 and <https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/cookies.py>.
 
+Imported-cookie attachment is also an in-memory `GohCore` primitive:
+`SafariCookieJar` filters cookies for a request URL and serializes the `Cookie`
+header. It follows RFC 6265 for path matching, secure-cookie exclusion on
+non-HTTPS URLs, and header order (longer path first, then earlier creation
+time). Domain handling is intentionally conservative because
+`Cookies.binarycookies` exposes no separate host-only flag in the documented
+record fields: domains beginning with `.` match the exact host and subdomains;
+bare domains match only the exact host. This may under-send a cookie if Safari
+stores a domain cookie without a leading dot, but it avoids leaking a host-only
+cookie to sibling subdomains. Source: <https://www.rfc-editor.org/rfc/rfc6265>.
+
 The still-open auth decisions are the user-visible `goh auth import safari`
 command shape, the Full Disk Access prompt wording, and the revocation behavior
 when the CLI can no longer open Safari's cookie file. The existing IPC lean from

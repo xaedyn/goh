@@ -118,6 +118,89 @@ struct SafariBinaryCookiesTests {
             try SafariBinaryCookiesParser().parse(file)
         }
     }
+
+    @Test("cookie header includes only domain, path, secure, and expiry matches")
+    func cookieHeaderFiltersMatches() throws {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let jar = SafariCookieJar(cookies: [
+            cookie(
+                domain: ".example.com", name: "root", path: "/", value: "1",
+                expiresAt: now.addingTimeInterval(100), createdAt: now),
+            cookie(
+                domain: ".example.com", name: "deep", path: "/files", value: "2",
+                expiresAt: now.addingTimeInterval(100),
+                createdAt: now.addingTimeInterval(10)),
+            cookie(
+                domain: ".example.com", name: "secure", path: "/", value: "3",
+                flags: [.secure],
+                expiresAt: now.addingTimeInterval(100),
+                createdAt: now.addingTimeInterval(20)),
+            cookie(
+                domain: ".example.com", name: "expired", path: "/", value: "4",
+                expiresAt: now.addingTimeInterval(-1), createdAt: now),
+            cookie(
+                domain: ".other.example", name: "other", path: "/", value: "5",
+                expiresAt: now.addingTimeInterval(100), createdAt: now),
+            cookie(
+                domain: ".example.com", name: "wrongPath", path: "/private", value: "6",
+                expiresAt: now.addingTimeInterval(100), createdAt: now),
+        ])
+
+        let httpsHeader = try #require(jar.cookieHeader(
+            for: URL(string: "https://downloads.example.com/files/archive.zip")!,
+            now: now))
+        let httpHeader = try #require(jar.cookieHeader(
+            for: URL(string: "http://downloads.example.com/files/archive.zip")!,
+            now: now))
+
+        #expect(httpsHeader == "deep=2; root=1; secure=3")
+        #expect(httpHeader == "deep=2; root=1")
+    }
+
+    @Test("cookie header respects exact host domains and path segment boundaries")
+    func cookieHeaderRespectsHostAndPathBoundaries() throws {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let jar = SafariCookieJar(cookies: [
+            cookie(
+                domain: "example.com", name: "host", path: "/", value: "1",
+                expiresAt: now.addingTimeInterval(100), createdAt: now),
+            cookie(
+                domain: ".example.com", name: "domain", path: "/download", value: "2",
+                expiresAt: now.addingTimeInterval(100), createdAt: now),
+        ])
+
+        let exactHostHeader = try #require(jar.cookieHeader(
+            for: URL(string: "https://example.com/download/file")!,
+            now: now))
+        let subdomainHeader = try #require(jar.cookieHeader(
+            for: URL(string: "https://cdn.example.com/download/file")!,
+            now: now))
+
+        #expect(exactHostHeader == "domain=2; host=1")
+        #expect(subdomainHeader == "domain=2")
+        #expect(jar.cookieHeader(
+            for: URL(string: "https://cdn.example.com/downloaded/file")!,
+            now: now) == nil)
+    }
+
+    private func cookie(
+        domain: String,
+        name: String,
+        path: String,
+        value: String,
+        flags: SafariCookieFlags = [],
+        expiresAt: Date,
+        createdAt: Date
+    ) -> SafariCookie {
+        SafariCookie(
+            domain: domain,
+            name: name,
+            path: path,
+            value: value,
+            flags: flags,
+            expiresAt: expiresAt,
+            createdAt: createdAt)
+    }
 }
 
 private struct BinaryCookiesFixture {

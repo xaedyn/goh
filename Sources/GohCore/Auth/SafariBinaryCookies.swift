@@ -39,6 +39,75 @@ public struct SafariCookieFlags: OptionSet, Sendable, Equatable {
     public static let httpOnly = SafariCookieFlags(rawValue: 1 << 2)
 }
 
+public struct SafariCookieJar: Sendable, Equatable {
+    public let cookies: [SafariCookie]
+
+    public init(cookies: [SafariCookie]) {
+        self.cookies = cookies
+    }
+
+    public func matchingCookies(for url: URL, now: Date = Date()) -> [SafariCookie] {
+        guard let host = url.host?.lowercased() else { return [] }
+        let requestPath = Self.normalizedRequestPath(url.path)
+        let isSecureRequest = url.scheme?.lowercased() == "https"
+
+        return cookies.enumerated()
+            .filter { _, cookie in
+                cookie.expiresAt > now
+                    && (isSecureRequest || !cookie.flags.contains(.secure))
+                    && Self.domainMatches(cookieDomain: cookie.domain, requestHost: host)
+                    && Self.pathMatches(cookiePath: cookie.path, requestPath: requestPath)
+            }
+            .sorted { lhs, rhs in
+                if lhs.element.path.count != rhs.element.path.count {
+                    return lhs.element.path.count > rhs.element.path.count
+                }
+                if lhs.element.createdAt != rhs.element.createdAt {
+                    return lhs.element.createdAt < rhs.element.createdAt
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    public func cookieHeader(for url: URL, now: Date = Date()) -> String? {
+        let pairs = matchingCookies(for: url, now: now).map { "\($0.name)=\($0.value)" }
+        guard !pairs.isEmpty else { return nil }
+        return pairs.joined(separator: "; ")
+    }
+
+    private static func domainMatches(cookieDomain: String, requestHost: String) -> Bool {
+        let domain = cookieDomain
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !domain.isEmpty else { return false }
+
+        if domain.hasPrefix(".") {
+            let suffix = String(domain.drop { $0 == "." })
+            return requestHost == suffix || requestHost.hasSuffix(".\(suffix)")
+        }
+
+        return requestHost == domain
+    }
+
+    private static func pathMatches(cookiePath: String, requestPath: String) -> Bool {
+        let path = normalizedCookiePath(cookiePath)
+        if requestPath == path { return true }
+        guard requestPath.hasPrefix(path) else { return false }
+        if path.hasSuffix("/") { return true }
+        let boundary = requestPath.index(requestPath.startIndex, offsetBy: path.count)
+        return requestPath[boundary] == "/"
+    }
+
+    private static func normalizedRequestPath(_ path: String) -> String {
+        path.isEmpty || !path.hasPrefix("/") ? "/" : path
+    }
+
+    private static func normalizedCookiePath(_ path: String) -> String {
+        path.isEmpty || !path.hasPrefix("/") ? "/" : path
+    }
+}
+
 public enum SafariBinaryCookiesError: Error, Equatable {
     case invalidMagic
     case truncated(context: String)

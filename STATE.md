@@ -15,7 +15,10 @@ session; update at the start of every PR and at the end of every session.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
-  inputs. No persistent cookie-store format or new IPC command has been added.
+  inputs. The second step adds in-memory RFC 6265-style URL matching and
+  `Cookie` header serialization with conservative host-only handling for bare
+  Safari domains. No persistent cookie-store format or new IPC command has been
+  added.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -157,13 +160,12 @@ remaining adaptive host scheduling work to v0.2.
 Current branch: `feat/safari-cookie-import`.
 
 PR #18 was made ready, reviewed, fixed, and squash-merged into `main` at
-`e5372af`. Slice 5 is open on a new feature branch. The parser boundary is now
-the first concrete piece; pick up by adding cookie domain/path matching and then
-settling the load-bearing import command/FDA contract before wiring XPC:
+`e5372af`. Slice 5 is open on a new feature branch. The parser and matching
+boundary are now concrete; pick up by settling the load-bearing import
+command/FDA contract before wiring XPC:
 
 - confirm how imported cookies are stored in-memory by the daemon before a
   persistent store exists;
-- add URL domain/path/secure/expiry matching for `add.useImportedCookies`;
 - do not add `goh auth import safari` until its request/reply wire shape has an
   explicit design note;
 - keep Full Disk Access prompting and revocation handling user-clear;
