@@ -26,16 +26,31 @@ public final class NetworkPauseCoordinator: Sendable {
     private let store: JobStore
     private let requestActiveStop: @Sendable (UInt64) -> DownloadStopResult?
     private let scheduleJob: @Sendable (UInt64) -> Void
+    private let beforeQueuedNetworkPause: @Sendable () -> Void
     private let state = Mutex(State(path: nil))
 
-    public init(
+    init(
         store: JobStore,
         requestActiveStop: @escaping @Sendable (UInt64) -> DownloadStopResult? = { _ in nil },
-        scheduleJob: @escaping @Sendable (UInt64) -> Void = { _ in }
+        scheduleJob: @escaping @Sendable (UInt64) -> Void = { _ in },
+        beforeQueuedNetworkPause: @escaping @Sendable () -> Void
     ) {
         self.store = store
         self.requestActiveStop = requestActiveStop
         self.scheduleJob = scheduleJob
+        self.beforeQueuedNetworkPause = beforeQueuedNetworkPause
+    }
+
+    public convenience init(
+        store: JobStore,
+        requestActiveStop: @escaping @Sendable (UInt64) -> DownloadStopResult? = { _ in nil },
+        scheduleJob: @escaping @Sendable (UInt64) -> Void = { _ in }
+    ) {
+        self.init(
+            store: store,
+            requestActiveStop: requestActiveStop,
+            scheduleJob: scheduleJob,
+            beforeQueuedNetworkPause: {})
     }
 
     public convenience init(
@@ -73,7 +88,15 @@ public final class NetworkPauseCoordinator: Sendable {
             scheduleJob(jobID)
             return job
         }
-        return try? store.pause(id: jobID, reason: .network)
+        beforeQueuedNetworkPause()
+        guard let paused = try? store.pause(id: jobID, reason: .network) else {
+            return nil
+        }
+        if downloadsAllowed {
+            resumeNetworkPausedJob(jobID)
+            return store.job(id: jobID) ?? paused
+        }
+        return paused
     }
 
     private var downloadsAllowed: Bool {

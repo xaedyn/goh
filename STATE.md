@@ -169,6 +169,9 @@ branch. Implemented so far:
 - Local review caught and fixed a path-update ordering issue: policy work no
   longer goes to the global queue, so cellular/Wi-Fi updates apply in delivery
   order while still not blocking the `NWPathMonitor` callback.
+- CodeRabbit's queued-admission race comment is fixed locally: after a queued
+  job is network-paused, the coordinator re-checks the latest path and
+  immediately resumes/schedules it if the path is now allowed.
 
 Next: PR #18 is open; after CI and review are green, make it ready and merge if
 the autonomous merge gates are still satisfied.

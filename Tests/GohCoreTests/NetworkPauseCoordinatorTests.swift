@@ -3,7 +3,7 @@ import Foundation
 import Synchronization
 import Testing
 
-import GohCore
+@testable import GohCore
 
 @Suite("Network pause coordinator")
 struct NetworkPauseCoordinatorTests {
@@ -138,5 +138,29 @@ struct NetworkPauseCoordinatorTests {
         #expect(summary.state == .paused)
         #expect(summary.pauseReason == .network)
         #expect(scheduled.withLock { $0 }.isEmpty)
+    }
+
+    @Test("queued admission does not strand a job when Wi-Fi returns during the pause decision")
+    func queuedAdmissionDoesNotStrandJobWhenPathRestores() throws {
+        let store = JobStore()
+        let scheduled = Mutex<[UInt64]>([])
+        let holder = Mutex<NetworkPauseCoordinator?>(nil)
+        let coordinator = NetworkPauseCoordinator(
+            store: store,
+            scheduleJob: { id in scheduled.withLock { $0.append(id) } },
+            beforeQueuedNetworkPause: {
+                holder.withLock { $0 }?.handlePathUpdate(.satisfiedNonCellular)
+            })
+        holder.withLock { $0 = coordinator }
+        coordinator.handlePathUpdate(.satisfiedCellular)
+        let job = newJob(store)
+
+        let summary = try #require(coordinator.jobBecameQueued(job.id))
+        let current = try #require(store.job(id: job.id))
+        #expect(summary.state == .queued)
+        #expect(summary.pauseReason == nil)
+        #expect(current.state == .queued)
+        #expect(current.pauseReason == nil)
+        #expect(scheduled.withLock { $0 } == [job.id])
     }
 }
