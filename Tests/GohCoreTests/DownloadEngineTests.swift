@@ -4,7 +4,7 @@ import Testing
 
 @testable import GohCore
 
-@Suite("Download engine")
+@Suite("Download engine", .serialized)
 struct DownloadEngineTests {
 
     private func mockSession() -> URLSession {
