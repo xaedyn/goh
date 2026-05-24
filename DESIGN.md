@@ -1376,9 +1376,11 @@ field to that volatile store. When the field is absent or `true`, `add`
 snapshots the current matching `Cookie` header for the new job; when the field
 is `false`, it stores nothing. `rm` clears the per-job header. This keeps the
 wire default (`true`) meaningful without storing Safari cookies or derived
-headers on disk. Jobs restored after a daemon restart therefore need a fresh
-import before credentialed requests can be retried; that is intentional until a
-secure persistent credential-storage design exists.
+headers on disk. The import applies to subsequent `add` commands; existing jobs
+keep the header snapshot (or lack of one) they were created with. Jobs restored
+after a daemon restart lose volatile cookie headers and are not automatically
+reauthenticated; a user can re-import before creating a replacement job, and a
+future secure persistent credential-storage design can revisit automatic retry.
 
 The Safari cookie-file locator is deliberately narrow: it checks the modern
 container path first
@@ -1394,6 +1396,197 @@ when the CLI can no longer open Safari's cookie file. The existing IPC lean from
 native XPC file descriptor to `gohd`, so the daemon never needs Full Disk Access
 itself. Freezing the command/reply shape is a wire-contract decision and should
 be handled explicitly before the command lands.
+
+### Auth import command contract draft — round 1, not frozen
+
+**Question.** How should `goh auth import safari` cross the CLI/daemon boundary
+without giving the daemon Full Disk Access and without weakening the frozen wire
+rules?
+
+**Options considered.**
+- *Protocol v2 command with native fd sibling* — add an auth-import command in
+  the next protocol version. The interactive CLI opens Safari's readable cookie
+  file and sends that open descriptor as a native XPC sibling key; the daemon
+  parses the file and replaces its process-local `ImportedCookieStore`.
+- *Retrofit the command into `protocolVersion = 1` before v0.1 ships* — faster,
+  but it mutates the already-frozen command enum and golden fixtures.
+- *CLI parses cookies and sends structured cookie records* — avoids fd handling,
+  but moves credential material into the JSON payload and duplicates parser
+  ownership into the short-lived CLI path.
+- *Daemon holds Full Disk Access and opens the file itself* — simplest IPC, but
+  leaves a launchd-managed background agent with broad standing file access.
+
+**Proposed answer.** Use a new `protocolVersion = 2` command:
+`authImportSafari` with an empty JSON request payload and success reply
+`{ importedCookieCount: UInt32 }`. The request envelope carries one required
+native XPC sibling fd under a namespaced key such as `auth.safariCookieFile`.
+The CLI obtains that fd by opening the first readable URL returned by
+`SafariCookieFileLocator`; if open fails because Full Disk Access is missing or
+revoked, the CLI prints the permission remedy and does not send the command.
+The daemon rejects a missing or invalid fd with `invalidArgument`, parses valid
+bytes with `SafariBinaryCookiesParser`, and calls
+`ImportedCookieStore.replaceCookies(_:)`. Import is replace-all for v0.1, not
+merge.
+
+The platform mechanics support this shape: Apple's `xpc_fd_create` documentation
+states that boxing an fd duplicates it, so the sender can close the original
+after boxing; `xpc_fd_dup` returns an equivalent descriptor in the receiver,
+which must close it. `FileHandle(forReadingFrom:)` creates a handle that owns its
+local descriptor. Sources:
+<https://developer.apple.com/documentation/xpc/xpc_fd_create%28_%3A%29?language=objc>,
+<https://developer.apple.com/documentation/xpc/xpc_fd_dup%28_%3A%29?language=objc>,
+and <https://developer.apple.com/documentation/foundation/filehandle/init%28forreadingfromurl%3A%29>.
+
+**Open.**
+- Confirm the exact sibling key spelling before implementation; once shipped, it
+  is append-only under §4.3.
+- Confirm whether `authImportSafari` should be the command enum spelling or
+  whether a wider `auth` command namespace is worth the added nesting.
+- Confirm the user-facing FDA prompt text and exit code when the CLI cannot open
+  either Safari cookie path.
+- Confirm whether the success reply needs an optional warning count for skipped
+  malformed cookie records; the current parser is fail-fast, so the lean is no.
+
+### Auth import command contract review — round 2, not frozen
+
+**Review finding: import scope.** The Round 1 draft must not imply that a fresh
+import repairs already-created jobs. The current, deliberately non-persistent
+cookie model snapshots a per-job header at `add`, then the engine only reads
+that snapshot. Recomputing headers later would need a stored "this job opted into
+imported cookies" bit; without that bit, a later import could attach cookies to a
+job that was created with `useImportedCookies: false`. Round 2 therefore narrows
+the command's effect: `authImportSafari` replaces the daemon's process-local jar
+for **future `add` commands only**. Existing jobs keep their original auth state,
+and credentials do not survive daemon restart.
+
+**Review finding: command shape.** Keep the command enum flat:
+`authImportSafari(request: AuthImportSafariRequest)`. A nested `auth` command
+namespace would add abstraction before the CLI has any other auth subcommands.
+Future Chrome/Firefox import is already v0.2 scope and can justify a fresh
+protocol version if it needs one.
+
+**Review finding: fd sibling key.** Use `auth.safariCookieFile` as the exact
+native XPC sibling key. It is short, scoped to auth, names the resource rather
+than the implementation type, and leaves room for future siblings such as
+`auth.chromeCookieDatabase` without colliding with envelope keys.
+
+**Review finding: CLI failure behavior.** If the CLI cannot open either Safari
+cookie path, it should not send an XPC request. It exits unsuccessfully after
+printing the expected paths and a clear Full Disk Access remedy:
+grant Full Disk Access to the terminal app (or to `goh` when it is installed as
+a standalone binary), then rerun `goh auth import safari`. The exact numeric exit
+code belongs to the CLI slice, which has not yet defined command-line exit
+taxonomy; until then, the contract should avoid baking a number into the wire
+design.
+
+**Review finding: malformed records.** Keep the parser fail-fast for v0.1 and
+return only `{ importedCookieCount }` on success. Partial import of a corrupted
+credential file is surprising and harder to explain than an explicit failure.
+If real Safari files later show recoverable malformed records, add an optional
+warning field in a new round before implementation.
+
+**Open after round 2.**
+- Confirm that `protocolVersion = 2` is acceptable for the auth command rather
+  than treating pre-v0.1 v1 as still mutable.
+- Confirm the final user-facing FDA wording in the CLI implementation slice.
+- Confirm whether the "future adds only" import scope is acceptable for v0.1, or
+  whether we need a separate persistent job-auth-opt-in bit before shipping
+  credentialed resume across daemon restarts.
+
+### Auth import command contract conclusions — round 3, candidate text
+
+This section rewrites the draft and review notes down to candidate conclusions.
+It is still **not frozen** until the final audit and merge of the design PR.
+
+`goh auth import safari` is a new `protocolVersion = 2` command, not a mutation
+of v1. The request payload is an empty struct,
+`AuthImportSafariRequest`; the success reply is
+`AuthImportSafariReply { importedCookieCount: UInt32 }`. The `Command` enum case
+is flat: `authImportSafari(request: AuthImportSafariRequest)`.
+
+The request envelope carries exactly one required native XPC fd sibling under
+the key `auth.safariCookieFile`. The fd points at an already-open Safari
+`Cookies.binarycookies` file. The fd sibling is not represented inside the JSON
+payload, because an fd's integer value is process-local and only XPC's native
+fd-passing duplicates the underlying descriptor across processes.
+
+The CLI owns the Full Disk Access boundary. It locates Safari's cookie file via
+`SafariCookieFileLocator`, opens the first readable candidate, boxes the open fd
+as the `auth.safariCookieFile` XPC sibling, sends `authImportSafari`, and closes
+its local handle after the send path has boxed/duplicated the descriptor. If the
+CLI cannot open either candidate, it does not send XPC. It exits unsuccessfully
+after printing both expected paths and this remedy in substance: grant Full Disk
+Access to the terminal app (or to `goh` when installed as a standalone binary),
+then rerun `goh auth import safari`. The exact numeric exit-code taxonomy stays
+with the CLI slice.
+
+The daemon owns parsing and cookie replacement. It duplicates the received fd,
+reads the bytes, parses with `SafariBinaryCookiesParser`, and replaces the
+process-local `ImportedCookieStore` jar with the parsed cookies. A missing fd,
+wrongly-typed sibling, unreadable fd, or malformed cookie file returns the
+existing `invalidArgument` error code with a message naming the problem. Success
+is all-or-nothing: malformed cookie files do not partially import, and the reply
+does not carry warning counts in v0.1.
+
+Import affects future `add` commands only. Existing jobs keep the per-job cookie
+header snapshot (or lack of one) they were created with. Imported cookies and
+derived per-job headers remain process-local and disappear on daemon restart.
+Therefore v0.1 does **not** promise credentialed resume across daemon restarts.
+Adding secure persistent credential storage, or even a persisted job-auth-opt-in
+bit that enables post-restart re-snapshotting, is a separate load-bearing design
+decision and is deferred.
+
+**Considered alternatives.**
+- *Mutate `protocolVersion = 1` because v0.1 has not shipped yet* — rejected:
+  this repo has already chosen to treat v1 command schemas and fixtures as
+  frozen. Keeping that discipline now prevents pre-release convenience from
+  becoming the habit that later breaks users.
+- *Nested command namespace such as `auth(command:)`* — rejected for v0.1:
+  there is only one auth subcommand, while Chrome/Firefox import is v0.2 scope
+  and may have different persistence/security mechanics.
+- *CLI parses cookies and sends JSON records* — rejected: it moves credential
+  material into payload JSON and splits parser ownership across short-lived CLI
+  code and daemon code.
+- *Daemon holds Full Disk Access* — rejected: a launchd-managed daemon with FDA
+  is a broader standing capability and a worse user mental model than an
+  interactive command opening one file and passing the descriptor.
+- *Partial import with skipped-record warnings* — rejected for v0.1: it is
+  difficult to explain and could leave the user with a subtly incomplete auth
+  jar. Fail-fast is simpler and safer until real Safari files prove a recovery
+  path is needed.
+
+### Auth import command contract final audit — round 4
+
+This pass checks the candidate contract against the §4.3 wire-change checklist
+and the auth slice's security goals. It finds the contract ready to freeze once
+the design PR is reviewed and merged.
+
+- **Versioning:** adding `authImportSafari` is a new `Command` enum case, so the
+  design correctly moves to `protocolVersion = 2` instead of changing v1.
+- **Envelope compatibility:** the four canonical envelope keys remain unchanged.
+  `auth.safariCookieFile` is an append-only native XPC sibling key, not a
+  renamed or retyped envelope field.
+- **Payload compatibility:** v1 payload structs are untouched. The new v2
+  request is empty and the reply has one required success field,
+  `importedCookieCount`, because no older v2 client exists yet.
+- **Error-code compatibility:** the contract uses existing `invalidArgument`
+  failures for missing/wrong/unreadable fd and malformed cookie file. No new
+  `ErrorCode` case is introduced.
+- **Credential boundary:** the CLI, not `gohd`, owns Full Disk Access. The daemon
+  receives only an already-open fd and therefore does not need a broad standing
+  TCC grant.
+- **Persistence boundary:** no cookie jar, derived header, or job-auth-opt-in bit
+  is persisted. The design explicitly avoids promising credentialed resume after
+  daemon restart.
+- **Implementation test obligations:** the implementation PR must add immutable
+  v2 golden fixtures, command round-trip tests, XPC fd sibling encode/decode
+  tests, daemon rejection tests for missing/wrong fd siblings, parser success and
+  parse-failure command tests, and CLI-side tests for the "cannot open Safari
+  cookie file, do not send XPC" path when the CLI parser exists.
+
+No further design rounds are needed for the wire contract. The remaining FDA
+prompt prose can be polished in the CLI implementation slice without changing
+the request/reply schema or fd sibling key.
 
 ## Hashing
 
