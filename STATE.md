@@ -21,7 +21,8 @@ session; update at the start of every PR and at the end of every session.
   hook so initial, range-parallel, and resume requests can carry daemon-supplied
   cookies. The fourth step wires the frozen `add.useImportedCookies` field to a
   volatile per-job header snapshot and clears it on `rm`. No persistent
-  cookie-store format or new IPC command has been added.
+  cookie-store format or new IPC command has been added. The fifth step adds the
+  Safari cookie-file locator for the modern container path plus legacy fallback.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -171,6 +172,7 @@ command/FDA contract before wiring XPC:
   explicit design note;
 - connect the future import command to `ImportedCookieStore.replaceCookies(_:)`
   and the daemon's `DownloadEngine.cookieHeaderProvider`;
+- use `SafariCookieFileLocator` in the CLI-side FDA open flow;
 - keep Full Disk Access prompting and revocation handling user-clear;
 - avoid introducing a public persistent cookie-store format without an explicit
   design pass;

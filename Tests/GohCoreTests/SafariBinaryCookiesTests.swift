@@ -183,6 +183,33 @@ struct SafariBinaryCookiesTests {
             now: now) == nil)
     }
 
+    @Test("Safari cookie file locator prefers the modern container path")
+    func safariCookieFileLocatorPrefersContainerPath() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appending(path: "goh-safari-cookie-locator-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let candidates = SafariCookieFileLocator.candidateURLs(homeDirectory: home)
+        let container = home.appending(
+            path: "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies")
+        let legacy = home.appending(path: "Library/Cookies/Cookies.binarycookies")
+
+        #expect(candidates == [container, legacy])
+        #expect(SafariCookieFileLocator.firstReadableCookieFile(homeDirectory: home) == nil)
+
+        try FileManager.default.createDirectory(
+            at: legacy.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("legacy".utf8).write(to: legacy)
+        #expect(SafariCookieFileLocator.firstReadableCookieFile(homeDirectory: home) == legacy)
+
+        try FileManager.default.createDirectory(
+            at: container.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("container".utf8).write(to: container)
+        #expect(SafariCookieFileLocator.firstReadableCookieFile(homeDirectory: home) == container)
+    }
+
     private func cookie(
         domain: String,
         name: String,

@@ -1374,6 +1374,13 @@ headers on disk. Jobs restored after a daemon restart therefore need a fresh
 import before credentialed requests can be retried; that is intentional until a
 secure persistent credential-storage design exists.
 
+The Safari cookie-file locator is deliberately narrow: it checks the modern
+container path first
+(`~/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies`)
+and the legacy path second (`~/Library/Cookies/Cookies.binarycookies`). The
+locator only finds a readable path; the interactive CLI still owns the Full Disk
+Access prompt and fd-open behavior.
+
 The still-open auth decisions are the user-visible `goh auth import safari`
 command shape, the Full Disk Access prompt wording, and the revocation behavior
 when the CLI can no longer open Safari's cookie file. The existing IPC lean from
