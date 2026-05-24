@@ -46,19 +46,25 @@ public struct GohCommandLine {
                     standardOutput: result.standardOutput,
                     standardError: result.standardError)
 
-            case .add(let url):
+            case .add(let request):
                 let summary: JobSummary = try sendCommand(
-                    .add(request: AddRequest(url: url)),
+                    .add(request: request),
                     expecting: JobSummary.self)
                 return GohCommandLineResult(
                     exitCode: 0,
                     standardOutput: Self.addedMessage(summary))
 
-            case .ls:
+            case .ls(.table):
                 let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
                 return GohCommandLineResult(
                     exitCode: 0,
                     standardOutput: Self.table(for: reply.jobs))
+
+            case .ls(.json):
+                let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
+                return GohCommandLineResult(
+                    exitCode: 0,
+                    standardOutput: try Self.json(reply))
 
             case .pause(let jobID):
                 let summary: JobSummary = try sendCommand(
@@ -138,11 +144,16 @@ public struct GohCommandLine {
 private enum ParsedCommand: Equatable {
     case help
     case authImportSafari
-    case add(String)
-    case ls
+    case add(AddRequest)
+    case ls(OutputFormat)
     case pause(UInt64)
     case resume(UInt64)
     case remove(RmRequest)
+}
+
+private enum OutputFormat: Equatable {
+    case table
+    case json
 }
 
 private struct ParseError: Error, Equatable {
@@ -162,11 +173,14 @@ extension GohCommandLine {
         if arguments == ["auth", "import", "safari"] {
             return .authImportSafari
         }
-        if arguments.count == 2, arguments[0] == "add" {
-            return .add(arguments[1])
+        if arguments.first == "add" {
+            return .add(try parseAdd(Array(arguments.dropFirst())))
         }
         if arguments == ["ls"] {
-            return .ls
+            return .ls(.table)
+        }
+        if arguments == ["ls", "--json"] {
+            return .ls(.json)
         }
         if arguments.count == 2, arguments[0] == "pause" {
             return .pause(try parseJobID(arguments[1]))
@@ -187,6 +201,70 @@ extension GohCommandLine {
         }
 
         throw ParseError(message: "unknown or incomplete command")
+    }
+
+    private static func parseAdd(_ arguments: [String]) throws -> AddRequest {
+        var url: String?
+        var destination: String?
+        var connectionCount: UInt8?
+        var useImportedCookies: Bool?
+        var priority: Priority?
+        var index = 0
+
+        while index < arguments.count {
+            let argument = arguments[index]
+            switch argument {
+            case "--output", "-o":
+                destination = try value(after: argument, in: arguments, at: &index)
+            case "--connections":
+                let raw = try value(after: argument, in: arguments, at: &index)
+                guard let parsed = UInt8(raw), (1...16).contains(parsed) else {
+                    throw ParseError(message: "connections must be an integer from 1 to 16")
+                }
+                connectionCount = parsed
+            case "--priority":
+                let raw = try value(after: argument, in: arguments, at: &index)
+                guard let parsed = Priority(rawValue: raw) else {
+                    throw ParseError(message: "priority must be low, normal, or high")
+                }
+                priority = parsed
+            case "--no-cookies":
+                useImportedCookies = false
+                index += 1
+            default:
+                guard !argument.hasPrefix("-") else {
+                    throw ParseError(message: "unknown add option \(argument)")
+                }
+                guard url == nil else {
+                    throw ParseError(message: "add accepts exactly one URL")
+                }
+                url = argument
+                index += 1
+            }
+        }
+
+        guard let url else {
+            throw ParseError(message: "add requires a URL")
+        }
+        return AddRequest(
+            url: url,
+            destination: destination,
+            connectionCount: connectionCount,
+            useImportedCookies: useImportedCookies,
+            priority: priority)
+    }
+
+    private static func value(
+        after option: String,
+        in arguments: [String],
+        at index: inout Int
+    ) throws -> String {
+        let valueIndex = index + 1
+        guard valueIndex < arguments.count else {
+            throw ParseError(message: "\(option) requires a value")
+        }
+        index += 2
+        return arguments[valueIndex]
     }
 
     private static func parseJobID(_ raw: String) throws -> UInt64 {
@@ -270,6 +348,17 @@ extension GohCommandLine {
             value,
             units[unitIndex])
     }
+
+    private static func json<Payload: Encodable>(_ payload: Payload) throws -> String {
+        let data: Data
+        do {
+            data = try CommandCoding.encoder.encode(payload)
+        } catch {
+            throw GohCommandLineError.malformedReply(
+                "failed to encode JSON output: \(error)")
+        }
+        return String(decoding: data, as: UTF8.self) + "\n"
+    }
 }
 
 extension GohCommandLine {
@@ -280,8 +369,8 @@ extension GohCommandLine {
         }
         text += """
         Usage:
-          goh add <url>
-          goh ls
+          goh add [--output <path>] [--connections <1-16>] [--priority low|normal|high] [--no-cookies] <url>
+          goh ls [--json]
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>

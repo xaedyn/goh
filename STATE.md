@@ -5,9 +5,9 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/cli-client`
+- **Branch:** `feat/cli-options-json`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
-  `5b3884d`.
+  `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`.
 - **Current slice:** Slice 7, the `goh` CLI client. The slice starts from the
   shipped daemon, engine, auth import, Spotlight metadata, and sleep assertion
   foundation and fills out the command-line surface in `ROADMAP.md` §2-4:
@@ -22,6 +22,9 @@ session; update at the start of every PR and at the end of every session.
   prints `brew services start goh` guidance when the daemon is unreachable.
   Foreground `goh <url>` remains deliberately deferred until the progress
   subscription path exists, rather than pretending to be a background add.
+  The follow-up CLI polish branch exposes already-frozen `add` options
+  (`--output`, `--connections`, `--priority`, `--no-cookies`) and adds
+  `goh ls --json` over the existing `LsReply` payload.
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -179,11 +182,11 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/cli-client`.
+Current branch: `feat/cli-options-json`.
 
-Slice 7's first PR is locally ready. It test-drives the one-shot CLI control
-surface and records the CLI exit-code / first-run-guidance decision in
-`DESIGN.md`. Local gates for this branch:
+PR #23 was locally verified, opened, checked against CI, and squash-merged into
+`main` at `db9b82a`. CodeRabbit again posted only a non-actionable quota /
+usage-credit warning. The final PR #23 gates were:
 
 - `swift build -Xswiftc -warnings-as-errors`
 - `swift test` — 175 tests
@@ -194,9 +197,22 @@ surface and records the CLI exit-code / first-run-guidance decision in
   guidance and exits `1`
 - `swift run goh pause abc` — prints usage guidance and exits `64`
 
-Next: open the PR, wait for CI/review, address findings, then continue Slice 7
-with the foreground `goh <url>` / live-progress subscription path and `goh top`
-prep.
+The non-wire CLI polish branch is locally ready. It adds `add` option parsing
+for the already-frozen request fields and `ls --json` over the existing reply
+payload. Local gates for this branch:
+
+- `swift build -Xswiftc -warnings-as-errors`
+- `swift test` — 177 tests
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1407s, unified
+  0.1283s, overhead -8.8 %
+- `swift run goh --help` — shows the new `add` options and `ls --json`
+- `swift run goh add --output /tmp/private.zip --connections 12 --priority high
+  --no-cookies https://example.com/private.zip` with no daemon loaded — parses
+  locally, then prints `brew services start goh` guidance and exits `1`
+
+Next: open the non-wire CLI polish PR, wait for CI/review, address findings, and
+then move to the load-bearing progress subscription design needed for foreground
+`goh <url>` and `goh top`.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

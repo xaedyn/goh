@@ -1635,6 +1635,13 @@ the restart remedy `brew services restart goh`. These are CLI presentation
 choices, not wire-contract fields, and can be refined before v0.1 without a
 `protocolVersion` bump.
 
+The CLI exposes only options that already exist in the frozen command schema:
+`goh add --output`, `--connections`, `--priority`, and `--no-cookies` map
+directly to `AddRequest.destination`, `connectionCount`, `priority`, and
+`useImportedCookies`. `goh ls --json` prints the existing `LsReply` payload using
+the command JSON codec, with a trailing newline for shell ergonomics. This is a
+presentation choice over the current protocol, not a new wire shape.
+
 ## Hashing
 
 _TBD — SHA-256 via CryptoKit, streamed through the chunk assembler during the
