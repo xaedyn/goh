@@ -1,6 +1,23 @@
 import Foundation
 import Synchronization
 
+/// Summary of the daemon's startup repair pass over jobs that were `active`
+/// when the previous daemon process exited.
+public struct StartupReconciliationResult: Sendable, Equatable {
+    public var requeuedJobIDs: [UInt64]
+    public var failedJobIDs: [UInt64]
+
+    public init(requeuedJobIDs: [UInt64] = [], failedJobIDs: [UInt64] = []) {
+        self.requeuedJobIDs = requeuedJobIDs
+        self.failedJobIDs = failedJobIDs
+    }
+}
+
+private enum StartupReconciliationDecision: Sendable {
+    case requeue(progress: JobProgress, lastProgressAt: Date)
+    case fail(message: String)
+}
+
 /// The daemon's in-memory store of download jobs (`DESIGN.md` §2).
 ///
 /// Jobs are held behind a `Mutex` so the synchronous XPC dispatch path can reach
@@ -161,6 +178,70 @@ public final class JobStore: Sendable {
         }
     }
 
+    /// Repairs jobs that were persisted as `active` before a daemon restart.
+    ///
+    /// This is the one intentional `active → queued` path. It is not a normal
+    /// lifecycle transition: after a restart no engine task owns those jobs, so
+    /// the store either proves a checkpoint is safe enough to schedule or marks
+    /// the job failed with a retryable recovery error.
+    public func reconcileActiveJobsOnStartup(
+        checkpoints: CheckpointStore
+    ) -> StartupReconciliationResult {
+        let activeJobs = state.withLock { state in
+            state.jobs.filter { $0.state == .active }
+        }
+        guard !activeJobs.isEmpty else { return StartupReconciliationResult() }
+
+        var decisions: [UInt64: StartupReconciliationDecision] = [:]
+        for job in activeJobs {
+            let loaded = checkpoints.load(jobID: job.id)
+            if let checkpoint = loaded.checkpoint,
+               let progress = checkpoint.startupResumeProgress(for: job)
+            {
+                decisions[job.id] = .requeue(
+                    progress: progress, lastProgressAt: checkpoint.updatedAt)
+            } else {
+                decisions[job.id] = .fail(
+                    message: Self.unsafeResumeMessage(sidecar: loaded.corruptionSidecar))
+            }
+        }
+
+        return withMutation { state in
+            var result = StartupReconciliationResult()
+            for index in state.jobs.indices where state.jobs[index].state == .active {
+                let jobID = state.jobs[index].id
+                guard let decision = decisions[jobID] else { continue }
+                switch decision {
+                case .requeue(let progress, let lastProgressAt):
+                    state.jobs[index].state = .queued
+                    state.jobs[index].progress = progress
+                    state.jobs[index].lastProgressAt = lastProgressAt
+                    state.jobs[index].actualConnectionCount = 0
+                    state.jobs[index].pauseReason = nil
+                    state.jobs[index].completedAt = nil
+                    state.jobs[index].error = nil
+                    state.jobs[index].retryEligible = nil
+                    state.jobs[index].failedAt = nil
+                    state.jobs[index].retryCount = nil
+                    result.requeuedJobIDs.append(jobID)
+                case .fail(let message):
+                    state.jobs[index].state = .failed
+                    state.jobs[index].progress.bytesPerSecond = 0
+                    state.jobs[index].actualConnectionCount = 0
+                    state.jobs[index].pauseReason = nil
+                    state.jobs[index].completedAt = nil
+                    state.jobs[index].error = GohError(
+                        code: .connectionFailed, message: message)
+                    state.jobs[index].failedAt = Date()
+                    state.jobs[index].retryEligible = true
+                    state.jobs[index].retryCount = 0
+                    result.failedJobIDs.append(jobID)
+                }
+            }
+            return result
+        }
+    }
+
     /// Removes the job's tracking record (`DESIGN.md` §3.5 "File ownership
     /// boundary" — the record, not any file on disk).
     public func remove(id: UInt64) throws {
@@ -198,5 +279,14 @@ public final class JobStore: Sendable {
             change(&state.jobs[index])
             return state.jobs[index]
         }
+    }
+
+    private static func unsafeResumeMessage(sidecar: URL?) -> String {
+        var message = "resume metadata was unavailable or unsafe after daemon restart"
+        if let sidecar {
+            message += "; damaged checkpoint was kept at \(sidecar.path)"
+        }
+        message += "; retry to start a fresh download"
+        return message
     }
 }

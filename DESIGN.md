@@ -205,25 +205,16 @@ state: it exists only for unfinished jobs, may be rewritten often, and is delete
 when a job reaches `completed`, reaches non-resumable `failed`, or is removed
 without `--keep`.
 
-### Checkpoint / Resume Draft — Round 1
+### Checkpoint / Resume Contract
 
-This subsection is a design draft for Slice 3c. It is not yet the frozen
-checkpoint contract; implementation waits until the open questions below are
-reviewed.
+This subsection is the Slice 3c implementation contract. The checkpoint format is
+daemon-owned, not a public wire format, so it can migrate behind its own
+`version` field without a `protocolVersion` bump. The user-visible behavior is
+load-bearing: the daemon never silently discards a resumable partial and never
+claims a partial is resumable when the validators do not prove it.
 
-#### Question 1 — What happens to persisted `active` jobs on daemon startup?
+#### Startup reconciliation
 
-**Options considered.**
-- *Restart from byte 0* — simple, but it lies about ROADMAP §7's resume promise
-  and can silently discard large partial downloads.
-- *Leave them `active` until a command touches them* — preserves bytes but emits a
-  state that is not true; no engine task owns the job after restart.
-- *Add a new `interrupted` state* — clear, but adding a `JobState` case is a
-  `protocolVersion` bump for v1.
-- *Reconcile at startup using checkpoints* — keep the v1 state machine and make
-  the daemon repair impossible persisted states before serving XPC.
-
-**Proposed answer.**
 On startup, `gohd` scans persisted jobs before scheduling any downloads:
 
 - `active` with a valid checkpoint becomes `queued` and is immediately eligible
@@ -236,26 +227,27 @@ On startup, `gohd` scans persisted jobs before scheduling any downloads:
 - `paused` jobs remain paused; user-paused jobs do not auto-resume, and
   network-paused jobs are resumed only by the later path-monitor slice.
 
-**Open.**
-Should `failed` use `.connectionFailed` for unsafe checkpoint recovery, or is
-the right move to bump `protocolVersion` for a dedicated error code? The lean is
-to avoid a v1 bump: the code is less important than the explanatory message, and
-`retryEligible` already carries the "try again as a fresh job" signal.
+Unsafe checkpoint recovery uses existing `GohError.code == .connectionFailed`.
+The explanatory `message` carries the recovery detail, and `retryEligible == true`
+carries the actionable signal that a fresh attempt may succeed. A dedicated error
+code is deferred until there is a CLI branch that cannot be expressed by the
+current code / message / `retryEligible` combination.
 
-#### Question 2 — What does a checkpoint record contain?
+**Considered alternatives.**
+- *Restart from byte 0* — simple, but it lies about ROADMAP §7's resume promise
+  and can silently discard large partial downloads.
+- *Leave them `active` until a command touches them* — preserves bytes but emits a
+  state that is not true; no engine task owns the job after restart.
+- *Add a new `interrupted` state* — clear, but adding a `JobState` case is a
+  `protocolVersion` bump for v1.
+- *Add a dedicated `checkpointInvalid` error code* — cleaner for machines, but a
+  v1 wire bump is not justified while `.connectionFailed` plus a clear message
+  and `retryEligible` are enough.
 
-**Options considered.**
-- *Only a contiguous byte count* — safest and tiny, but range-parallel downloads
-  lose already-written out-of-order pieces after a crash.
-- *One file per range task* — maps to the implementation, not the file; range
-  splits can change between attempts.
-- *A piece map over the destination file* — stable across scheduler choices and
-  matches the 1 MiB checkpoint promise.
+#### Checkpoint record
 
-**Proposed answer.**
 Use a versioned binary property list per job:
-`checkpoints/<jobID>.checkpoint.plist`. It is daemon-owned, not a public wire
-format, but carries `version` for migrations.
+`checkpoints/<jobID>.checkpoint.plist`.
 
 The v1 checkpoint records:
 
@@ -268,30 +260,29 @@ The v1 checkpoint records:
 - HTTP resume validators: strong `ETag` when present, `Last-Modified` when
   present, and `Content-Length` / `Content-Range` total
 - `pieceSize == 1 MiB`
-- a completed-piece map, plus a final-piece length when `totalBytes` is known
+- completed pieces as sorted, non-overlapping byte intervals
 - `updatedAt`
 
 The piece map says "these byte ranges were written and made durable", not
 "these bytes are cryptographically verified". End-to-end integrity still comes
 from the final SHA-256 digest computed by the engine.
 
-**Open.**
-Should the first implementation persist the piece map as a compact bitset or as
-sorted intervals? The lean is sorted intervals for implementation clarity in
-v0.1; a bitset can replace it later behind a checkpoint `version` bump if large
-job catalogs show measurable overhead.
+Sorted intervals are the v0.1 representation because they are readable in
+diagnostics, easy to merge, and stable even when the scheduler changes range
+splits between attempts. A compact bitset can replace the internal representation
+behind a checkpoint `version` bump if large files show measurable manifest
+overhead.
 
-#### Question 3 — When is a piece safe to mark complete?
+**Considered alternatives.**
+- *Only a contiguous byte count* — safest and tiny, but range-parallel downloads
+  lose already-written out-of-order pieces after a crash.
+- *One file per range task* — maps to the implementation, not the file; range
+  splits can change between attempts.
+- *A compact bitset from the start* — space-efficient, but less transparent and
+  unnecessary until measured manifest size says otherwise.
 
-**Options considered.**
-- *Mark after `pwrite` returns* — fast, but a crash can leave the manifest ahead
-  of durable file bytes.
-- *Mark after the normal coalesced catalog save* — mixes job state with hot engine
-  checkpoints and makes the catalog save cadence a correctness boundary.
-- *Fsync the partial file, then atomically save the checkpoint* — slower, but the
-  manifest never promises bytes that the daemon has not forced to disk.
+#### Piece durability
 
-**Proposed answer.**
 A piece becomes trusted only after:
 
 1. the engine writes the full piece at its file offset;
@@ -303,22 +294,31 @@ On restart, bytes present on disk but absent from the manifest are ignored and
 may be overwritten. This biases toward re-downloading at most the trailing
 uncheckpointed work rather than trusting ambiguous bytes.
 
-**Open.**
-The current `DownloadFile` fsyncs after cumulative 1 MiB of writes across all
-ranges. The checkpoint writer may need a piece-aware fsync API so the engine can
-make "piece complete" and "manifest updated" line up exactly.
+`DownloadFile` exposes a piece-aware sync point for this flow. The previous
+cumulative 1 MiB fsync cadence was enough for write-through hygiene, but not
+precise enough for a resume manifest whose entries are promises about specific
+byte intervals.
 
-#### Question 4 — How does HTTP validation protect resumed bytes?
+The initial Slice 3c implementation saves a checkpoint after each flushed
+interval is written and explicitly synced. Fresh downloads keep the
+range-parallel engine path; resumed downloads fetch only the missing intervals
+with `If-Range`, one interval at a time, then read the finished file back through
+the normal hasher before completing. Parallel resume is a performance
+optimization, not a correctness requirement, and can be added after the crash
+resume contract is stable under tests.
 
-**Options considered.**
-- *Trust URL + length only* — works often, but can splice bytes from two different
-  representations if the server changes content at the same URL.
-- *Require a strong validator for every resume* — safest, but disables resume for
-  servers that omit validators.
-- *Use the best available validator and fail closed on mismatch* — practical and
-  honest.
+**Considered alternatives.**
+- *Mark after `pwrite` returns* — fast, but a crash can leave the manifest ahead
+  of durable file bytes.
+- *Mark after the normal coalesced catalog save* — mixes job state with hot engine
+  checkpoints and makes the catalog save cadence a correctness boundary.
+- *Resume all missing intervals in parallel immediately* — faster for sparse
+  checkpoints, but it makes the first crash-resume slice share more machinery
+  with live cancellation and pause. Sequential missing-interval resume is easier
+  to validate and still preserves already-durable bytes.
 
-**Proposed answer.**
+#### HTTP resume validation
+
 When resuming, the engine probes with a ranged request and validates the response
 against the checkpoint:
 
@@ -332,21 +332,22 @@ against the checkpoint:
   ranges are unavailable. The job fails safely; it does not overwrite the partial
   file as a hidden restart.
 
-**Open.**
-Some real-world servers send weak ETags for immutable assets. The first
-implementation should treat weak ETags as insufficient for crash resume unless
-real benchmark targets prove that too restrictive.
+Weak ETags are not sufficient for crash resume in v0.1. If real benchmark
+targets prove that too restrictive, the rule can be revisited with measured
+hosts and explicit corruption tests.
 
-#### Question 5 — How do pause, resume, and `rm --keep` share the checkpoint?
+**Considered alternatives.**
+- *Trust URL + length only* — works often, but can splice bytes from two different
+  representations if the server changes content at the same URL.
+- *Require a strong validator for every resume* — safest, but disables resume for
+  servers that omit validators.
+- *Treat weak ETags as usable* — may work for many immutable assets, but weak
+  validators do not prove byte-for-byte identity strongly enough for crash
+  recovery.
 
-**Options considered.**
-- *Separate mechanisms for crash, pause, and keep-partial* — easier to stage but
-  likely to diverge.
-- *One checkpoint mechanism for all interruption paths* — more up-front design,
-  but fewer truth tables.
+#### Pause, resume, and kept partials
 
-**Proposed answer.**
-3c uses one checkpoint mechanism:
+3c uses one checkpoint mechanism for every interruption path:
 
 - `pause` asks the engine to stop at a checkpoint boundary, then transitions the
   job to `paused`.
@@ -357,11 +358,17 @@ real benchmark targets prove that too restrictive.
   enough checkpoint metadata for a future `add` of the same URL/destination to
   adopt it.
 
-**Open.**
-The existing `add` request has no explicit "adopt partial" flag. The lean is
-automatic adoption only when URL, destination, validators, and checkpoint all
-match exactly; otherwise `add` creates a fresh job and leaves the kept file
-alone.
+`add` performs automatic adoption only when URL, destination, validators, and
+checkpoint metadata match exactly. Otherwise it creates a fresh job and leaves
+the kept file alone. No explicit "adopt partial" flag is added to the v1 request
+schema.
+
+**Considered alternatives.**
+- *Separate mechanisms for crash, pause, and keep-partial* — easier to stage but
+  likely to diverge.
+- *An explicit `add(adoptPartial:)` request field* — user-visible control, but it
+  leaks checkpoint internals into the v1 IPC surface before there is a proven
+  need.
 
 ## IPC
 

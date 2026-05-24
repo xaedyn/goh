@@ -130,6 +130,85 @@ struct DownloadEngineTests {
         #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
     }
 
+    @Test("a checkpointed job resumes from the first missing byte")
+    func resumesFromCheckpoint() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let validator = "\"resume-validator\""
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            failRangeStartingAt: 0,
+            headers: ["ETag": validator],
+            requiredIfRange: validator)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin")
+        let job = store.create(
+            url: url, destination: destination.path, requestedConnectionCount: 8)
+        #expect(try store.start(id: job.id))
+
+        let checkpointedBytes = 2 << 20
+        try payload.prefix(checkpointedBytes).write(to: destination)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        try checkpointStore.save(DownloadCheckpoint(
+            jobID: job.id,
+            url: url,
+            destination: destination.path,
+            partialFileSize: UInt64(checkpointedBytes),
+            totalBytes: UInt64(payload.count),
+            strongETag: validator,
+            completedPieces: [CheckpointPiece(start: 0, length: UInt64(checkpointedBytes))]))
+        #expect(store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore).requeuedJobIDs == [job.id])
+
+        await DownloadEngine(session: mockSession(), checkpointStore: checkpointStore)
+            .run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .completed)
+        #expect(final?.progress.bytesCompleted == UInt64(payload.count))
+        #expect(try Data(contentsOf: destination) == payload)
+        #expect(checkpointStore.load(jobID: job.id).checkpoint == nil)
+    }
+
+    @Test("a failed ranged download leaves a durable checkpoint")
+    func failedRangedDownloadLeavesCheckpoint() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let validator = "\"checkpoint-validator\""
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            truncateRangeStartingAt: 0,
+            headers: ["ETag": validator])
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin")
+        let job = store.create(
+            url: url, destination: destination.path, requestedConnectionCount: 1)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+
+        await DownloadEngine(session: mockSession(), checkpointStore: checkpointStore)
+            .run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .failed)
+        #expect(final?.error?.code == .connectionFailed)
+        let checkpoint = try #require(checkpointStore.load(jobID: job.id).checkpoint)
+        #expect(checkpoint.strongETag == validator)
+        #expect(checkpoint.totalBytes == UInt64(payload.count))
+        #expect(checkpoint.completedPieces == [
+            CheckpointPiece(start: 0, length: UInt64(2 << 20)),
+        ])
+        #expect(checkpoint.partialFileSize == UInt64(2 << 20))
+    }
+
     @Test("a server without range support falls back to a single connection")
     func fallbackWhenNoRangeSupport() async throws {
         let directory = try temporaryDirectory()

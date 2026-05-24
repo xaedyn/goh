@@ -11,17 +11,16 @@ import GohCore
 // Single-connection downloads in this slice; range-parallel orchestration is
 // slice 3b.
 
-/// The daemon's catalog file —
-/// `~/Library/Application Support/dev.goh.daemon/catalog.plist`. The containing
-/// directory is created if absent.
-func catalogFileURL() throws -> URL {
+/// The daemon's support directory —
+/// `~/Library/Application Support/dev.goh.daemon`. Created if absent.
+func supportDirectoryURL() throws -> URL {
     let support = try FileManager.default.url(
         for: .applicationSupportDirectory, in: .userDomainMask,
         appropriateFor: nil, create: true)
     let directory = support.appending(
         path: GohXPCService.machServiceName, directoryHint: .isDirectory)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory.appending(path: "catalog.plist")
+    return directory
 }
 
 func warn(_ message: String) {
@@ -29,7 +28,8 @@ func warn(_ message: String) {
 }
 
 do {
-    let catalogStore = CatalogStore(fileURL: try catalogFileURL())
+    let supportDirectory = try supportDirectoryURL()
+    let catalogStore = CatalogStore(fileURL: supportDirectory.appending(path: "catalog.plist"))
     let loaded = catalogStore.load()
     if let sidecar = loaded.corruptionSidecar {
         warn("the job catalog was unreadable and has been reset; "
@@ -37,11 +37,21 @@ do {
     }
     let writer = CatalogWriter(store: catalogStore)
     let store = JobStore(catalog: loaded.catalog, writer: writer)
+    let checkpointStore = CheckpointStore(
+        directoryURL: supportDirectory.appending(path: "checkpoints", directoryHint: .isDirectory))
+    let reconciliation = store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore)
+    if !reconciliation.requeuedJobIDs.isEmpty || !reconciliation.failedJobIDs.isEmpty {
+        writer.flush()
+    }
+    for jobID in reconciliation.failedJobIDs {
+        warn("job \(jobID) could not safely resume after restart and was marked retryable")
+    }
 
     // The download engine runs a job whenever a command leaves it `queued` —
     // a fresh `add`, or a `resume`. Each run is its own detached task.
     let engine = DownloadEngine(
-        session: URLSession(configuration: GohCore.downloadSessionConfiguration()))
+        session: URLSession(configuration: GohCore.downloadSessionConfiguration()),
+        checkpointStore: checkpointStore)
     let dispatcher = CommandDispatcher(store: store, onJobQueued: { jobID in
         Task { await engine.run(jobID: jobID, in: store) }
     })

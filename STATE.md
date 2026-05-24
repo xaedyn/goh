@@ -5,13 +5,13 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `design/checkpoint-resume`
-- **Last merged:** PR #15 — core correctness gates — `main` at `dcdf709`.
-- **Current slice:** checkpoint/resume design before 3c: define daemon restart
-  reconciliation and the checkpoint manifest used by crash recovery, graceful
-  pause/resume, active `rm`, and retry.
-- **Last merged before #15:** PR #14 — Slice 3b, range-parallel orchestration —
-  `721871b`.
+- **Branch:** `feat/checkpoint-resume`
+- **Last merged:** PR #16 — checkpoint/resume design — `main` at `237c85e`.
+- **Current slice:** Slice 3c, checkpoint/resume implementation. This branch now
+  has checkpoint primitives, startup reconciliation, engine checkpoint writes,
+  and crash resume from the first missing byte; live pause/resume/rm/retry is
+  the next layer.
+- **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
 
@@ -56,9 +56,8 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Roadmap from here
 
-- **Checkpoint/resume design** — reconcile persisted `active` jobs on daemon
-  restart and freeze the checkpoint mechanism before 3c implementation.
-- **3c** — error / retry / cancellation: the retry policy (§2.2 Retry boundary),
+- **3c** — checkpoint/resume implementation, error / retry / cancellation: the
+  retry policy (§2.2 Retry boundary),
   `pause` / `resume` interrupting and resuming a live transfer against the
   checkpoint, `rm` teardown with `keepPartialFile`.
 - **4** — `NWPathMonitor` cellular auto-pause (§12).
@@ -152,19 +151,31 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `design/checkpoint-resume`.
+Current branch: `feat/checkpoint-resume`.
 
-PR #15 was squash-merged into `main` at `dcdf709`.
+PR #16 was squash-merged into `main` at `237c85e`. The checkpoint/resume design
+choices are now settled locally for implementation:
 
-Started the checkpoint/resume design pass in `DESIGN.md` §Persistence:
+- unsafe checkpoint recovery uses `.connectionFailed` with a clear message and
+  `retryEligible == true`;
+- checkpoint pieces are sorted intervals in v0.1;
+- `DownloadFile` gets a piece-aware fsync boundary;
+- weak ETags are not sufficient for crash resume;
+- `rm --keep` partial adoption is automatic only on exact URL, destination,
+  validator, and checkpoint match.
 
-- startup reconciliation for persisted `active` jobs;
-- a daemon-owned checkpoint manifest under `checkpoints/`;
-- piece-map checkpoints at the 1 MiB boundary;
-- durable ordering for `pwrite` / fsync / manifest replacement;
-- HTTP validator rules for safe resume;
-- shared checkpoint semantics for crash recovery, `pause`, `resume`, and
-  `rm --keep`.
+Implemented on `feat/checkpoint-resume` so far:
 
-Next: review the open questions in the draft, converge on the final answers,
-then rewrite the draft into settled design before implementing 3c.
+- `DownloadCheckpoint` / `CheckpointStore` with binary plist persistence,
+  sorted durable intervals, corrupt-checkpoint sidecars, and validator-aware
+  startup safety checks.
+- `JobStore.reconcileActiveJobsOnStartup(checkpoints:)`, wired into `gohd`
+  before queued jobs are scheduled. Safe active checkpoints requeue; unsafe or
+  missing ones fail retryably with `.connectionFailed`.
+- `DownloadEngine` accepts a checkpoint store, records synced ranged-download
+  intervals into checkpoints, resumes a checkpointed job with `If-Range` from
+  missing byte ranges, and deletes the checkpoint after completion.
+
+Next: build the live control layer on top of the same checkpoint mechanism:
+active `pause`, user `resume`, `rm` teardown with `keepPartialFile`, then retry
+policy.
