@@ -66,7 +66,7 @@ public struct CommandDispatcher: Sendable {
                 do {
                     if let checkpoint, let checkpointStore {
                         try checkpointStore.save(checkpoint.adopted(jobID: job.id))
-                        savedAdoptedCheckpoint = checkpoint.jobID != job.id
+                        savedAdoptedCheckpoint = true
                         if checkpoint.jobID != job.id {
                             try checkpointStore.delete(jobID: checkpoint.jobID)
                         }
