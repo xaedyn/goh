@@ -5,13 +5,14 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/safari-auth-import-command`
-- **Last merged:** PR #20 — auth import command contract — `main` at
-  `a27b3b2`.
-- **Current slice:** Slice 5, Safari cookie import. The slice starts from the
-  shipped network auto-pause daemon and adds the Safari
-  `Cookies.binarycookies` parser plus the Full Disk Access import flow described
-  in `ROADMAP.md` §9 / `DESIGN.md` §Auth.
+- **Branch:** `feat/spotlight-sleep-assertions`
+- **Last merged:** PR #21 — Safari auth import command — `main` at
+  `0da86e6`.
+- **Current slice:** Slice 6, Spotlight tagging and sleep assertions. The slice
+  starts from the shipped Safari auth import command and adds completion
+  metadata (`kMDItemWhereFroms`, `kMDItemDownloadedDate`) plus an active-download
+  sleep assertion that prevents idle sleep while allowing display sleep
+  (`ROADMAP.md` §10-11).
 - **Slice 5 progress:** the first implementation step adds a pure in-memory
   `GohCore` Safari `Cookies.binarycookies` parser with Swift Testing coverage
   for page tables, offset-based strings, flags, Cocoa dates, and malformed
@@ -27,8 +28,9 @@ session; update at the start of every PR and at the end of every session.
   dispatcher and `DownloadEngine`, so the already-built hooks are live in
   `gohd` without adding a new command. PR #19 shipped these non-wire
   foundations. PR #20 froze the load-bearing command/FDA contract for the
-  remaining `goh auth import safari` surface. The current branch implements that
-  `protocolVersion = 2` command and opened PR #21.
+  remaining `goh auth import safari` surface. PR #21 implemented the
+  `protocolVersion = 2` command, including XPC fd passing, daemon parse/import,
+  and CLI Full Disk Access handling. Slice 5 is shipped.
 - **Last merged before #16:** PR #15 — core correctness gates — `dcdf709`.
 - **Repository is public** (github.com/xaedyn/goh) — flipped 2026-05-22, which
   also made GitHub Actions free on the `macos-26` runner.
@@ -77,10 +79,9 @@ remaining adaptive host scheduling work to v0.2.
 - **3c** — shipped in PR #17: checkpoint/resume implementation, error / retry /
   cancellation, live `pause` / `resume`, and `rm --keep` partial adoption.
 - **4** — shipped in PR #18: `NWPathMonitor` cellular auto-pause (§12).
-- **5** — in progress: Safari cookie import foundation shipped in PR #19; the
-  remaining work is the `goh auth import safari` command/FDA contract and
-  implementation.
-- **6** — Spotlight tagging and sleep assertions.
+- **5** — shipped across PR #19, PR #20, and PR #21: Safari cookie import
+  foundation, auth import command contract, and implementation.
+- **6** — in progress: Spotlight tagging and sleep assertions.
 - **7** — the `goh` CLI client.
 - **8** — the TUI for `goh top`.
 - **9** — Homebrew formula, signing, notarization, the release pipeline.
@@ -168,32 +169,40 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/safari-auth-import-command`.
+Current branch: `feat/spotlight-sleep-assertions`.
 
-PR #21 is open and ready for review:
-<https://github.com/xaedyn/goh/pull/21>. It implements the frozen
-`protocolVersion = 2` `authImportSafari(request:)` command:
-
-- v2 request/reply structs, command enum case, and immutable golden fixtures;
-- XPC fd sibling helpers for `auth.safariCookieFile`;
-- `CommandService` fd validation for missing/wrong siblings;
-- daemon-side fd read, Safari `Cookies.binarycookies` parse, and all-or-nothing
-  `ImportedCookieStore` replacement through `SafariAuthImportHandler`;
-- CLI-side `goh auth import safari` file-open flow, FDA guidance, and "do not
-  send XPC when no Safari cookie file opens" behavior;
-- CLI candidate filtering skips directories before falling back to the legacy
-  Safari cookie path.
-
-Local validation before opening PR #21:
+PR #21 was made ready, locally self-reviewed, checked against CI, and
+squash-merged into `main` at `0da86e6`. CodeRabbit was unavailable for an
+actionable review because the account/organization hit review quota and usage
+credit limits; the PR had no review findings to address. The final PR #21 gates
+were:
 
 - `swift build -Xswiftc -warnings-as-errors`
-- `swift test` — 164 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1462s, unified
-  0.1245s, overhead -14.8 %
+- `swift test` — 165 tests
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1409s, unified
+  0.1290s, overhead -8.5 %
+- GitHub Actions `Build & test` passed
 
-Pick up by checking PR #21 CI and review comments. If CI is green and review is
-clean, make PR #21 ready and merge it under the agreed autonomous gates. Then
-start the next roadmap slice from updated `main`.
+Slice 6 starts here. Pick up by designing and test-driving the smallest
+reversible `GohCore` seams for:
+
+Slice 6 progress: the first implementation step added a `SpotlightMetadataTagger`
+that writes `kMDItemWhereFroms` and `kMDItemDownloadedDate` as binary property
+lists in the standard `com.apple.metadata:*` extended attributes, because the
+current public SDK exposes the `MDItem` keys but no public setter. The second
+step added a reference-counted `SleepAssertionController` using
+`IOPMAssertionCreateWithName` and `kIOPMAssertPreventUserIdleSystemSleep`.
+`DownloadEngine` now has daemon-local hooks for completion metadata and active
+download power assertions; `gohd` composes one shared tagger and one shared sleep
+assertion controller. Full local validation is green:
+
+- `swift build -Xswiftc -warnings-as-errors`
+- `swift test` — 169 tests
+- `swift run -c release goh-bench hash-overhead 256` — inline 0.1422s, unified
+  0.1264s, overhead -11.1 %
+
+Pick up by reviewing the slice, opening a PR, checking CI/review comments, and
+merging under the agreed autonomous gates if clean.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

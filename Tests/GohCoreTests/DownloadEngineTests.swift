@@ -42,14 +42,37 @@ struct DownloadEngineTests {
         let store = JobStore()
         let destination = directory.appending(path: "out.bin").path
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+        let completedJob = Mutex<JobSummary?>(nil)
+        let sleepAssertionCreates = Mutex(0)
+        let sleepAssertionReleases = Mutex<[UInt32]>([])
+        let sleepAssertionController = SleepAssertionController(
+            backend: PowerAssertionBackend(
+                create: { _ in
+                    sleepAssertionCreates.withLock { $0 += 1 }
+                    return 42
+                },
+                release: { id in
+                    sleepAssertionReleases.withLock { $0.append(id) }
+                }))
 
-        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+        await DownloadEngine(
+            session: mockSession(),
+            sleepAssertionController: sleepAssertionController,
+            completedDownloadHandler: { completed in
+                completedJob.withLock { $0 = completed }
+            }
+        ).run(jobID: job.id, in: store)
 
         let final = store.job(id: job.id)
         #expect(final?.state == .completed)
         #expect(final?.completedAt != nil)
         #expect(final?.progress.bytesCompleted == UInt64(payload.count))
         #expect(try Data(contentsOf: URL(filePath: destination)) == payload)
+        #expect(completedJob.withLock { $0?.id } == job.id)
+        #expect(completedJob.withLock { $0?.state } == .completed)
+        #expect(completedJob.withLock { $0?.completedAt } != nil)
+        #expect(sleepAssertionCreates.withLock { $0 } == 1)
+        #expect(sleepAssertionReleases.withLock { $0 } == [42])
     }
 
     @Test("an HTTP error status fails the job with httpStatus")

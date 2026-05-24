@@ -1284,6 +1284,28 @@ walks both directions — engine production *and* consumer interrogation.
   separate field. Spotlight tagging, the sleep assertion, and `nw_path_monitor`
   (ROADMAP §10–§12) are daemon behaviours with no command-schema surface.
 
+## Completion Metadata And Power
+
+Slice 6 adds two daemon-local completion/runtime behaviours with no wire-schema
+surface. On successful completion, `gohd` tags the destination file with
+Spotlight-compatible metadata for `kMDItemWhereFroms` and
+`kMDItemDownloadedDate`. Current SDK verification found public `MDItem` create
+and attribute constants, but no public `MDItemSetAttribute` setter in
+`MDItem.h`; the implementation therefore writes the standard
+`com.apple.metadata:<key>` extended attributes as binary property lists. The
+values match the SDK-declared types: `kMDItemWhereFroms` is a CFArray of
+CFString and `kMDItemDownloadedDate` is a CFDate. Tagging failure is warned but
+does not fail an already-completed download.
+
+The sleep assertion is also daemon-local. `gohd` owns one
+`SleepAssertionController` shared by all engine tasks. The controller reference
+counts active downloads and holds at most one power assertion at a time. It uses
+`IOPMAssertionCreateWithName` with `kIOPMAssertPreventUserIdleSystemSleep`,
+which prevents user-idle system sleep while allowing the display to dim or
+sleep; the older `kIOPMAssertionTypeNoIdleSleep` name is deprecated in the
+current SDK headers. Assertion creation failure does not fail a download, and a
+later active download retries assertion creation.
+
 ## Scheduling
 
 v0.1 scheduling is daemon-local and conservative. A job that becomes `queued`
