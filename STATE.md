@@ -36,6 +36,8 @@ session; update at the start of every PR and at the end of every session.
   PR #36 added the manual private signed/notarized/stapled PKG gate and a CI
   verifier for that workflow shape, while keeping official publication out of
   scope.
+  The current branch records the 10x native menu bar companion product direction
+  in the roadmap and a design spec.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -223,7 +225,7 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `main`.
+Current branch: `docs/menu-bar-companion-roadmap`.
 
 PR #36 passed CI and the `Package release artifacts` workflow, then was
 squash-merged into `main` at `b7e22e6`. CodeRabbit was rate-limited and left no
@@ -243,12 +245,10 @@ Slice 9 now has the private credential-backed release candidate gate:
 - `DESIGN.md` and `RELEASE.md` record that this is a readiness gate only, not a
   public distribution channel.
 
-Next pickup: configure the private GitHub credentials/variables and run the
-manual `private_signed_pkg` workflow once real Developer ID and App Store Connect
-notary inputs exist. If credentials are not ready yet, build the local dogfood
-checklist around installing from the unsigned PKG/tarball, service registration,
-foreground/background downloads, pause/resume/rm, Safari auth import, sleep
-assertions, and `goh top`.
+Next pickup: merge the menu bar companion roadmap/spec PR if CI and comments are
+clean, then build the local dogfood checklist around installing from the unsigned
+PKG/tarball, service registration, foreground/background downloads,
+pause/resume/rm, Safari auth import, sleep assertions, and `goh top`.
 
 Local gates to run before the next PR:
 
