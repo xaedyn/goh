@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `main`
+- **Branch:** `chore/local-dogfood-kit`
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -19,7 +19,7 @@ session; update at the start of every PR and at the end of every session.
   release signing prerequisites — `main` at `580b7c2`; PR #34 — unsigned PKG
   release artifact — `main` at `865d6aa`; PR #35 — private release posture —
   `main` at `33b1ea9`; PR #36 — private signed release gate — `main` at
-  `b7e22e6`.
+  `b7e22e6`; PR #39 — menu bar companion roadmap/spec — `main` at `c2f4911`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -35,9 +35,10 @@ session; update at the start of every PR and at the end of every session.
   publish an official install channel until the explicit public launch decision.
   PR #36 added the manual private signed/notarized/stapled PKG gate and a CI
   verifier for that workflow shape, while keeping official publication out of
-  scope.
-  The current branch records the 10x native menu bar companion product direction
-  in the roadmap and a design spec.
+  scope. PR #39 recorded the 10x native menu bar companion product direction in
+  the roadmap and a design spec.
+  The current branch adds a local dogfood lane so the product can be used and
+  tested privately from source before any official install channel opens.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -225,38 +226,47 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/menu-bar-companion-roadmap`.
+Current branch: `chore/local-dogfood-kit`.
 
-PR #36 passed CI and the `Package release artifacts` workflow, then was
-squash-merged into `main` at `b7e22e6`. CodeRabbit was rate-limited and left no
-actionable review threads. The merge-triggered main CI also passed.
+This branch adds the local dogfood lane: `DOGFOOD.md`,
+`Scripts/dogfood-build.sh`, `Scripts/dogfood-install.sh`,
+`Scripts/dogfood-smoke.sh`, `Scripts/dogfood-reset.sh`, and
+`Scripts/verify-dogfood-kit.sh`, with CI static validation. The lane uses a
+debug build plus `GOH_XPC_ALLOW_UNVALIDATED_PEERS=1` for live unsigned
+launchd/XPC testing, and keeps unsigned release tarball/PKG artifact checks
+available via `Scripts/dogfood-build.sh --artifacts`.
 
-Slice 9 now has the private credential-backed release candidate gate:
+Local dogfood found and fixed a real debug launchd crash: `gohd` trapped with
+`Trace/BPT trap: 5` in the progress-flush `DispatchSource` handler because an
+off-main top-level closure inherited a Swift executor expectation. `gohd`
+now builds those off-main callbacks through helper functions. After the fix,
+the live dogfood smoke passed twice through the marked user LaunchAgent.
 
-- `Scripts/private-release-candidate.sh` builds the signed PKG, imports
-  Developer ID credentials into an ephemeral keychain, signs payload binaries
-  with hardened runtime, signs the installer, submits notarization, downloads
-  the notary log, staples the accepted ticket, verifies installer assessment,
-  and rewrites the checksum after stapling.
-- `.github/workflows/release-artifacts.yml` exposes a manual-only
-  `private_signed_pkg` dispatch input for the signed/notarized PKG path.
-- `Scripts/verify-private-release-workflow.sh` and CI statically verify that the
-  private gate remains wired without exposing credentials to PRs.
-- `DESIGN.md` and `RELEASE.md` record that this is a readiness gate only, not a
-  public distribution channel.
+The local dogfood LaunchAgent is currently loaded and running:
 
-Next pickup: merge the menu bar companion roadmap/spec PR if CI and comments are
-clean, then build the local dogfood checklist around installing from the unsigned
-PKG/tarball, service registration, foreground/background downloads,
-pause/resume/rm, Safari auth import, sleep assertions, and `goh top`.
+- LaunchAgent: `~/Library/LaunchAgents/dev.goh.daemon.plist`
+- Binaries: `.build/dogfood/current/bin`
+- Logs: `.build/dogfood/logs/goh.log`
+- Downloads: `.build/dogfood/downloads`
 
-Local gates to run before the next PR:
+Local gates run on this branch:
 
-- `bash -n Scripts/private-release-candidate.sh Scripts/verify-private-release-workflow.sh`
+- `bash -n Scripts/dogfood-build.sh Scripts/dogfood-install.sh Scripts/dogfood-smoke.sh Scripts/dogfood-reset.sh Scripts/verify-dogfood-kit.sh`
+- `bash Scripts/verify-dogfood-kit.sh`
 - `bash Scripts/verify-private-release-workflow.sh`
-- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release-artifacts.yml"); YAML.load_file(".github/workflows/ci.yml")'`
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/ci.yml"); YAML.load_file(".github/workflows/release-artifacts.yml")'`
 - `git diff --check`
+- `swift build -Xswiftc -warnings-as-errors`
 - `swift test`
+- `Scripts/dogfood-build.sh`
+- `Scripts/dogfood-install.sh`
+- `Scripts/dogfood-smoke.sh --timeout 30`
+- `Scripts/dogfood-build.sh --artifacts --version dogfood-local`
+
+Next pickup: push/open the dogfood PR, watch CI and review comments, then
+continue the manual dogfood checklist: foreground download, larger
+pause/resume/rm flow, `goh top`, Safari auth import after Full Disk Access, and
+reset/reinstall.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

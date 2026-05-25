@@ -1904,6 +1904,25 @@ Developer ID Installer-signed, notarized, stapled PKG; Homebrew remains the
 CLI-native install channel once the public launch gate opens. `RELEASE.md`
 records the credential prerequisites and the notarization packaging constraints.
 
+Local dogfood is a separate private readiness lane. `Scripts/dogfood-build.sh`
+stages a debug build under `.build/dogfood/current`, and
+`Scripts/dogfood-install.sh` registers a marked per-user LaunchAgent at the real
+`dev.goh.daemon` Mach service name. The LaunchAgent sets
+`GOH_XPC_ALLOW_UNVALIDATED_PEERS=1` because unsigned local binaries cannot pass
+the production same-team peer requirement, and that relaxation exists only in
+debug builds. The scripts refuse to overwrite a non-dogfood LaunchAgent, log
+under `.build/dogfood/logs`, keep downloads under `.build/dogfood/downloads`,
+and leave the real daemon support directory intact unless
+`Scripts/dogfood-reset.sh --data` is explicit. This lane proves launchd/XPC and
+core product behavior locally before publication; it is not a substitute for the
+signed/notarized release-candidate gate.
+
+The daemon constructs off-main `DispatchSource` / `NWPathMonitor` callbacks in
+helper functions rather than directly as top-level `main.swift` closures. Local
+debug dogfood exercises Swift's executor checks, and a top-level closure can
+inherit an executor expectation that traps when dispatch invokes it on a custom
+queue.
+
 ## Dependencies
 
 - **`apple/swift-http-types`** (pre-approved) — HTTP message modeling.

@@ -28,6 +28,43 @@ func warn(_ message: String) {
     FileHandle.standardError.write(Data("gohd: \(message)\n".utf8))
 }
 
+func makeScheduleJob(
+    engine: DownloadEngine,
+    store: JobStore
+) -> @Sendable (UInt64) -> Void {
+    { jobID in
+        Task { await engine.run(jobID: jobID, in: store) }
+    }
+}
+
+func makeNetworkPathMonitor(
+    networkCoordinator: NetworkPauseCoordinator
+) -> NWPathMonitor {
+    let pathMonitor = NWPathMonitor()
+    let pathQueue = DispatchQueue(label: "dev.goh.daemon.network-path")
+    let pathPolicyQueue = DispatchQueue(label: "dev.goh.daemon.network-policy", qos: .utility)
+    pathMonitor.pathUpdateHandler = { path in
+        let pathState = NetworkPathState(path: path)
+        pathPolicyQueue.async {
+            networkCoordinator.handlePathUpdate(pathState)
+        }
+    }
+    pathMonitor.start(queue: pathQueue)
+    networkCoordinator.handlePathUpdate(NetworkPathState(path: pathMonitor.currentPath))
+    return pathMonitor
+}
+
+func makeProgressFlushTimer(progress: ProgressBrokerHub) -> DispatchSourceTimer {
+    let progressFlushQueue = DispatchQueue(label: "dev.goh.daemon.progress-flush", qos: .utility)
+    let progressFlush = DispatchSource.makeTimerSource(queue: progressFlushQueue)
+    progressFlush.schedule(deadline: .now() + 0.1, repeating: 0.1)
+    progressFlush.setEventHandler {
+        progress.flushDue()
+    }
+    progressFlush.resume()
+    return progressFlush
+}
+
 private extension NetworkPathState {
     init(path: NWPath) {
         guard path.status == .satisfied else {
@@ -89,9 +126,7 @@ do {
                 warn("job \(completed.id) completed but Spotlight metadata tagging failed: \(error)")
             }
         })
-    let scheduleJob: @Sendable (UInt64) -> Void = { jobID in
-        Task { await engine.run(jobID: jobID, in: store) }
-    }
+    let scheduleJob = makeScheduleJob(engine: engine, store: store)
     let networkCoordinator = NetworkPauseCoordinator(
         store: store, control: downloadControl, scheduleJob: scheduleJob)
     let dispatcher = CommandDispatcher(
@@ -105,25 +140,8 @@ do {
         authImportSafari: { authImportHandler.reply(fileDescriptor: $0) },
         progress: progress)
 
-    let pathMonitor = NWPathMonitor()
-    let pathQueue = DispatchQueue(label: "dev.goh.daemon.network-path")
-    let pathPolicyQueue = DispatchQueue(label: "dev.goh.daemon.network-policy", qos: .utility)
-    pathMonitor.pathUpdateHandler = { path in
-        let pathState = NetworkPathState(path: path)
-        pathPolicyQueue.async {
-            networkCoordinator.handlePathUpdate(pathState)
-        }
-    }
-    pathMonitor.start(queue: pathQueue)
-    networkCoordinator.handlePathUpdate(NetworkPathState(path: pathMonitor.currentPath))
-
-    let progressFlushQueue = DispatchQueue(label: "dev.goh.daemon.progress-flush", qos: .utility)
-    let progressFlush = DispatchSource.makeTimerSource(queue: progressFlushQueue)
-    progressFlush.schedule(deadline: .now() + 0.1, repeating: 0.1)
-    progressFlush.setEventHandler {
-        progress.flushDue()
-    }
-    progressFlush.resume()
+    let pathMonitor = makeNetworkPathMonitor(networkCoordinator: networkCoordinator)
+    let progressFlush = makeProgressFlushTimer(progress: progress)
 
     // Resume any jobs that were still `queued` when the daemon last stopped,
     // subject to the current network policy.
