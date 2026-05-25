@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `chore/private-release-readiness`
+- **Branch:** `main`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -18,7 +18,8 @@ session; update at the start of every PR and at the end of every session.
   PR #32 — release artifact verification — `main` at `b668aa0`; PR #33 —
   release signing prerequisites — `main` at `580b7c2`; PR #34 — unsigned PKG
   release artifact — `main` at `865d6aa`; PR #35 — private release posture —
-  `main` at `33b1ea9`.
+  `main` at `33b1ea9`; PR #36 — private signed release gate — `main` at
+  `b7e22e6`.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
   release pipeline. The first branch shipped the formula/README truth refresh in
   PR #29. PR #30 added CI validation for the in-repo Homebrew formula. The
@@ -30,9 +31,9 @@ session; update at the start of every PR and at the end of every session.
   exercised in CI before credential-backed signing/notarization lands. PR #35
   codified the private release posture: build every release gate, but do not
   publish an official install channel until the explicit public launch decision.
-  The current branch adds the manual private signed/notarized/stapled PKG gate
-  and a CI verifier for that workflow shape, while keeping official publication
-  out of scope.
+  PR #36 added the manual private signed/notarized/stapled PKG gate and a CI
+  verifier for that workflow shape, while keeping official publication out of
+  scope.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -133,9 +134,9 @@ remaining adaptive host scheduling work to v0.2.
   added packaged-artifact verification. PR #33 documented signing and
   notarization prerequisites. PR #34 added an unsigned PKG artifact and verifier
   for the future direct-download channel. PR #35 removed premature public install
-  guidance and recorded the private launch gate. The current branch adds a
-  manual private signed/notarized PKG release-candidate workflow that can be
-  run only with credentials and an explicit workflow-dispatch input.
+  guidance and recorded the private launch gate. PR #36 added a manual private
+  signed/notarized PKG release-candidate workflow that can be run only with
+  credentials and an explicit workflow-dispatch input.
 
 ## Recent 3b validation notes
 
@@ -220,15 +221,13 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `chore/private-release-readiness`.
+Current branch: `main`.
 
-PR #35 passed CI, the `Package release artifacts` workflow, and CodeRabbit, then
-was squash-merged into `main` at `33b1ea9`. It codified the private release
-posture: build and test the release path privately, but do not publish an
-official install channel until the explicit public launch decision.
+PR #36 passed CI and the `Package release artifacts` workflow, then was
+squash-merged into `main` at `b7e22e6`. CodeRabbit was rate-limited and left no
+actionable review threads. The merge-triggered main CI also passed.
 
-This branch continues Slice 9 by adding the private credential-backed release
-candidate gate:
+Slice 9 now has the private credential-backed release candidate gate:
 
 - `Scripts/private-release-candidate.sh` builds the signed PKG, imports
   Developer ID credentials into an ephemeral keychain, signs payload binaries
@@ -242,10 +241,14 @@ candidate gate:
 - `DESIGN.md` and `RELEASE.md` record that this is a readiness gate only, not a
   public distribution channel.
 
-Next pickup: finish local verification, commit/push/open the PR, then merge only
-if CI, release-artifact checks, and comments are clean.
+Next pickup: configure the private GitHub credentials/variables and run the
+manual `private_signed_pkg` workflow once real Developer ID and App Store Connect
+notary inputs exist. If credentials are not ready yet, build the local dogfood
+checklist around installing from the unsigned PKG/tarball, service registration,
+foreground/background downloads, pause/resume/rm, Safari auth import, sleep
+assertions, and `goh top`.
 
-Local gates to run on this branch:
+Local gates to run before the next PR:
 
 - `bash -n Scripts/private-release-candidate.sh Scripts/verify-private-release-workflow.sh`
 - `bash Scripts/verify-private-release-workflow.sh`
