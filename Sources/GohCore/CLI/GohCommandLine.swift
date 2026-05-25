@@ -399,6 +399,7 @@ extension GohCommandLine {
         if let error {
             text += "Error: \(error)\n\n"
         }
+        text += "Get over here!\n\n"
         text += """
         Usage:
           goh <url>

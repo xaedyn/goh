@@ -7,6 +7,17 @@ import GohCore
 @Suite("goh CLI command runner")
 struct GohCommandLineTests {
 
+    @Test("help shows the product catchphrase")
+    func helpShowsCatchphrase() {
+        let result = GohCommandLine(arguments: ["--help"]) { _ in
+            throw TestTransportError()
+        }.run()
+
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput.hasPrefix("Get over here!\n\nUsage:\n"))
+        #expect(result.standardError == "")
+    }
+
     @Test("add sends an add request and prints the queued job")
     func addSendsRequestAndPrintsQueuedJob() throws {
         let job = Self.makeJob(
