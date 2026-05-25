@@ -120,6 +120,7 @@ func makeDoctorProbes(
     let downloadsURL = dogfoodRoot?.appending(path: "downloads")
         ?? homeDirectory.appending(path: "Downloads")
     let logsURL = dogfoodRoot?.appending(path: "logs")
+        ?? homebrewPrefix(for: executable)?.appending(path: "var/log")
         ?? URL(filePath: "/opt/homebrew/var/log", directoryHint: .isDirectory)
     let logURL = dogfoodRoot?.appending(path: "logs/goh.log")
         ?? logsURL.appending(path: "goh.log")
@@ -190,6 +191,13 @@ func dogfoodRoot(for executablePath: String) -> URL? {
         return nil
     }
     return URL(filePath: String(executablePath[..<range.upperBound]), directoryHint: .isDirectory)
+}
+
+func homebrewPrefix(for executablePath: String) -> URL? {
+    guard let cellarRange = executablePath.range(of: "/Cellar/") else {
+        return nil
+    }
+    return URL(filePath: String(executablePath[..<cellarRange.lowerBound]), directoryHint: .isDirectory)
 }
 
 func launchctlPrint(_ target: String) -> Bool {

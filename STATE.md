@@ -248,7 +248,10 @@ The active `rm` dogfood bug is fixed and the next private-readiness slice is
 the local health doctor. The branch currently implements `goh doctor`, wires it
 into the CLI help and dogfood smoke script, and documents the read-only
 diagnostic boundary in `DESIGN.md`, `ROADMAP.md`, `README.md`, and
-`DOGFOOD.md`.
+`DOGFOOD.md`. CodeRabbit review follow-up tightened the dogfood-kit verifier so
+it checks the real `goh_dev doctor` invocation instead of matching prose, and
+derives the production Homebrew log root from the resolved executable's
+`/Cellar/` prefix before falling back to `/opt/homebrew/var/log`.
 
 The local dogfood LaunchAgent is currently loaded and running:
 
