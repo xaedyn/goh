@@ -1859,25 +1859,34 @@ Slice 9 proceeds in reversible layers. The in-repo Homebrew formula is validated
 in CI with `ruby -c Formula/goh.rb` and `brew style Formula/goh.rb`, catching
 formula syntax and style drift on every PR before a tagged release exists.
 
-The first release-artifact workflow is intentionally unsigned. It runs on manual
-dispatch, `v*` tag pushes, and PRs that touch packaging or build inputs. It
-builds `goh` and `gohd` with SwiftPM on the pinned `macos-26` runner, stages an
-arm64 tarball containing `bin/goh`, `bin/gohd`, the reference LaunchAgent plist,
-`LICENSE`, and `README.md`, verifies the checksum, archive layout, LaunchAgent
-plist syntax, and packaged `goh --help`, then uploads the tarball and SHA-256
-checksum as workflow artifacts. The packaging logic lives in
-`Scripts/package-release.sh` and the smoke validation lives in
-`Scripts/verify-release-artifact.sh`, so the exact artifact shape is runnable
-locally and by CI without duplicating shell steps in YAML.
+The release-artifact workflow is intentionally unsigned until real Developer ID
+credentials exist. It runs on manual dispatch, `v*` tag pushes, and PRs that
+touch packaging or build inputs. It builds `goh` and `gohd` with SwiftPM on the
+pinned `macos-26` runner, stages an arm64 tarball containing `bin/goh`,
+`bin/gohd`, the reference LaunchAgent plist, `LICENSE`, and `README.md`, verifies
+the checksum, archive layout, LaunchAgent plist syntax, and packaged
+`goh --help`, then uploads the tarball and SHA-256 checksum as workflow
+artifacts. The tarball is a reproducibility and inspection artifact, not the
+direct-download installer.
+
+The same workflow also produces an unsigned flat PKG release candidate for the
+public direct-download path. The PKG installs `goh` and `gohd` into
+`/usr/local/bin`, docs into `/usr/local/share/doc/goh`, and a direct-install
+reference LaunchAgent plist into `/usr/local/share/goh`. It carries a macOS
+26.5+ arm64 product requirement, has no installer scripts, and does not start or
+register the daemon. `Scripts/package-pkg.sh` builds the artifact, and
+`Scripts/verify-pkg-artifact.sh` verifies its checksum, distribution metadata,
+script-free requirement, payload, packaged plist, and packaged `goh --help`.
 
 This workflow does **not** create a GitHub Release, fill the stable Homebrew
-formula SHA, sign binaries, notarize binaries, or staple notarization tickets.
-Those steps require real release credentials, certificate identity choices, and
-secret names; they will land in a separate release-pipeline PR once the signing
-inputs are available. Until then, the uploaded artifacts are reproducibility
-checks and release-candidate materials, not the final trusted distribution
-channel. `RELEASE.md` records the credential prerequisites and the current
-notarization packaging constraints.
+formula SHA, sign binaries, sign the installer package, submit notarization, or
+staple notarization tickets. Those steps require real release credentials and
+certificate identities; they will land in a separate release-pipeline PR once
+the signing inputs are available. The trusted v0.1 direct-download channel is a
+Developer ID Application-signed payload inside a Developer ID Installer-signed,
+notarized, stapled PKG; Homebrew remains the CLI-native install channel.
+`RELEASE.md` records the credential prerequisites and the notarization packaging
+constraints.
 
 ## Dependencies
 

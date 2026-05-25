@@ -18,10 +18,14 @@ that touch packaging or build inputs. It currently:
 
 - builds `goh` and `gohd` in release mode;
 - creates `goh-<version>-macos-arm64.tar.gz`;
+- creates `goh-<version>-macos-arm64.pkg`;
 - writes a matching `.sha256` file;
 - verifies the checksum, archive layout, LaunchAgent plist, and packaged
   `goh --help`;
-- uploads the tarball and checksum as GitHub Actions artifacts.
+- verifies the PKG checksum, installer metadata, macOS 26.5+ arm64
+  requirement, script-free payload, LaunchAgent plist, and packaged
+  `goh --help`;
+- uploads the tarball, PKG, and checksums as GitHub Actions artifacts.
 
 These artifacts are unsigned release-candidate materials. They are not the final
 trusted distribution channel.
@@ -32,16 +36,21 @@ The credential-backed release workflow needs these inputs before implementation:
 
 - Apple Developer Program membership for the release team.
 - A Developer ID Application certificate and private key exported as a password
-  protected `.p12`.
+  protected `.p12` for signing `goh` and `gohd`.
+- A Developer ID Installer certificate and private key exported as a password
+  protected `.p12` for signing the PKG. Do not sign the installer package with
+  the Application certificate.
 - App Store Connect notarization credentials. Prefer an API key for CI; an
   Apple ID plus app-specific password is the fallback.
 - The Apple Team ID associated with the Developer ID certificate.
-- A final decision on direct-download format: ZIP, PKG, or DMG.
+- A stable release download location for the PKG and checksum.
 
 Planned GitHub secrets:
 
 - `DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64`
 - `DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD`
+- `DEVELOPER_ID_INSTALLER_CERTIFICATE_BASE64`
+- `DEVELOPER_ID_INSTALLER_CERTIFICATE_PASSWORD`
 - `APPLE_TEAM_ID`
 - `APPLE_NOTARY_KEY_ID`
 - `APPLE_NOTARY_ISSUER_ID`
@@ -57,26 +66,43 @@ the three `APPLE_NOTARY_*` key secrets with:
 
 Apple's notarization guidance requires Developer ID-signed software for direct
 distribution and supports notarizing ZIP archives, flat installer packages, and
-disk images. The current tarball is useful for reproducibility checks, but the
-credential-backed release workflow should produce a notarization submit artifact
-in an Apple-supported format.
+disk images. The v0.1 direct-download path is a signed, notarized, stapled PKG.
+The tarball remains useful as a reproducibility and CI inspection artifact, but
+it is not the public installer.
 
-For v0.1, the likely direct-download path is:
+The unsigned PKG produced today is intentionally inert. It installs:
+
+- `/usr/local/bin/goh`
+- `/usr/local/bin/gohd`
+- `/usr/local/share/doc/goh/LICENSE`
+- `/usr/local/share/doc/goh/README.md`
+- `/usr/local/share/goh/dev.goh.daemon.plist`
+
+It does not run scripts, copy anything into `~/Library/LaunchAgents`, or start
+the daemon. The packaged plist is a reference plist with the direct-install
+daemon path (`/usr/local/bin/gohd`), not an active service registration.
+
+For the credential-backed v0.1 release path:
 
 1. Build release binaries.
-2. Import the Developer ID Application certificate into a temporary keychain.
+2. Import the Developer ID Application and Developer ID Installer certificates
+   into a temporary keychain.
 3. Sign `goh` and `gohd` with hardened runtime and a secure timestamp.
-4. Stage the signed binaries, LaunchAgent plist, `LICENSE`, and `README.md`.
-5. Create a ZIP for notarization.
-6. Submit with `xcrun notarytool submit --wait`.
-7. Download and inspect the notary log even on success.
-8. Publish the signed ZIP and checksum only after local verification.
+4. Stage the signed binaries, reference LaunchAgent plist, `LICENSE`, and
+   `README.md`.
+5. Create the PKG with a macOS 26.5+ arm64 requirement and no installer scripts.
+6. Sign the PKG with the Developer ID Installer certificate.
+7. Submit the signed PKG with `xcrun notarytool submit --wait`.
+8. Download and inspect the notary log even on success.
+9. Staple the ticket to the PKG.
+10. Verify the final installer with `spctl -a -v --type install`.
+11. Publish the stapled PKG and checksum only after local verification.
 
-One important constraint: Apple documents that stapling cannot be applied
-directly to ZIP archives, and tickets cannot currently be stapled to standalone
-binaries. If offline Gatekeeper ticket availability becomes a v0.1 requirement,
-switch the direct-download format to a PKG or DMG design before implementing the
-credential-backed workflow.
+The PKG choice is deliberate. A ZIP is acceptable for notarization, but Apple
+documents that stapling cannot be applied directly to ZIP archives, and tickets
+cannot currently be stapled to standalone binaries. A stapled PKG gives direct
+download users the strongest offline Gatekeeper path while keeping Homebrew as
+the preferred CLI-native channel.
 
 ## References
 

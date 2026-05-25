@@ -14,10 +14,15 @@ on:
     paths:
       - ".github/workflows/release-artifacts.yml"
       - "Scripts/package-release.sh"
+      - "Scripts/verify-release-artifact.sh"
+      - "Scripts/package-pkg.sh"
+      - "Scripts/verify-pkg-artifact.sh"
       - "Package.swift"
       - "Package.resolved"
       - "Sources/**"
       - "Resources/**"
+      - "DESIGN.md"
+      - "RELEASE.md"
       - "README.md"
       - "LICENSE"
 
@@ -73,11 +78,18 @@ jobs:
       - name: Verify release artifacts
         run: bash Scripts/verify-release-artifact.sh ".build/release-artifacts/goh-${{ steps.version.outputs.version }}-macos-arm64.tar.gz"
 
+      - name: Package PKG artifact
+        run: bash Scripts/package-pkg.sh "${{ steps.version.outputs.version }}" .build/release-artifacts
+
+      - name: Verify PKG artifact
+        run: bash Scripts/verify-pkg-artifact.sh ".build/release-artifacts/goh-${{ steps.version.outputs.version }}-macos-arm64.pkg"
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: goh-${{ steps.version.outputs.version }}-macos-arm64
           path: |
             .build/release-artifacts/*.tar.gz
+            .build/release-artifacts/*.pkg
             .build/release-artifacts/*.sha256
           if-no-files-found: error

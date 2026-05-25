@@ -15,8 +15,8 @@ A daemon-backed terminal download manager for Apple Silicon macOS.
 
 `curl` and `wget` have no persistence, no queue, and no resume across reboots.
 `aria2` predates HTTP/3 and has no native macOS integration. Folx and Downie are
-GUI tools — not scriptable, not free. `goh` is one signed, notarized binary: a
-`launchd`-managed daemon, modern transport, range-based parallel downloads,
+GUI tools — not scriptable, not free. `goh` is a signed, notarized native install:
+a `launchd`-managed daemon, modern transport, range-based parallel downloads,
 OS-keychain auth, Spotlight integration, and a terminal UI worth using.
 
 ## Install
