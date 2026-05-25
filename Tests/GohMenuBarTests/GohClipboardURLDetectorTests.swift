@@ -14,6 +14,15 @@ struct GohClipboardURLDetectorTests {
         #expect(url == URL(string: "http://example.com/file.zip"))
     }
 
+    @Test func rejectsNilClipboardText() {
+        #expect(GohClipboardURLDetector().url(from: nil) == nil)
+    }
+
+    @Test func rejectsEmptyClipboardText() {
+        #expect(GohClipboardURLDetector().url(from: "") == nil)
+        #expect(GohClipboardURLDetector().url(from: " \n\t ") == nil)
+    }
+
     @Test func rejectsNonHTTPURL() {
         #expect(GohClipboardURLDetector().url(from: "file:///tmp/file.iso") == nil)
     }
