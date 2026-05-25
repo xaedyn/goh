@@ -110,11 +110,24 @@ public struct CommandDispatcher: Sendable {
                 return .job(summary)
 
             case .rm(let request):
-                let job = try store.requireJob(id: request.jobID)
-                if job.state == .active {
-                    _ = control?.requestStop(
+                var job = try store.requireJob(id: request.jobID)
+                let keepPartialFile = request.keepPartialFile ?? false
+                let wasActiveBeforeStopRequest = job.state == .active
+                if wasActiveBeforeStopRequest {
+                    let stopResult = control?.requestStop(
                         jobID: request.jobID,
-                        reason: .remove(keepPartialFile: request.keepPartialFile ?? false))
+                        reason: .remove(keepPartialFile: keepPartialFile))
+                    if stopResult == .alreadyFinished,
+                       let refreshed = store.job(id: request.jobID)
+                    {
+                        job = refreshed
+                    }
+                }
+                if !keepPartialFile,
+                   job.state != .completed,
+                   ownsPartial(for: job, wasActiveBeforeStopRequest: wasActiveBeforeStopRequest)
+                {
+                    deletePartial(for: job)
                 }
                 try store.remove(id: request.jobID)
                 importedCookies?.removeHeader(forJobID: request.jobID)
@@ -155,5 +168,19 @@ public struct CommandDispatcher: Sendable {
         }
         onJobQueued?(summary.id)
         return summary
+    }
+
+    private func deletePartial(for job: JobSummary) {
+        try? checkpointStore?.delete(jobID: job.id)
+        try? FileManager.default.removeItem(atPath: job.destination)
+    }
+
+    private func ownsPartial(
+        for job: JobSummary,
+        wasActiveBeforeStopRequest: Bool
+    ) -> Bool {
+        wasActiveBeforeStopRequest
+            || job.progress.bytesCompleted > 0
+            || checkpointStore?.load(jobID: job.id).checkpoint != nil
     }
 }

@@ -14,41 +14,44 @@ public enum DownloadStopResult: Sendable, Equatable {
     case alreadyFinished
 }
 
-enum DownloadControlStop: Error, Sendable, Equatable {
-    case pause
-    case remove(keepPartialFile: Bool)
+struct DownloadControlStop: Error, Sendable {
+    let reason: DownloadStopReason
 
-    init(reason: DownloadStopReason) {
-        switch reason {
-        case .pause:
-            self = .pause
-        case .remove(let keepPartialFile):
-            self = .remove(keepPartialFile: keepPartialFile)
-        }
+    fileprivate init(pending: PendingDownloadStop) {
+        self.reason = pending.reason
     }
 }
 
 private final class PendingDownloadStop: @unchecked Sendable {
     let reason: DownloadStopReason
     private let semaphore = DispatchSemaphore(value: 0)
-    private let result = Mutex<DownloadStopResult?>(nil)
+    private let state = Mutex<(result: DownloadStopResult?, waiters: Int)>(
+        (result: nil, waiters: 0))
 
     init(reason: DownloadStopReason) {
         self.reason = reason
     }
 
     func wait() -> DownloadStopResult {
+        let alreadyFinished = state.withLock { state -> DownloadStopResult? in
+            if let result = state.result { return result }
+            state.waiters += 1
+            return nil
+        }
+        if let alreadyFinished { return alreadyFinished }
         semaphore.wait()
-        return result.withLock { $0 ?? .alreadyFinished }
+        return state.withLock { $0.result ?? .alreadyFinished }
     }
 
     func finish(_ value: DownloadStopResult) {
-        let shouldSignal = result.withLock { result in
-            guard result == nil else { return false }
-            result = value
-            return true
+        let waiterCount = state.withLock { state in
+            guard state.result == nil else { return 0 }
+            state.result = value
+            let waiters = state.waiters
+            state.waiters = 0
+            return waiters
         }
-        if shouldSignal {
+        for _ in 0..<waiterCount {
             semaphore.signal()
         }
     }
@@ -101,10 +104,10 @@ public final class DownloadControl: Sendable {
 
     func stopIfRequested(jobID: UInt64) throws {
         let pending = state.withLock { state in
-            state.pendingStops.removeValue(forKey: jobID)
+            state.pendingStops[jobID]
         }
         guard let pending else { return }
         pending.finish(.stopped)
-        throw DownloadControlStop(reason: pending.reason)
+        throw DownloadControlStop(pending: pending)
     }
 }

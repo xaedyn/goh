@@ -100,10 +100,10 @@ struct NetworkPauseCoordinatorTests {
 
         let group = DispatchGroup()
         group.enter()
-        DispatchQueue.global().async {
+        Thread {
             coordinator.handlePathUpdate(.satisfiedCellular)
             group.leave()
-        }
+        }.start()
         #expect(stop.started.wait(timeout: .now() + 30) == .success)
 
         coordinator.handlePathUpdate(.satisfiedNonCellular)

@@ -78,10 +78,10 @@ public struct DownloadEngine: Sendable {
     /// throws — every failure is recorded on the job as a ``GohError``.
     public func run(jobID: UInt64, in store: JobStore) async {
         guard store.job(id: jobID) != nil else { return }
-        // Claim the job atomically; only proceed if this call won the claim.
-        guard (try? store.start(id: jobID)) == true else { return }
         control?.register(jobID: jobID)
         defer { control?.unregister(jobID: jobID) }
+        // Claim the job atomically; only proceed if this call won the claim.
+        guard (try? store.start(id: jobID)) == true else { return }
         sleepAssertionController?.downloadStarted()
         defer { sleepAssertionController?.downloadFinished() }
         guard let job = store.job(id: jobID) else { return }
@@ -109,7 +109,7 @@ public struct DownloadEngine: Sendable {
     }
 
     private func handle(stop: DownloadControlStop, job: JobSummary) {
-        switch stop {
+        switch stop.reason {
         case .pause:
             return
         case .remove(let keepPartialFile):
@@ -133,11 +133,12 @@ public struct DownloadEngine: Sendable {
         // whole file and the engine consumes it as a single connection.
         var request = request(for: url, job: job)
         request.setValue("bytes=0-", forHTTPHeaderField: "Range")
-        let (response, stream) = try await session.streamingResponse(
+        let (response, stream, cancelStream) = try await session.streamingResponse(
             for: request,
             onMetrics: { @Sendable [trace] metrics in
                 trace.recordProtocol(0, networkProtocolName: metrics.networkProtocolName)
             })
+        defer { cancelStream() }
         switch response.statusCode {
         case 206:
             guard let contentRange = Self.contentRange(response),
@@ -151,11 +152,12 @@ public struct DownloadEngine: Sendable {
             let total = contentRange.total
             try await fetchRanged(
                 job: job, store: store, url: url, total: total, initialResponse: response,
-                firstRangeStream: stream, trace: trace)
+                firstRangeStream: stream, cancelFirstRangeStream: cancelStream, trace: trace)
         case 200..<300:
             try await fetchSingle(
                 job: job, store: store,
-                initialResponse: response, initialStream: stream)
+                initialResponse: response, initialStream: stream,
+                cancelInitialStream: cancelStream)
         default:
             throw Self.httpFailure(statusCode: response.statusCode)
         }
@@ -280,7 +282,8 @@ public struct DownloadEngine: Sendable {
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
         request.setValue(validator, forHTTPHeaderField: "If-Range")
-        let (http, stream) = try await session.streamingResponse(for: request)
+        let (http, stream, cancelStream) = try await session.streamingResponse(for: request)
+        defer { cancelStream() }
         guard http.statusCode == 206 else {
             if (200..<300).contains(http.statusCode) {
                 throw GohError(
@@ -347,8 +350,10 @@ public struct DownloadEngine: Sendable {
     private func fetchSingle(
         job: JobSummary, store: JobStore,
         initialResponse: HTTPURLResponse,
-        initialStream: AsyncThrowingStream<Data, Error>
+        initialStream: AsyncThrowingStream<Data, Error>,
+        cancelInitialStream: @escaping @Sendable () -> Void
     ) async throws {
+        defer { cancelInitialStream() }
         guard (200..<300).contains(initialResponse.statusCode) else {
             throw Self.httpFailure(statusCode: initialResponse.statusCode)
         }
@@ -412,6 +417,7 @@ public struct DownloadEngine: Sendable {
         job: JobSummary, store: JobStore, url: URL, total: UInt64,
         initialResponse: HTTPURLResponse,
         firstRangeStream: AsyncThrowingStream<Data, Error>,
+        cancelFirstRangeStream: @escaping @Sendable () -> Void,
         trace: EngineDiagnostics
     ) async throws {
         let ranges = ByteRange.split(
@@ -439,7 +445,7 @@ public struct DownloadEngine: Sendable {
                         checkpointRecorder: checkpointRecorder,
                         job: job, store: store, total: total,
                         clock: clock, started: started, trace: trace,
-                        stream: firstRangeStream)
+                        stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
                 }
                 for (index, range) in ranges.enumerated().dropFirst() {
                     group.addTask {
@@ -451,11 +457,18 @@ public struct DownloadEngine: Sendable {
                             clock: clock, started: started, trace: trace)
                     }
                 }
-                try await group.waitForAll()
+                for _ in ranges {
+                    do {
+                        _ = try await group.next()
+                    } catch {
+                        group.cancelAll()
+                        throw error
+                    }
+                }
             }
         } catch {
-            // A failed range cancels its siblings (the group unwinds); record
-            // the failure so the assembler aborts rather than hangs.
+            // A failed or stopped range cancels its siblings; record the failure
+            // so the assembler aborts rather than hangs.
             assembler.recordFailure(Self.mapError(error))
             _ = await assembled
             try? file.finish()
@@ -494,11 +507,12 @@ public struct DownloadEngine: Sendable {
         var request = request(for: url, job: job)
         let last = range.start + range.length - 1
         request.setValue("bytes=\(range.start)-\(last)", forHTTPHeaderField: "Range")
-        let (http, stream) = try await session.streamingResponse(
+        let (http, stream, cancelStream) = try await session.streamingResponse(
             for: request,
             onMetrics: { @Sendable [trace] metrics in
                 trace.recordProtocol(index, networkProtocolName: metrics.networkProtocolName)
             })
+        defer { cancelStream() }
         guard http.statusCode == 206 else {
             throw Self.httpFailure(statusCode: http.statusCode)
         }
@@ -509,7 +523,7 @@ public struct DownloadEngine: Sendable {
             checkpointRecorder: checkpointRecorder,
             job: job, store: store, total: total,
             clock: clock, started: started, trace: trace,
-            stream: stream)
+            stream: stream, cancelStream: cancelStream)
     }
 
     /// Consumes `range`'s bytes from `stream` into `file`. Stops reading once
@@ -524,8 +538,10 @@ public struct DownloadEngine: Sendable {
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics,
-        stream: AsyncThrowingStream<Data, Error>
+        stream: AsyncThrowingStream<Data, Error>,
+        cancelStream: @escaping @Sendable () -> Void
     ) async throws {
+        defer { cancelStream() }
         trace.rangeStarted(index, bytes: range.length)
         var buffer = Data()
         buffer.reserveCapacity(Self.bufferSize)
@@ -558,6 +574,7 @@ public struct DownloadEngine: Sendable {
 
         var firstByteSeen = false
         for try await chunk in stream {
+            try Task.checkCancellation()
             if !firstByteSeen {
                 firstByteSeen = true
                 trace.rangeFirstByte(index)
