@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `chore/local-dogfood-kit`
+- **Branch:** `docs/refresh-state-after-dogfood`
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -19,7 +19,8 @@ session; update at the start of every PR and at the end of every session.
   release signing prerequisites — `main` at `580b7c2`; PR #34 — unsigned PKG
   release artifact — `main` at `865d6aa`; PR #35 — private release posture —
   `main` at `33b1ea9`; PR #36 — private signed release gate — `main` at
-  `b7e22e6`; PR #39 — menu bar companion roadmap/spec — `main` at `c2f4911`.
+  `b7e22e6`; PR #39 — menu bar companion roadmap/spec — `main` at `c2f4911`;
+  PR #40 — local dogfood lane — `main` at `fd93b8d`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -36,9 +37,10 @@ session; update at the start of every PR and at the end of every session.
   PR #36 added the manual private signed/notarized/stapled PKG gate and a CI
   verifier for that workflow shape, while keeping official publication out of
   scope. PR #39 recorded the 10x native menu bar companion product direction in
-  the roadmap and a design spec.
-  The current branch adds a local dogfood lane so the product can be used and
-  tested privately from source before any official install channel opens.
+  the roadmap and a design spec. PR #40 added the local dogfood lane so the
+  product can be used and tested privately from source before any official
+  install channel opens.
+  The current branch refreshes `STATE.md` after that merge.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -226,15 +228,16 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `chore/local-dogfood-kit`.
+Current branch: `docs/refresh-state-after-dogfood`.
 
-This branch adds the local dogfood lane: `DOGFOOD.md`,
-`Scripts/dogfood-build.sh`, `Scripts/dogfood-install.sh`,
-`Scripts/dogfood-smoke.sh`, `Scripts/dogfood-reset.sh`, and
-`Scripts/verify-dogfood-kit.sh`, with CI static validation. The lane uses a
-debug build plus `GOH_XPC_ALLOW_UNVALIDATED_PEERS=1` for live unsigned
-launchd/XPC testing, and keeps unsigned release tarball/PKG artifact checks
-available via `Scripts/dogfood-build.sh --artifacts`.
+PR #40 merged into `main` at `fd93b8d`, and the merge-triggered main CI passed.
+It added the local dogfood lane: `DOGFOOD.md`, `Scripts/dogfood-build.sh`,
+`Scripts/dogfood-install.sh`, `Scripts/dogfood-smoke.sh`,
+`Scripts/dogfood-reset.sh`, and `Scripts/verify-dogfood-kit.sh`, with CI static
+validation. The lane uses a debug build plus
+`GOH_XPC_ALLOW_UNVALIDATED_PEERS=1` for live unsigned launchd/XPC testing, and
+keeps unsigned release tarball/PKG artifact checks available via
+`Scripts/dogfood-build.sh --artifacts`.
 
 Local dogfood found and fixed a real debug launchd crash: `gohd` trapped with
 `Trace/BPT trap: 5` in the progress-flush `DispatchSource` handler because an
@@ -249,7 +252,7 @@ The local dogfood LaunchAgent is currently loaded and running:
 - Logs: `.build/dogfood/logs/goh.log`
 - Downloads: `.build/dogfood/downloads`
 
-Local gates run on this branch:
+Local gates run before PR #40 merged:
 
 - `bash -n Scripts/dogfood-build.sh Scripts/dogfood-install.sh Scripts/dogfood-smoke.sh Scripts/dogfood-reset.sh Scripts/verify-dogfood-kit.sh`
 - `bash Scripts/verify-dogfood-kit.sh`
@@ -262,9 +265,10 @@ Local gates run on this branch:
 - `Scripts/dogfood-install.sh`
 - `Scripts/dogfood-smoke.sh --timeout 30`
 - `Scripts/dogfood-build.sh --artifacts --version dogfood-local`
+- merge-triggered main CI for `fd93b8d`
 
-Next pickup: push/open the dogfood PR, watch CI and review comments, then
-continue the manual dogfood checklist: foreground download, larger
+Next pickup: merge this state-refresh PR if CI is clean, then continue the
+manual dogfood checklist from `main`: foreground download, larger
 pause/resume/rm flow, `goh top`, Safari auth import after Full Disk Access, and
 reset/reinstall.
 
