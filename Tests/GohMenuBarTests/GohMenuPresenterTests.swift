@@ -21,9 +21,28 @@ struct GohMenuPresenterTests {
         #expect(state.aggregateSpeedText == "2.9 KB/s")
         #expect(state.primaryAction == .addClipboardURL(URL(string: "https://example.com/big.iso")!))
         #expect(state.rows.map(\.id) == [1, 2, 3])
-        #expect(state.rows[0].controls.contains(.pause))
-        #expect(state.rows[1].controls.contains(.pause))
-        #expect(state.rows[2].controls.contains(.revealInFinder))
+    }
+
+    @Test func mapsControlsExactlyByJobState() {
+        let snapshots = [
+            snapshot(id: 1, state: .queued, completed: 0, total: 1024, speed: 0),
+            snapshot(id: 2, state: .active, completed: 512, total: 1024, speed: 1000),
+            snapshot(id: 3, state: .paused, completed: 512, total: 1024, speed: 0),
+            snapshot(id: 4, state: .completed, completed: 1024, total: 1024, speed: 0),
+            snapshot(id: 5, state: .failed, completed: 512, total: 1024, speed: 0),
+        ]
+
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: snapshots,
+            clipboardURL: nil)
+
+        #expect(state.rows.map(\.id) == [1, 2, 3, 4, 5])
+        #expect(state.rows[0].controls == Set<GohMenuControl>([.remove, .copyURL, .copyDestination]))
+        #expect(state.rows[1].controls == Set<GohMenuControl>([.pause, .copyURL, .copyDestination]))
+        #expect(state.rows[2].controls == Set<GohMenuControl>([.resume, .remove, .copyURL, .copyDestination]))
+        #expect(state.rows[3].controls == Set<GohMenuControl>([.revealInFinder, .remove, .copyURL, .copyDestination]))
+        #expect(state.rows[4].controls == Set<GohMenuControl>([.remove, .copyURL, .copyDestination]))
     }
 
     @Test func explainsPeerValidationFailure() {

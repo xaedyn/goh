@@ -52,9 +52,9 @@ nonisolated public struct GohMenuPresenter: Sendable {
         case .paused:
             return [.resume, .remove, .copyURL, .copyDestination]
         case .completed:
-            return [.revealInFinder, .copyURL, .copyDestination]
+            return [.revealInFinder, .remove, .copyURL, .copyDestination]
         case .failed:
-            return [.resume, .remove, .copyURL, .copyDestination]
+            return [.remove, .copyURL, .copyDestination]
         }
     }
 
