@@ -15,6 +15,12 @@ commands so the unsigned local `goh` and `gohd` can talk to each other.
 Make sure no non-dogfood `gohd` LaunchAgent is active, then run:
 
 ```bash
+Scripts/dogfood-acceptance.sh
+```
+
+For a shorter build/install/smoke loop while iterating:
+
+```bash
 Scripts/dogfood-build.sh
 Scripts/dogfood-install.sh
 Scripts/dogfood-smoke.sh
@@ -46,6 +52,11 @@ goh top
 - `Scripts/dogfood-smoke.sh` runs `goh doctor`, verifies the daemon is reachable
   through real `launchd`/XPC, adds a small download, waits for completion, and
   leaves the downloaded file under `.build/dogfood/downloads`.
+- `Scripts/dogfood-acceptance.sh` is the private readiness gate. It builds,
+  installs, runs doctor and smoke, checks `goh ls --json`, exercises foreground
+  `goh <url>`, pauses/resumes/removes an active larger download, restarts the
+  daemon, and optionally runs the live competitive benchmark with
+  `--performance`.
 - `Scripts/dogfood-reset.sh` unloads and removes only the marked dogfood
   LaunchAgent. Add `--data` to delete the daemon catalog and checkpoints in
   `~/Library/Application Support/dev.goh.daemon`; add `--all` to delete dogfood
@@ -65,6 +76,14 @@ That means local dogfood should be the only active `gohd` on the machine while
 you test. The reset script does not delete daemon data unless you pass `--data`
 or `--all`.
 
+The acceptance script creates only uniquely named test downloads: the composed
+smoke file under `.build/dogfood/downloads/smoke-*`, one foreground file under
+`~/Downloads/goh-acceptance-*`, and one control download under
+`.build/dogfood/downloads/acceptance-control-*`. It refuses to touch a
+pre-existing foreground file and removes its own test files during cleanup. The
+`--performance` mode runs real network benchmarks against `goh`, `aria2c`, and
+`curl`; leave it off for quick readiness checks.
+
 The unsigned release tarball and PKG are still useful for layout checks:
 
 ```bash
@@ -78,6 +97,7 @@ notarization are available.
 
 Run this before treating a local build as usable:
 
+- Acceptance: `Scripts/dogfood-acceptance.sh`
 - `Scripts/dogfood-smoke.sh`
 - Doctor: `goh doctor`
 - Foreground: `goh https://example.com/`
@@ -86,4 +106,5 @@ Run this before treating a local build as usable:
 - Control: pause, resume, and `rm --keep` on a larger test download
 - Dashboard: `goh top`, then stop it with Ctrl-C
 - Auth: `goh auth import safari` after granting Full Disk Access
+- Performance: `GOH_ACCEPTANCE_PERF_RUNS=1 Scripts/dogfood-acceptance.sh --performance`
 - Reset: `Scripts/dogfood-reset.sh`, then repeat install and smoke

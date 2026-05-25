@@ -29,6 +29,8 @@ they are published.
 People working directly from this GitHub repository can build and test from
 source. Tagged releases, stable checksums, a public Homebrew tap, and direct
 download packages will appear only after the private release gates are complete.
+For private local testing, use the dogfood lane in [DOGFOOD.md](DOGFOOD.md),
+including `Scripts/dogfood-acceptance.sh` as the readiness gate.
 
 ## Usage
 

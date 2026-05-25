@@ -1973,6 +1973,21 @@ LaunchAgent/XPC/filesystem posture before exercising a download. Doctor remains
 read-only: it prints the recovery command instead of bootstrapping launchd,
 exporting shell state, creating directories, or deleting data.
 
+`Scripts/dogfood-acceptance.sh` is the private readiness gate above the smoke
+test. It intentionally composes real product surfaces rather than adding a new
+daemon command: build, install, `goh doctor`, `Scripts/dogfood-smoke.sh`,
+`goh ls --json`, foreground `goh <url>`, active `goh pause` / `goh resume` /
+`goh rm`, and `launchctl kickstart` restart recovery. Its destructive behavior
+is bounded to unique test files: a foreground file under
+`~/Downloads/goh-acceptance-*`, the composed smoke file under
+`.build/dogfood/downloads/smoke-*`, and a control partial under
+`.build/dogfood/downloads/acceptance-control-*`, all cleaned up by the script.
+The competitive `Benchmarks/competitive.sh` comparison is opt-in with
+`--performance` because it uses live network and can consume substantial
+bandwidth. This keeps the default acceptance gate suitable for frequent local
+dogfood while preserving a first-class performance posture check before any
+public release decision.
+
 The daemon constructs off-main `DispatchSource` / `NWPathMonitor` callbacks in
 helper functions rather than directly as top-level `main.swift` closures. Local
 debug dogfood exercises Swift's executor checks, and a top-level closure can
