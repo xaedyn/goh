@@ -35,12 +35,27 @@ nonisolated public struct GohMenuPresenter: Sendable {
                 ? job.destination
                 : destinationURL.lastPathComponent,
             subtitle: job.destination,
-            stateText: job.state.rawValue,
+            stateText: stateDisplay(for: job.state),
             progressText: Self.progressText(job.progress),
             speedText: Self.formatBytes(job.progress.bytesPerSecond) + "/s",
             destination: job.destination,
             url: job.url,
             controls: controls(for: job))
+    }
+
+    private func stateDisplay(for state: JobState) -> String {
+        switch state {
+        case .queued:
+            return "Queued"
+        case .active:
+            return "Active"
+        case .paused:
+            return "Paused"
+        case .completed:
+            return "Completed"
+        case .failed:
+            return "Failed"
+        }
     }
 
     private func controls(for job: JobSummary) -> Set<GohMenuControl> {

@@ -45,6 +45,23 @@ struct GohMenuPresenterTests {
         #expect(state.rows[4].controls == Set<GohMenuControl>([.remove, .copyURL, .copyDestination]))
     }
 
+    @Test func mapsStateTextForEveryJobState() {
+        let snapshots = [
+            snapshot(id: 1, state: .queued, completed: 0, total: 1024, speed: 0),
+            snapshot(id: 2, state: .active, completed: 512, total: 1024, speed: 1000),
+            snapshot(id: 3, state: .paused, completed: 512, total: 1024, speed: 0),
+            snapshot(id: 4, state: .completed, completed: 1024, total: 1024, speed: 0),
+            snapshot(id: 5, state: .failed, completed: 512, total: 1024, speed: 0),
+        ]
+
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: snapshots,
+            clipboardURL: nil)
+
+        #expect(state.rows.map(\.stateText) == ["Queued", "Active", "Paused", "Completed", "Failed"])
+    }
+
     @Test func explainsPeerValidationFailure() {
         let error = GohMenuError.peerValidation("Peer forbidden (code signing)")
 
