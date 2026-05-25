@@ -1,8 +1,9 @@
 # goh
 
 > **v0.1 — in development.** The daemon, download engine, CLI controls, foreground
-> progress, and `goh top` dashboard are in place. Release packaging is still in
-> progress; no tagged v0.1.0 artifact exists yet.
+> progress, and `goh top` dashboard are in place. Release packaging is being
+> prepared privately; no official install channel or tagged v0.1.0 artifact
+> exists yet.
 >
 > Manifest floor: macOS 26.0 (rises to 26.5 on first dependent API).
 > Supported: macOS 26.5+.
@@ -19,15 +20,15 @@ GUI tools — not scriptable, not free. `goh` is a signed, notarized native inst
 a `launchd`-managed daemon, modern transport, range-based parallel downloads,
 OS-keychain auth, Spotlight integration, and a terminal UI worth using.
 
-## Install
+## Install Status
 
-```sh
-brew install goh-cli/tap/goh
-brew services start goh
-```
+There is no official public install channel yet. The Homebrew formula, tarball,
+and PKG paths are being built and verified as release-candidate machinery before
+they are published.
 
-The daemon is opt-in. `brew install` never starts a background process; you
-enable it explicitly with `brew services start goh`.
+People working directly from this GitHub repository can build and test from
+source. Tagged releases, stable checksums, a public Homebrew tap, and direct
+download packages will appear only after the private release gates are complete.
 
 ## Usage
 
