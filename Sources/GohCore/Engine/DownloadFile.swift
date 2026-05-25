@@ -33,6 +33,7 @@ public final class DownloadFile: Sendable {
     /// `expectedSize` is known, the file's extents are preallocated for
     /// contiguity.
     public init(path: String, expectedSize: UInt64?, truncate: Bool = true) throws {
+        Self.createParentDirectory(for: path)
         let flags = O_RDWR | O_CREAT | (truncate ? O_TRUNC : 0)
         descriptor = open(path, flags, 0o644)
         guard descriptor >= 0 else {
@@ -121,5 +122,12 @@ public final class DownloadFile: Sendable {
             store.fst_flags = UInt32(F_ALLOCATEALL)
             _ = fcntl(descriptor, F_PREALLOCATE, &store)
         }
+    }
+
+    private static func createParentDirectory(for path: String) {
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(
+            at: parent,
+            withIntermediateDirectories: true)
     }
 }
