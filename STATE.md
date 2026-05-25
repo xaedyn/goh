@@ -6,13 +6,19 @@ session; update at the start of every PR and at the end of every session.
 ## Current state
 
 - **Branch:** `feat/menu-bar-companion-mb1`
-- **Active MB1 task:** Task 3 menu presentation model is complete on the
+- **Active MB1 task:** Task 4 clipboard URL detection is complete on the
   `feat/menu-bar-companion-mb1` branch. The branch now has the SwiftPM shape
   for `goh-menu` / `GohMenuBar`, the shared `GohCommandClient` helper in
   `GohCore`, and pure menu-bar presentation models plus a `GohMenuPresenter`
   that converts progress snapshots into UI-ready state: active count,
   aggregate speed, sorted job rows, available controls, primary clipboard
-  action, and doctor-style health/recovery copy.
+  action, and doctor-style health/recovery copy. The branch also has a pure
+  `GohClipboardURLDetector` for the menu bar quick-add flow: it accepts a
+  single trimmed `http` / `https` URL with a host and rejects non-HTTP,
+  hostless, empty, or multi-line clipboard text. Next pickup is Task 5, the
+  `GohMenuViewModel` behavior layer that connects clipboard quick-add,
+  progress-stream state, and existing daemon controls without adding a new
+  daemon contract.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
