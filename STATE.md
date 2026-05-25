@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `main` after PR #50 (this bookkeeping branch only refreshes state)
+- **Branch:** `fix/acceptance-performance-output`
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -23,7 +23,8 @@ session; update at the start of every PR and at the end of every session.
   PR #40 — local dogfood lane — `main` at `fd93b8d`; PR #47 — active `rm`
   cleanup hardening — `main` at `54317a9`; PR #49 — local health doctor —
   `main` at `ff45e99`; PR #50 — private dogfood acceptance gate — `main` at
-  `cbe2c61`.
+  `cbe2c61`; PR #51 — state refresh after acceptance gate merge — `main` at
+  `0aa3887`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -57,7 +58,9 @@ session; update at the start of every PR and at the end of every session.
   prints exact recovery commands without adding daemon IPC surface. PR #50 added
   the private readiness acceptance gate above smoke: build/install, doctor,
   smoke, foreground download, JSON list, active pause/resume/remove cleanup,
-  daemon restart, and opt-in competitive performance comparison.
+  daemon restart, and opt-in competitive performance comparison. The current
+  branch makes that `--performance` path evidence-grade by streaming the
+  benchmark table and saving it under `.build/dogfood/logs`.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -246,8 +249,7 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `main` after PR #50. The current bookkeeping branch only
-refreshes this state file.
+Current branch: `fix/acceptance-performance-output`.
 
 PR #50 is merged at `cbe2c61`. The local dogfood lane now has three private
 readiness gates on `main`: build/install/smoke, `goh doctor`, and
@@ -256,6 +258,13 @@ dogfood debug build, runs doctor and smoke, checks `goh ls --json`, exercises
 foreground `goh <url>`, pause/resume/remove cleanup on an active larger
 download, daemon restart, and an opt-in `Benchmarks/competitive.sh` performance
 pass via `--performance`.
+
+The current branch fixes a usability hole found during manual performance
+dogfood: `Scripts/dogfood-acceptance.sh --performance` ran the competitive
+benchmark but hid the timing table on success. The fix streams the benchmark
+output to the terminal, saves it to
+`.build/dogfood/logs/acceptance-performance-*.log`, and prints the saved
+`Performance log:` path.
 
 The local dogfood LaunchAgent is currently loaded and running:
 
@@ -305,12 +314,42 @@ PR #50 GitHub gates:
   credentials/manual dispatch.
 - CodeRabbit produced only a rate-limit notice and no actionable review threads.
 
-Next pickup: choose the next 10x private-readiness/product slice. Apple
-credentials are still unavailable, so public signing/notarization remains
-blocked by design; the strongest next options are a live `--performance`
-acceptance run when bandwidth is acceptable, followed by adaptive per-host
-range scheduling work if the data still shows a gap, or the first native menu
-bar companion implementation slice.
+Manual performance evidence from 2026-05-25 after PR #50:
+
+- `GOH_ACCEPTANCE_PERF_RUNS=3 Scripts/dogfood-acceptance.sh --performance`
+  passed, but hid the benchmark table.
+- Running `RUNS=3 Benchmarks/competitive.sh | tee .build/dogfood/logs/...`
+  showed:
+  - amenable: `goh` 10.728s, `aria2c` 10.517s, `curl` 29.285s; workload check
+    passed.
+  - saturated: `goh` 6.561s, `aria2c` 7.192s, `curl` 6.204s; workload check
+    passed.
+  - conclusion: performance is competitive enough that product polish can move
+    ahead before adaptive scheduling, unless a later logged acceptance run
+    shows a material regression.
+
+Current branch verification:
+
+- Red check observed: `Scripts/verify-dogfood-kit.sh` failed before the script
+  change because `Scripts/dogfood-acceptance.sh` did not contain
+  `acceptance-performance-`.
+- `Scripts/verify-dogfood-kit.sh`
+- `bash -n Scripts/dogfood-acceptance.sh`
+- `git diff --check`
+- `GOH_ACCEPTANCE_PERF_RUNS=1 AMENABLE_URL=https://example.com/ SATURATED_URL=https://example.com/ Scripts/dogfood-acceptance.sh --timeout 45 --performance`
+  streamed the benchmark table, printed `Performance log:`, saved the log under
+  `.build/dogfood/logs/acceptance-performance-20260525221708-29523.log`, and
+  ended with the expected warning because `example.com` is not an amenable
+  workload.
+- `swift build -Xswiftc -warnings-as-errors`
+- `swift test` (223 tests)
+
+Next pickup: push/check/merge the acceptance performance-output PR, then choose
+the next 10x private-readiness/product slice. Apple credentials are still
+unavailable, so public signing/notarization remains blocked by design; the
+strongest next option after this fix is likely the first native menu bar
+companion implementation slice, with adaptive per-host scheduling deferred until
+logged benchmark evidence shows a material gap.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

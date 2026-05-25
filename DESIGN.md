@@ -1984,9 +1984,12 @@ is bounded to unique test files: a foreground file under
 `.build/dogfood/downloads/acceptance-control-*`, all cleaned up by the script.
 The competitive `Benchmarks/competitive.sh` comparison is opt-in with
 `--performance` because it uses live network and can consume substantial
-bandwidth. This keeps the default acceptance gate suitable for frequent local
-dogfood while preserving a first-class performance posture check before any
-public release decision.
+bandwidth. When enabled, the script streams the benchmark table to the terminal
+and writes the same output to
+`.build/dogfood/logs/acceptance-performance-*.log`, then prints `Performance
+log:` with the saved path. This keeps the default acceptance gate suitable for
+frequent local dogfood while preserving a first-class, durable performance
+posture check before any public release decision.
 
 The daemon constructs off-main `DispatchSource` / `NWPathMonitor` callbacks in
 helper functions rather than directly as top-level `main.swift` closures. Local
