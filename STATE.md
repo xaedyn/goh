@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `docs/refresh-state-after-dogfood`
+- **Branch:** `fix/top-exit-keys`
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -40,7 +40,12 @@ session; update at the start of every PR and at the end of every session.
   the roadmap and a design spec. PR #40 added the local dogfood lane so the
   product can be used and tested privately from source before any official
   install channel opens.
-  The current branch refreshes `STATE.md` after that merge.
+  PR #42 fixed dogfood-discovered destination parent-directory creation at
+  `6506089`, and PR #43 refreshed state at `5247964`. The current branch fixes
+  dogfood usability gaps in `goh top`: the dashboard is a persistent monitor,
+  but it needs top-style keyboard exits in addition to Ctrl-C, and its table
+  columns must not run together when terminal states or rates are wider than
+  their nominal display widths.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -228,24 +233,16 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/refresh-state-after-parent-dir-fix`.
+Current branch: `fix/top-exit-keys`.
 
-PR #40 merged into `main` at `fd93b8d`, and PR #41 refreshed state at
-`9989612`. PR #42 fixed destination parent-directory creation at `6506089`.
-All three merge-triggered main CI runs passed. PR #40 added the local dogfood
-lane: `DOGFOOD.md`, `Scripts/dogfood-build.sh`,
-`Scripts/dogfood-install.sh`, `Scripts/dogfood-smoke.sh`,
-`Scripts/dogfood-reset.sh`, and `Scripts/verify-dogfood-kit.sh`, with CI static
-validation. The lane uses a debug build plus
-`GOH_XPC_ALLOW_UNVALIDATED_PEERS=1` for live unsigned launchd/XPC testing, and
-keeps unsigned release tarball/PKG artifact checks available via
-`Scripts/dogfood-build.sh --artifacts`.
-
-Local dogfood found and fixed a real debug launchd crash: `gohd` trapped with
-`Trace/BPT trap: 5` in the progress-flush `DispatchSource` handler because an
-off-main top-level closure inherited a Swift executor expectation. `gohd`
-now builds those off-main callbacks through helper functions. After the fix,
-the live dogfood smoke passed twice through the marked user LaunchAgent.
+PR #40 merged into `main` at `fd93b8d`, PR #41 refreshed state at `9989612`,
+PR #42 fixed destination parent-directory creation at `6506089`, and PR #43
+refreshed state at `5247964`. Local dogfood then found two `goh top` issues:
+the dashboard was a persistent monitor with only Ctrl-C as an exit path, and
+completed/high-rate rows could visually run columns together. This branch adds
+a terminal input monitor for `q`, `Q`, Escape, and Ctrl-D exits, wires it only
+into `goh top`, keeps Ctrl-C behavior unchanged, and changes table rendering to
+use explicit separators between columns.
 
 The local dogfood LaunchAgent is currently loaded and running:
 
@@ -256,30 +253,19 @@ The local dogfood LaunchAgent is currently loaded and running:
 
 Local gates run before PR #40 merged:
 
-- `bash -n Scripts/dogfood-build.sh Scripts/dogfood-install.sh Scripts/dogfood-smoke.sh Scripts/dogfood-reset.sh Scripts/verify-dogfood-kit.sh`
-- `bash Scripts/verify-dogfood-kit.sh`
-- `bash Scripts/verify-private-release-workflow.sh`
-- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/ci.yml"); YAML.load_file(".github/workflows/release-artifacts.yml")'`
 - `git diff --check`
 - `swift build -Xswiftc -warnings-as-errors`
-- `swift test`
+- `swift test` (211 tests)
 - `Scripts/dogfood-build.sh`
 - `Scripts/dogfood-install.sh`
 - `Scripts/dogfood-smoke.sh --timeout 30`
-- `Scripts/dogfood-build.sh --artifacts --version dogfood-local`
-- merge-triggered main CI for `fd93b8d`
+- live PTY check: `goh top` rendered the completed Ubuntu ISO row with separated
+  columns, then exited `0` on `q`.
 
-PR #42 fixed the first dogfood UX issue found by the Ubuntu ISO test:
-`goh` failed a job with `destinationUnwritable` when the `--output` parent
-directory did not exist. `DownloadFile` now creates missing parent directories
-before opening the destination, with a regression test in `DownloadFileTests`.
-The dogfood daemon was rebuilt and reinstalled locally, and a nested
-`/Users/shane/Downloads/.build/...` destination completed successfully.
-
-Next pickup: merge this state-refresh PR if CI is clean, then continue the
-manual dogfood checklist from `main`: Ubuntu ISO foreground/background
-download, larger pause/resume/rm flow, `goh top`, Safari auth import after Full
-Disk Access, and reset/reinstall.
+Next pickup: open/merge this PR if CI is clean, then continue the manual
+dogfood checklist from `main`: foreground/background download flow,
+pause/resume/rm on a larger file, `goh top` with keyboard exits, Safari auth
+import after Full Disk Access, and reset/reinstall.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

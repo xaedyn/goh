@@ -80,7 +80,12 @@ let result = GohCommandLine(
         let interruptSource = makeInterruptSource {
             inbox.interrupt()
         }
+        let exitMonitor = GohTerminalExitMonitor {
+            inbox.interrupt()
+        }
         defer { interruptSource.cancel() }
+        defer { exitMonitor.cancel() }
+        exitMonitor.start()
 
         return GohTop(
             session: try makeForegroundSession(

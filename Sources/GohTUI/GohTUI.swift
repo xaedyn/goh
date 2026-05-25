@@ -24,17 +24,22 @@ public enum GohTUI {
             return lines.joined(separator: "\n")
         }
 
-        lines.append("ID  STATE   PROGRESS             RATE    CONN  DESTINATION")
+        lines.append(tableRow(
+            id: "ID",
+            state: "STATE",
+            progress: "PROGRESS",
+            rate: "RATE",
+            connectionCount: "CONN",
+            destination: "DESTINATION"))
         for snapshot in sorted {
             let job = snapshot.job
-            lines.append([
-                pad(String(job.id), to: 4),
-                pad(job.state.rawValue, to: 8),
-                pad(progressText(job.progress), to: 21),
-                pad("\(formatBytes(job.progress.bytesPerSecond))/s", to: 8),
-                pad("\(job.actualConnectionCount)/\(job.requestedConnectionCount)", to: 6),
-                job.destination,
-            ].joined())
+            lines.append(tableRow(
+                id: String(job.id),
+                state: job.state.rawValue,
+                progress: progressText(job.progress),
+                rate: "\(formatBytes(job.progress.bytesPerSecond))/s",
+                connectionCount: "\(job.actualConnectionCount)/\(job.requestedConnectionCount)",
+                destination: job.destination))
         }
         return lines.joined(separator: "\n")
     }
@@ -78,5 +83,23 @@ public enum GohTUI {
             return text
         }
         return text + String(repeating: " ", count: width - text.count)
+    }
+
+    private static func tableRow(
+        id: String,
+        state: String,
+        progress: String,
+        rate: String,
+        connectionCount: String,
+        destination: String
+    ) -> String {
+        [
+            pad(id, to: 4),
+            pad(state, to: 9),
+            pad(progress, to: 21),
+            pad(rate, to: 10),
+            pad(connectionCount, to: 6),
+            destination,
+        ].joined(separator: " ")
     }
 }
