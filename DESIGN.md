@@ -1675,6 +1675,16 @@ status copy: `goh --help` opens with `Get over here!`, and `goh top` carries the
 same line in its title. Foreground add/progress output stays focused on job
 state so scripts and long-running terminals do not get repeated brand copy.
 
+`goh doctor` is a local diagnostic, not a daemon command. It reuses the existing
+`ls` request only to prove XPC reachability and queue readability, then combines
+that with process-local checks for the CLI binary, sibling `gohd`, LaunchAgent
+plist, `launchctl print gui/$UID/dev.goh.daemon`, dogfood peer-relaxation
+environment, writable download/log directories, and the daemon log path. The
+doctor prints `[ok]`, `[warn]`, and `[fail]` findings plus exact recovery
+commands; failures exit `1`, warning-only runs exit `0`. Keeping this logic
+CLI-local avoids a new wire contract and lets a broken daemon still be diagnosed
+from filesystem and launchd state.
+
 ## Progress Subscription Contract
 
 This section freezes the foreground `goh <url>` and `goh top` progress stream
@@ -1956,6 +1966,12 @@ and leave the real daemon support directory intact unless
 `Scripts/dogfood-reset.sh --data` is explicit. This lane proves launchd/XPC and
 core product behavior locally before publication; it is not a substitute for the
 signed/notarized release-candidate gate.
+
+The dogfood lane uses `goh doctor` as its first self-check. The smoke script
+invokes it after ensuring the daemon is installed so the product verifies its own
+LaunchAgent/XPC/filesystem posture before exercising a download. Doctor remains
+read-only: it prints the recovery command instead of bootstrapping launchd,
+exporting shell state, creating directories, or deleting data.
 
 The daemon constructs off-main `DispatchSource` / `NWPathMonitor` callbacks in
 helper functions rather than directly as top-level `main.swift` closures. Local

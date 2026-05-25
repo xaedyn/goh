@@ -38,6 +38,11 @@ bandwidth budgets; hashes beyond SHA-256.
   per-user LaunchAgent, smokes real launchd/XPC behavior, and resets cleanly.
   This lane uses a debug build until Developer ID credentials exist because
   unsigned release binaries cannot satisfy production peer validation.
+- **Local health doctor.** `goh doctor` is the read-only pre-launch triage gate:
+  it checks the CLI/daemon binaries, LaunchAgent install, launchd load state,
+  XPC reachability, dogfood peer-relaxation setup, writable local download/log
+  paths, and queue readability, then prints exact recovery commands. The doctor
+  is deliberately CLI-local and does not add daemon IPC surface.
 
 ## v0.2 — backlog
 

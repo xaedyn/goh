@@ -27,6 +27,7 @@ export PATH="$PWD/.build/dogfood/current/bin:$PATH"
 export GOH_XPC_ALLOW_UNVALIDATED_PEERS=1
 
 goh ls
+goh doctor
 goh add --output "$PWD/.build/dogfood/downloads/example.html" https://example.com/
 goh top
 ```
@@ -42,9 +43,9 @@ goh top
   staged `gohd` path, dogfood log paths, and
   `GOH_XPC_ALLOW_UNVALIDATED_PEERS=1`. It refuses to overwrite an existing
   non-dogfood LaunchAgent.
-- `Scripts/dogfood-smoke.sh` verifies the daemon is reachable through real
-  `launchd`/XPC, adds a small download, waits for completion, and leaves the
-  downloaded file under `.build/dogfood/downloads`.
+- `Scripts/dogfood-smoke.sh` runs `goh doctor`, verifies the daemon is reachable
+  through real `launchd`/XPC, adds a small download, waits for completion, and
+  leaves the downloaded file under `.build/dogfood/downloads`.
 - `Scripts/dogfood-reset.sh` unloads and removes only the marked dogfood
   LaunchAgent. Add `--data` to delete the daemon catalog and checkpoints in
   `~/Library/Application Support/dev.goh.daemon`; add `--all` to delete dogfood
@@ -78,6 +79,7 @@ notarization are available.
 Run this before treating a local build as usable:
 
 - `Scripts/dogfood-smoke.sh`
+- Doctor: `goh doctor`
 - Foreground: `goh https://example.com/`
 - Background: `goh add --output "$PWD/.build/dogfood/downloads/manual.html" https://example.com/`
 - List: `goh ls` and `goh ls --json`
@@ -85,4 +87,3 @@ Run this before treating a local build as usable:
 - Dashboard: `goh top`, then stop it with Ctrl-C
 - Auth: `goh auth import safari` after granting Full Disk Access
 - Reset: `Scripts/dogfood-reset.sh`, then repeat install and smoke
-

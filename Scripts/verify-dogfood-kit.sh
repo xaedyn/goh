@@ -30,6 +30,15 @@ require_text() {
   fi
 }
 
+require_match() {
+  local path="$1"
+  local pattern="$2"
+  if ! grep -E -- "$pattern" "$repo_root/$path" >/dev/null; then
+    echo "expected pattern '$pattern' in $path" >&2
+    exit 65
+  fi
+}
+
 require_executable "Scripts/dogfood-build.sh"
 require_executable "Scripts/dogfood-install.sh"
 require_executable "Scripts/dogfood-smoke.sh"
@@ -56,6 +65,7 @@ require_text "Scripts/dogfood-install.sh" "launchctl bootout"
 require_text "Scripts/dogfood-install.sh" "refusing to overwrite"
 require_text "Scripts/dogfood-smoke.sh" "GOH_XPC_ALLOW_UNVALIDATED_PEERS"
 require_text "Scripts/dogfood-smoke.sh" "goh ls"
+require_match "Scripts/dogfood-smoke.sh" '^[[:space:]]*doctor_output="\$\(goh_dev[[:space:]]+doctor[[:space:]]+2>&1\)'
 require_text "Scripts/dogfood-smoke.sh" "goh add"
 require_text "Scripts/dogfood-reset.sh" "--data"
 require_text "Scripts/dogfood-reset.sh" "refusing to remove"

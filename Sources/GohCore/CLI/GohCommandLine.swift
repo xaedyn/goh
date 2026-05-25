@@ -17,11 +17,13 @@ public struct GohCommandLine {
     public typealias Sender = (XPCDictionary) throws -> XPCDictionary
     public typealias Foreground = (AddRequest) throws -> GohCommandLineResult
     public typealias Top = () throws -> GohCommandLineResult
+    public typealias Doctor = () throws -> GohCommandLineResult
 
     private let arguments: [String]
     private let homeDirectory: URL
     private let foreground: Foreground?
     private let top: Top?
+    private let doctor: Doctor?
     private let send: Sender
 
     public init(
@@ -29,12 +31,14 @@ public struct GohCommandLine {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         foreground: Foreground? = nil,
         top: Top? = nil,
+        doctor: Doctor? = nil,
         send: @escaping Sender
     ) {
         self.arguments = arguments
         self.homeDirectory = homeDirectory
         self.foreground = foreground
         self.top = top
+        self.doctor = doctor
         self.send = send
     }
 
@@ -77,6 +81,14 @@ public struct GohCommandLine {
                         standardError: "The top dashboard is not configured.\n")
                 }
                 return try top()
+
+            case .doctor:
+                guard let doctor else {
+                    return GohCommandLineResult(
+                        exitCode: 1,
+                        standardError: "The doctor diagnostic is not configured.\n")
+                }
+                return try doctor()
 
             case .ls(.table):
                 let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
@@ -171,6 +183,7 @@ private enum ParsedCommand: Equatable {
     case add(AddRequest)
     case foreground(AddRequest)
     case top
+    case doctor
     case ls(OutputFormat)
     case pause(UInt64)
     case resume(UInt64)
@@ -210,6 +223,9 @@ extension GohCommandLine {
         }
         if arguments == ["top"] {
             return .top
+        }
+        if arguments == ["doctor"] {
+            return .doctor
         }
         if arguments.count == 2, arguments[0] == "pause" {
             return .pause(try parseJobID(arguments[1]))
@@ -406,6 +422,7 @@ extension GohCommandLine {
           goh add [--output <path>] [--connections <1-16>] [--priority low|normal|high] [--no-cookies] <url>
           goh ls [--json]
           goh top
+          goh doctor
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
