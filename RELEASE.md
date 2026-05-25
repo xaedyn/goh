@@ -2,7 +2,7 @@
 
 This file tracks the release pipeline for `goh`. It is deliberately explicit
 about what exists today, what is private release-candidate machinery, and what
-still needs real Developer ID credentials.
+requires real Developer ID credentials before it can run.
 
 ## Release posture
 
@@ -28,6 +28,7 @@ Every PR runs the normal CI workflow:
 
 - `ruby -c Formula/goh.rb`
 - `brew style Formula/goh.rb`
+- `bash Scripts/verify-private-release-workflow.sh`
 - `swift build -Xswiftc -warnings-as-errors`
 - `swift test`
 - `swift run -c release goh-bench hash-overhead 256`
@@ -50,9 +51,20 @@ These artifacts are private, unsigned release-candidate materials. They are not
 the final trusted distribution channel and should not be advertised as an
 install path.
 
+The same workflow also has a manual-only private signed PKG gate. It runs only
+when `workflow_dispatch` is launched with `private_signed_pkg` enabled. That job
+imports Developer ID credentials into an ephemeral keychain, signs the `goh` and
+`gohd` payload with hardened runtime and timestamping, signs the PKG with a
+Developer ID Installer identity, submits it with `xcrun notarytool submit
+--wait`, downloads the notary log, staples the accepted ticket, verifies the
+installer with `spctl -a -v --type install`, rewrites the checksum after
+stapling, and uploads the PKG/checksum/logs as GitHub Actions artifacts. It does
+not create a GitHub Release, publish a tap, update a stable checksum, or expose
+the artifact as an official install channel.
+
 ## Signing and notarization prerequisites
 
-The credential-backed release workflow needs these inputs before implementation:
+The credential-backed release workflow needs these inputs before it can run:
 
 - Apple Developer Program membership for the release team.
 - A Developer ID Application certificate and private key exported as a password
@@ -77,8 +89,15 @@ Planned GitHub secrets:
 - `APPLE_NOTARY_ISSUER_ID`
 - `APPLE_NOTARY_KEY_P8_BASE64`
 
-If the project uses Apple ID credentials instead of a Notary API key, replace
-the three `APPLE_NOTARY_*` key secrets with:
+Planned GitHub Actions variables:
+
+- `DEVELOPER_ID_APPLICATION_IDENTITY`
+- `DEVELOPER_ID_INSTALLER_IDENTITY`
+
+The checked-in GitHub Actions path uses the Notary API-key credentials. The
+private packaging script also accepts Apple ID credentials for local/manual use;
+if CI ever switches to that fallback, replace the three `APPLE_NOTARY_*` key
+secrets and wire the workflow environment to:
 
 - `APPLE_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
@@ -119,6 +138,10 @@ For the credential-backed v0.1 release path:
 10. Verify the final installer with `spctl -a -v --type install`.
 11. Publish the stapled PKG and checksum only after local verification and the
     explicit public launch decision.
+
+`Scripts/private-release-candidate.sh` implements steps 1-10 for private CI
+validation. Step 11 remains intentionally manual and outside the workflow until
+the public launch gate opens.
 
 The PKG choice is deliberate. A ZIP is acceptable for notarization, but Apple
 documents that stapling cannot be applied directly to ZIP archives, and tickets
