@@ -1,8 +1,10 @@
-# Homebrew formula for goh. Lives in-repo until a dedicated tap exists.
+# Homebrew formula for goh. Private release-candidate machinery until a dedicated
+# tap exists.
 #
-# Placeholder: `url` and `sha256` are filled when v0.1.0 is tagged. `brew services
-# start goh` generates the operative LaunchAgent plist from the `service` block
-# below — see Resources/dev.goh.daemon.plist for the reference layout.
+# Placeholder: `url` and `sha256` are filled only after the explicit public
+# launch gate opens. `brew services start goh` generates the operative
+# LaunchAgent plist from the `service` block below — see
+# Resources/dev.goh.daemon.plist for the reference layout.
 class Goh < Formula
   desc "Daemon-backed terminal download manager for Apple Silicon macOS"
   homepage "https://github.com/xaedyn/goh"

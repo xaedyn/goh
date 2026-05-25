@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `chore/pkg-release-artifact`
+- **Branch:** `docs/private-release-posture`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -16,16 +16,20 @@ session; update at the start of every PR and at the end of every session.
   `2e1c3c7`; PR #30 — Homebrew formula validation in CI — `main` at
   `5ad60b6`; PR #31 — release artifact workflow — `main` at `e79c0bd`;
   PR #32 — release artifact verification — `main` at `b668aa0`; PR #33 —
-  release signing prerequisites — `main` at `580b7c2`.
+  release signing prerequisites — `main` at `580b7c2`; PR #34 — unsigned PKG
+  release artifact — `main` at `865d6aa`.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
   release pipeline. The first branch shipped the formula/README truth refresh in
   PR #29. PR #30 added CI validation for the in-repo Homebrew formula. The
   PR #31 added an unsigned release-artifact workflow and a reusable local
   packaging script. PR #32 added reusable artifact verification before upload.
   PR #33 documented signing/notarization prerequisites and the credential
-  boundary for the remaining release work. The current branch adds an unsigned
-  PKG release-candidate artifact and verifier so the 10x direct-download path is
-  exercised in CI before credential-backed signing/notarization lands.
+  boundary for the remaining release work. PR #34 added an unsigned PKG
+  release-candidate artifact and verifier so the 10x direct-download path is
+  exercised in CI before credential-backed signing/notarization lands. The
+  current branch codifies the private release posture: build every release gate,
+  but do not publish an official install channel until the explicit public
+  launch decision.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -124,8 +128,9 @@ remaining adaptive host scheduling work to v0.2.
   PR #29 refreshed the pre-release formula/docs surfaces. PR #30 added formula
   validation to CI. PR #31 added unsigned release artifacts and checksums. PR #32
   added packaged-artifact verification. PR #33 documented signing and
-  notarization prerequisites. The current branch adds an unsigned PKG artifact
-  and verifier for the public direct-download channel.
+  notarization prerequisites. PR #34 added an unsigned PKG artifact and verifier
+  for the future direct-download channel. The current branch removes premature
+  public install guidance and records the private launch gate.
 
 ## Recent 3b validation notes
 
@@ -210,40 +215,32 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `chore/pkg-release-artifact`.
+Current branch: `docs/private-release-posture`.
 
-PR #33 passed CI, the `Package release artifacts` workflow, and CodeRabbit, then
-was squash-merged into `main` at `580b7c2`. It documented the Developer ID and
-notarization credential boundary.
+PR #34 passed CI, the `Package release artifacts` workflow, and CodeRabbit, then
+was squash-merged into `main` at `865d6aa`. It added the unsigned PKG
+release-candidate artifact and verifier.
 
-This branch continues Slice 9 by putting the 10x direct-download choice into CI:
+This branch continues Slice 9 by codifying the launch posture: build and test the
+entire release path privately, but do not publish an official install channel
+until the explicit public launch decision.
 
-- `Scripts/package-pkg.sh` builds an unsigned flat PKG release candidate with a
-  named component receipt (`dev.goh.payload`) and product id (`dev.goh.pkg`).
-- `Scripts/verify-pkg-artifact.sh` verifies the checksum, distribution metadata,
-  macOS 26.5+ arm64 requirement, script-free installer shape, payload contents,
-  direct-install daemon plist path, and packaged `goh --help`.
-- `.github/workflows/release-artifacts.yml` now creates and uploads both the
-  tarball/repro artifact and the PKG/direct-download candidate.
-- `RELEASE.md`, `DESIGN.md`, and `README.md` now describe PKG as the v0.1
-  direct-download path, with Homebrew remaining the CLI-native install channel.
+- `README.md` no longer advertises a public `brew install` command.
+- `RELEASE.md` records that formula, tarball, PKG, signing, notarization, and
+  stapling machinery are readiness gates, not publication gates.
+- `DESIGN.md` records that GitHub Releases, public taps, stable checksums, and
+  public direct-download packages are separate explicit launch gates.
+- `Formula/goh.rb` now labels the formula private release-candidate machinery
+  until a tap exists.
 
-Next pickup: commit/push/open this PR. Merge only if CI, package artifacts, and
-comments are clean.
+Next pickup: commit/push/open this docs PR. Merge only if CI and comments are
+clean.
 
-Local gates run on this branch:
+Local gates to run on this branch:
 
 - `git diff --check`
 - `ruby -c Formula/goh.rb`
 - `brew style Formula/goh.rb`
-- `bash -n Scripts/package-release.sh && bash -n Scripts/verify-release-artifact.sh && bash -n Scripts/package-pkg.sh && bash -n Scripts/verify-pkg-artifact.sh`
-- YAML parse for `.github/workflows/release-artifacts.yml`
-- local tarball package + verify, then PKG package + verify for `pr-local`
-- `swift build -Xswiftc -warnings-as-errors`
-- `swift test` — 207 tests
-- `swift run -c release goh-bench hash-overhead 256` — inline 0.1945s, unified
-  0.1969s, overhead +1.2 %
-- `swift run goh --help`
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

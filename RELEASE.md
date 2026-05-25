@@ -1,7 +1,26 @@
 # goh release process
 
 This file tracks the release pipeline for `goh`. It is deliberately explicit
-about what exists today and what still needs real Developer ID credentials.
+about what exists today, what is private release-candidate machinery, and what
+still needs real Developer ID credentials.
+
+## Release posture
+
+`goh` is not officially installable yet. The project may build formula, tarball,
+PKG, signing, notarization, and stapling machinery ahead of launch, but those
+steps are readiness gates, not publication gates.
+
+Until the launch decision is made:
+
+- do not create a public GitHub Release;
+- do not publish a Homebrew tap or stable formula checksum;
+- do not link users to the release-artifact workflow outputs as an install path;
+- do not publish the direct-download PKG or checksum as official artifacts;
+- keep README install guidance limited to source builds by people intentionally
+  working from the repository.
+
+This allows private end-to-end testing of the exact release path without
+accidentally inviting normal users onto an unfinished product surface.
 
 ## Current automated release checks
 
@@ -27,8 +46,9 @@ that touch packaging or build inputs. It currently:
   `goh --help`;
 - uploads the tarball, PKG, and checksums as GitHub Actions artifacts.
 
-These artifacts are unsigned release-candidate materials. They are not the final
-trusted distribution channel.
+These artifacts are private, unsigned release-candidate materials. They are not
+the final trusted distribution channel and should not be advertised as an
+install path.
 
 ## Signing and notarization prerequisites
 
@@ -43,7 +63,8 @@ The credential-backed release workflow needs these inputs before implementation:
 - App Store Connect notarization credentials. Prefer an API key for CI; an
   Apple ID plus app-specific password is the fallback.
 - The Apple Team ID associated with the Developer ID certificate.
-- A stable release download location for the PKG and checksum.
+- A stable release download location for the PKG and checksum, chosen only when
+  the public launch gate opens.
 
 Planned GitHub secrets:
 
@@ -96,7 +117,8 @@ For the credential-backed v0.1 release path:
 8. Download and inspect the notary log even on success.
 9. Staple the ticket to the PKG.
 10. Verify the final installer with `spctl -a -v --type install`.
-11. Publish the stapled PKG and checksum only after local verification.
+11. Publish the stapled PKG and checksum only after local verification and the
+    explicit public launch decision.
 
 The PKG choice is deliberate. A ZIP is acceptable for notarization, but Apple
 documents that stapling cannot be applied directly to ZIP archives, and tickets
