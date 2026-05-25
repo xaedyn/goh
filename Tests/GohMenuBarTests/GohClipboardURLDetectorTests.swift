@@ -25,4 +25,21 @@ struct GohClipboardURLDetectorTests {
     @Test func rejectsMultipleLinesOfText() {
         #expect(GohClipboardURLDetector().url(from: "https://example.com/a\nhttps://example.com/b") == nil)
     }
+
+    @Test func rejectsSameLineProseAfterURL() {
+        #expect(GohClipboardURLDetector().url(from: "https://example.com/file.iso more text") == nil)
+    }
+
+    @Test func rejectsInteriorWhitespaceAndControlCharacters() {
+        #expect(GohClipboardURLDetector().url(from: "https://example.com/file\tname.iso") == nil)
+        #expect(GohClipboardURLDetector().url(from: "https://example.com/file\u{0007}name.iso") == nil)
+    }
+
+    @Test func rejectsOutOfRangePort() {
+        #expect(GohClipboardURLDetector().url(from: "https://example.com:99999/file.iso") == nil)
+    }
+
+    @Test func rejectsMalformedPercentEscape() {
+        #expect(GohClipboardURLDetector().url(from: "https://example.com/file%ZZ.iso") == nil)
+    }
 }
