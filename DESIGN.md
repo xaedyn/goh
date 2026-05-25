@@ -1850,16 +1850,23 @@ notification arrives. This keeps v0.1 native, dependency-free, and easy to test.
 
 `GohTUI` owns pure rendering. Given `[ProgressSnapshot]`, it returns the full
 dashboard string: a title, job count, and rows sorted by job ID with ID, state,
-progress, rate, connection count, and destination. Unknown totals render as
-`?`, and an empty snapshot renders a calm empty-state line. The `goh` executable
-owns terminal process behavior: installing the Ctrl-C signal source, writing the
-ANSI clear/home prefix, and keeping the XPC session alive.
+progress, rate, connection count, and destination. Table rows use explicit
+column separators so long terminal states and high transfer rates cannot run
+into the next field. Unknown totals render as `?`, and an empty snapshot renders
+a calm empty-state line. The `goh` executable owns terminal process behavior:
+installing the Ctrl-C signal source, writing the ANSI clear/home prefix, and
+keeping the XPC session alive.
 
-`goh top` exits `0` on Ctrl-C because it is only a monitor. If its daemon session
-drops, it uses the same bounded reconnect helper and fixed 2.5 s / 100 ms
-window as foreground downloads, but re-subscribes with `scope: all`. If the
-window elapses, `top` exits `1` with daemon-unavailable guidance instead of the
-foreground "download continues" note, because `top` did not create durable work.
+`goh top` exits `0` on Ctrl-C because it is only a monitor. It also accepts
+top-style terminal exit keys (`q`, `Q`, Escape, and Ctrl-D). The executable
+temporarily disables canonical input and echo while `top` is running so those
+keys work without Return, restores the terminal mode on exit, and routes the
+key exit through the same observer-only interrupt path as Ctrl-C; no download
+state changes. If its daemon session drops, it uses the same bounded reconnect
+helper and fixed 2.5 s / 100 ms window as foreground downloads, but
+re-subscribes with `scope: all`. If the window elapses, `top` exits `1` with
+daemon-unavailable guidance instead of the foreground "download continues" note,
+because `top` did not create durable work.
 
 ## Release Packaging
 

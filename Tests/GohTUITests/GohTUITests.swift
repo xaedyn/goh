@@ -63,9 +63,38 @@ struct GohTUIBootstrapTests {
         goh top
         2 jobs
 
-        ID  STATE   PROGRESS             RATE    CONN  DESTINATION
-        2   active  512 KB/1 MB (50%)    2 KB/s  4/8   /tmp/video.mov
-        7   paused  1.5 MB/?             0 B/s   0/8   /tmp/archive.zip
+        ID   STATE     PROGRESS              RATE       CONN   DESTINATION
+        2    active    512 KB/1 MB (50%)     2 KB/s     4/8    /tmp/video.mov
+        7    paused    1.5 MB/?              0 B/s      0/8    /tmp/archive.zip
+        """)
+    }
+
+    @Test("top dashboard keeps long states and rates separated")
+    @MainActor
+    func topDashboardKeepsLongColumnsSeparated() {
+        let snapshots = [
+            ProgressSnapshot(
+                job: Self.job(
+                    id: 42,
+                    destination: "/tmp/ubuntu.iso",
+                    state: .completed,
+                    progress: JobProgress(
+                        bytesCompleted: 1_024,
+                        bytesTotal: 1_024,
+                        bytesPerSecond: 123_456_789),
+                    requestedConnectionCount: 8,
+                    actualConnectionCount: 8),
+                lanes: []),
+        ]
+
+        let rendered = GohTUI.renderTopDashboard(snapshots: snapshots)
+
+        #expect(rendered == """
+        goh top
+        1 job
+
+        ID   STATE     PROGRESS              RATE       CONN   DESTINATION
+        42   completed 1 KB/1 KB (100%)      117.7 MB/s 8/8    /tmp/ubuntu.iso
         """)
     }
 
