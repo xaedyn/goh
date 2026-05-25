@@ -10,7 +10,7 @@
 
 A daemon-backed terminal download manager for Apple Silicon macOS.
 
-`goh` — pronounced "go." Files come when you tell them to.
+`goh` — pronounced "go." Get over here!
 
 ## Why
 

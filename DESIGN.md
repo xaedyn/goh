@@ -1650,6 +1650,11 @@ directly to `AddRequest.destination`, `connectionCount`, `priority`, and
 the command JSON codec, with a trailing newline for shell ergonomics. This is a
 presentation choice over the current protocol, not a new wire shape.
 
+The product catchphrase appears sparingly as CLI/TUI personality, not as noisy
+status copy: `goh --help` opens with `Get over here!`, and `goh top` carries the
+same line in its title. Foreground add/progress output stays focused on job
+state so scripts and long-running terminals do not get repeated brand copy.
+
 ## Progress Subscription Contract
 
 This section freezes the foreground `goh <url>` and `goh top` progress stream
@@ -1849,13 +1854,13 @@ repaints a compact table whenever the subscription baseline or a progress
 notification arrives. This keeps v0.1 native, dependency-free, and easy to test.
 
 `GohTUI` owns pure rendering. Given `[ProgressSnapshot]`, it returns the full
-dashboard string: a title, job count, and rows sorted by job ID with ID, state,
-progress, rate, connection count, and destination. Table rows use explicit
-column separators so long terminal states and high transfer rates cannot run
-into the next field. Unknown totals render as `?`, and an empty snapshot renders
-a calm empty-state line. The `goh` executable owns terminal process behavior:
-installing the Ctrl-C signal source, writing the ANSI clear/home prefix, and
-keeping the XPC session alive.
+dashboard string: a title with the catchphrase, job count, and rows sorted by
+job ID with ID, state, progress, rate, connection count, and destination. Table
+rows use explicit column separators so long terminal states and high transfer
+rates cannot run into the next field. Unknown totals render as `?`, and an empty
+snapshot renders a calm empty-state line. The `goh` executable owns terminal
+process behavior: installing the Ctrl-C signal source, writing the ANSI
+clear/home prefix, and keeping the XPC session alive.
 
 `goh top` exits `0` on Ctrl-C because it is only a monitor. It also accepts
 top-style terminal exit keys (`q`, `Q`, Escape, and Ctrl-D). The executable

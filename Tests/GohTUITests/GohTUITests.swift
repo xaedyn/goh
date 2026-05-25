@@ -20,7 +20,7 @@ struct GohTUIBootstrapTests {
         let rendered = GohTUI.renderTopDashboard(snapshots: [])
 
         #expect(rendered == """
-        goh top
+        goh top - Get over here!
         0 jobs
 
         No downloads yet.
@@ -60,7 +60,7 @@ struct GohTUIBootstrapTests {
         let rendered = GohTUI.renderTopDashboard(snapshots: snapshots)
 
         #expect(rendered == """
-        goh top
+        goh top - Get over here!
         2 jobs
 
         ID   STATE     PROGRESS              RATE       CONN   DESTINATION
@@ -90,7 +90,7 @@ struct GohTUIBootstrapTests {
         let rendered = GohTUI.renderTopDashboard(snapshots: snapshots)
 
         #expect(rendered == """
-        goh top
+        goh top - Get over here!
         1 job
 
         ID   STATE     PROGRESS              RATE       CONN   DESTINATION
