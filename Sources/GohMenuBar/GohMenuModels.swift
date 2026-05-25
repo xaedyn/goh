@@ -73,7 +73,7 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
 nonisolated public struct GohMenuState: Sendable, Equatable {
     public var health: GohMenuHealth
     public var healthTitle: String
-    public var healthDetail: String
+    public var healthDetail: String?
     public var activeCount: Int
     public var aggregateSpeedText: String
     public var primaryAction: GohMenuPrimaryAction
@@ -83,7 +83,7 @@ nonisolated public struct GohMenuState: Sendable, Equatable {
     public init(
         health: GohMenuHealth,
         healthTitle: String,
-        healthDetail: String,
+        healthDetail: String?,
         activeCount: Int,
         aggregateSpeedText: String,
         primaryAction: GohMenuPrimaryAction,

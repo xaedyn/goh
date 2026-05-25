@@ -60,14 +60,14 @@ nonisolated public struct GohMenuPresenter: Sendable {
 
     private func copy(for health: GohMenuHealth) -> (
         title: String,
-        detail: String,
+        detail: String?,
         recovery: GohMenuRecoveryAction?
     ) {
         switch health {
         case .connecting:
-            return ("Connecting to gohd", "", nil)
+            return ("Connecting to gohd", nil, nil)
         case .connected:
-            return ("gohd connected", "", nil)
+            return ("gohd connected", nil, nil)
         case .reconnecting:
             return (
                 "Reconnecting to gohd",

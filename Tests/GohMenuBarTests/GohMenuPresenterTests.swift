@@ -35,8 +35,17 @@ struct GohMenuPresenterTests {
             clipboardURL: nil)
 
         #expect(state.healthTitle == "Peer validation blocked")
-        #expect(state.healthDetail.contains("GOH_XPC_ALLOW_UNVALIDATED_PEERS=1"))
+        #expect(state.healthDetail?.contains("GOH_XPC_ALLOW_UNVALIDATED_PEERS=1") == true)
         #expect(state.recoveryAction == .copyCommand("export GOH_XPC_ALLOW_UNVALIDATED_PEERS=1"))
+    }
+
+    @Test func connectedHealthHasNoDetail() {
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [],
+            clipboardURL: nil)
+
+        #expect(state.healthDetail == nil)
     }
 
     private func snapshot(
