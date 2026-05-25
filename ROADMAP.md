@@ -43,6 +43,11 @@ bandwidth budgets; hashes beyond SHA-256.
   XPC reachability, dogfood peer-relaxation setup, writable local download/log
   paths, and queue readability, then prints exact recovery commands. The doctor
   is deliberately CLI-local and does not add daemon IPC surface.
+- **Private readiness acceptance.** `Scripts/dogfood-acceptance.sh` is the
+  pre-public "can we actually use this?" gate: build/install, doctor, smoke,
+  foreground download, JSON list, active pause/resume/remove cleanup, daemon
+  restart, and an opt-in competitive benchmark against `aria2c` and `curl`.
+  It is local-only, creates uniquely named test files, and publishes nothing.
 
 ## v0.2 — backlog
 

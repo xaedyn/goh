@@ -42,6 +42,7 @@ require_match() {
 require_executable "Scripts/dogfood-build.sh"
 require_executable "Scripts/dogfood-install.sh"
 require_executable "Scripts/dogfood-smoke.sh"
+require_executable "Scripts/dogfood-acceptance.sh"
 require_executable "Scripts/dogfood-reset.sh"
 require_file "DOGFOOD.md"
 
@@ -49,6 +50,7 @@ for script in \
   Scripts/dogfood-build.sh \
   Scripts/dogfood-install.sh \
   Scripts/dogfood-smoke.sh \
+  Scripts/dogfood-acceptance.sh \
   Scripts/dogfood-reset.sh
 do
   bash -n "$repo_root/$script"
@@ -67,6 +69,15 @@ require_text "Scripts/dogfood-smoke.sh" "GOH_XPC_ALLOW_UNVALIDATED_PEERS"
 require_text "Scripts/dogfood-smoke.sh" "goh ls"
 require_match "Scripts/dogfood-smoke.sh" '^[[:space:]]*doctor_output="\$\(goh_dev[[:space:]]+doctor[[:space:]]+2>&1\)'
 require_text "Scripts/dogfood-smoke.sh" "goh add"
+require_text "Scripts/dogfood-acceptance.sh" "goh doctor"
+require_text "Scripts/dogfood-acceptance.sh" "dogfood-smoke.sh"
+require_text "Scripts/dogfood-acceptance.sh" "goh ls --json"
+require_text "Scripts/dogfood-acceptance.sh" "goh pause"
+require_text "Scripts/dogfood-acceptance.sh" "goh resume"
+require_text "Scripts/dogfood-acceptance.sh" "goh rm"
+require_text "Scripts/dogfood-acceptance.sh" "launchctl kickstart"
+require_text "Scripts/dogfood-acceptance.sh" "Benchmarks/competitive.sh"
+require_text "Scripts/dogfood-acceptance.sh" "--performance"
 require_text "Scripts/dogfood-reset.sh" "--data"
 require_text "Scripts/dogfood-reset.sh" "refusing to remove"
 
@@ -75,6 +86,7 @@ require_text "DOGFOOD.md" "GOH_XPC_ALLOW_UNVALIDATED_PEERS"
 require_text "DOGFOOD.md" "Scripts/dogfood-build.sh"
 require_text "DOGFOOD.md" "Scripts/dogfood-install.sh"
 require_text "DOGFOOD.md" "Scripts/dogfood-smoke.sh"
+require_text "DOGFOOD.md" "Scripts/dogfood-acceptance.sh"
 require_text "DOGFOOD.md" "Scripts/dogfood-reset.sh"
 require_text "DOGFOOD.md" "Application Support/dev.goh.daemon"
 

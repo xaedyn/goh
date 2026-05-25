@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/doctor-health-check`
+- **Branch:** `feat/private-readiness-gate`
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -21,7 +21,8 @@ session; update at the start of every PR and at the end of every session.
   `main` at `33b1ea9`; PR #36 — private signed release gate — `main` at
   `b7e22e6`; PR #39 — menu bar companion roadmap/spec — `main` at `c2f4911`;
   PR #40 — local dogfood lane — `main` at `fd93b8d`; PR #47 — active `rm`
-  cleanup hardening — `main` at `54317a9`.
+  cleanup hardening — `main` at `54317a9`; PR #49 — local health doctor —
+  `main` at `ff45e99`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -48,12 +49,14 @@ session; update at the start of every PR and at the end of every session.
   discovered active `rm` path where a resumed or range-parallel download could
   leave a visible partial file behind after the catalog row was removed. PR #47
   also tightened the file-ownership boundary so `rm` of a queued never-started
-  job does not delete a pre-existing destination file. The current branch adds
-  `goh doctor` as a read-only local health gate for private dogfood: it checks
-  the dogfood binaries, LaunchAgent, launchd load state, XPC queue
-  reachability, peer-relaxation setup, writable local paths, and daemon log
-  posture, then prints exact recovery commands without adding daemon IPC
-  surface.
+  job does not delete a pre-existing destination file. PR #49 added `goh
+  doctor` as a read-only local health gate for private dogfood: it checks the
+  dogfood binaries, LaunchAgent, launchd load state, XPC queue reachability,
+  peer-relaxation setup, writable local paths, and daemon log posture, then
+  prints exact recovery commands without adding daemon IPC surface. The current
+  branch adds the private readiness acceptance gate above smoke: build/install,
+  doctor, smoke, foreground download, JSON list, active pause/resume/remove
+  cleanup, daemon restart, and opt-in competitive performance comparison.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -156,7 +159,8 @@ remaining adaptive host scheduling work to v0.2.
   for the future direct-download channel. PR #35 removed premature public install
   guidance and recorded the private launch gate. PR #36 added a manual private
   signed/notarized PKG release-candidate workflow that can be run only with
-  credentials and an explicit workflow-dispatch input.
+  credentials and an explicit workflow-dispatch input. PR #49 added the local
+  health doctor. The current branch adds the private dogfood acceptance gate.
 
 ## Recent 3b validation notes
 
@@ -241,17 +245,16 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/doctor-health-check`.
+Current branch: `feat/private-readiness-gate`.
 
-PR #47 is merged at `54317a9`; PR #48 refreshed this state file at `61b6824`.
-The active `rm` dogfood bug is fixed and the next private-readiness slice is
-the local health doctor. The branch currently implements `goh doctor`, wires it
-into the CLI help and dogfood smoke script, and documents the read-only
-diagnostic boundary in `DESIGN.md`, `ROADMAP.md`, `README.md`, and
-`DOGFOOD.md`. CodeRabbit review follow-up tightened the dogfood-kit verifier so
-it checks the real `goh_dev doctor` invocation instead of matching prose, and
-derives the production Homebrew log root from the resolved executable's
-`/Cellar/` prefix before falling back to `/opt/homebrew/var/log`.
+PR #49 is merged at `ff45e99`. The local health doctor is now on `main`, and
+the active private-readiness slice is the dogfood acceptance gate. The branch
+adds `Scripts/dogfood-acceptance.sh`, wires it into the dogfood-kit verifier,
+and documents the gate in `DESIGN.md`, `ROADMAP.md`, `README.md`, and
+`DOGFOOD.md`. The gate builds and installs the dogfood debug build, runs doctor
+and smoke, checks `goh ls --json`, exercises foreground `goh <url>`,
+pause/resume/remove cleanup on an active larger download, daemon restart, and
+an opt-in `Benchmarks/competitive.sh` performance pass via `--performance`.
 
 The local dogfood LaunchAgent is currently loaded and running:
 
@@ -276,25 +279,26 @@ Merged PR #47 gates:
   file-ownership review was fixed with a red/green regression; the thread is
   resolved and outdated.
 
-Current doctor-branch verification:
+Current private-readiness verification:
 
-- `git diff --check`
+- `bash -n Scripts/dogfood-acceptance.sh`
 - `Scripts/verify-dogfood-kit.sh`
+- `git diff --check`
 - `swift build -Xswiftc -warnings-as-errors`
 - `swift test` (223 tests)
-- `Scripts/dogfood-build.sh`
-- `Scripts/dogfood-install.sh`
-- `Scripts/dogfood-smoke.sh --timeout 30`
-- Manual healthy doctor:
-  `GOH_XPC_ALLOW_UNVALIDATED_PEERS=1 .build/dogfood/current/bin/goh doctor`
-  reports all checks `[ok]` and ends `Healthy.`
-- Manual missing-shell-env doctor:
-  `env -u GOH_XPC_ALLOW_UNVALIDATED_PEERS .build/dogfood/current/bin/goh doctor`
-  fails XPC with code-signing detail and points at
-  `export GOH_XPC_ALLOW_UNVALIDATED_PEERS=1`.
+- `Scripts/dogfood-acceptance.sh --timeout 45`
+  - build/install/doctor/smoke passed
+  - smoke, foreground, and active-control test files were cleaned up
+  - `goh ls --json`, foreground `goh <url>`, active pause/resume/remove,
+    active partial removal, `lsof` handle check, daemon restart, and
+    post-restart doctor passed
+  - performance comparison was intentionally skipped by default; run
+    `GOH_ACCEPTANCE_PERF_RUNS=1 Scripts/dogfood-acceptance.sh --performance`
+    when a live competitive network pass is desired
 
-Next pickup: push the doctor branch, open the PR, check CI/review comments, and
-merge only after the agreed green-CI/no-actionable-comments gates pass.
+Next pickup: finish verification, push the branch, open the PR, check
+CI/review comments, and merge only after the agreed green-CI/no-actionable-
+comments gates pass.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
