@@ -95,6 +95,32 @@ struct GohCommandLineTests {
         #expect(result.standardError == "")
     }
 
+    @Test("doctor runs the diagnostic flow without sending a one-shot command")
+    func doctorRunsDiagnosticFlow() {
+        var doctorRunCount = 0
+        var oneShotSendCount = 0
+
+        let result = GohCommandLine(
+            arguments: ["doctor"],
+            doctor: {
+                doctorRunCount += 1
+                return GohCommandLineResult(
+                    exitCode: 0,
+                    standardOutput: "doctor flow\n")
+            },
+            send: { _ in
+                oneShotSendCount += 1
+                throw TestTransportError()
+            }
+        ).run()
+
+        #expect(doctorRunCount == 1)
+        #expect(oneShotSendCount == 0)
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == "doctor flow\n")
+        #expect(result.standardError == "")
+    }
+
     @Test("add options populate the full add request")
     func addOptionsPopulateFullRequest() throws {
         let job = Self.makeJob(

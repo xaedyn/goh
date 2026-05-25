@@ -73,10 +73,17 @@ goh_dev() {
 
 mkdir -p "$downloads_dir" "$dogfood_root/logs"
 
-# Smoke path intentionally exercises `goh ls` and `goh add` over real XPC.
+# Smoke path intentionally exercises `goh ls`, `goh doctor`, and `goh add`
+# over real XPC.
 if ! goh_dev ls >/dev/null 2>&1; then
   "$repo_root/Scripts/dogfood-install.sh" "$install_path"
 fi
+
+doctor_output="$(goh_dev doctor 2>&1)" || {
+  echo "dogfood doctor failed before smoke download" >&2
+  printf '%s\n' "$doctor_output" >&2
+  exit 1
+}
 
 dest="$downloads_dir/smoke-$(date -u +%Y%m%d%H%M%S)-$$.download"
 add_output="$(goh_dev add --output "$dest" --connections 1 --no-cookies "$url")"

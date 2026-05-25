@@ -37,6 +37,7 @@ goh <url>
 goh add [--output <path>] [--connections <1-16>] [--priority low|normal|high] [--no-cookies] <url>
 goh ls [--json]
 goh top
+goh doctor
 goh pause <id>
 goh resume <id>
 goh rm [--keep] <id>
