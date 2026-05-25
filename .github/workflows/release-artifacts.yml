@@ -7,6 +7,11 @@ on:
         description: Version label to package. Defaults to the current ref name.
         required: false
         type: string
+      private_signed_pkg:
+        description: Build, sign, notarize, and staple a private PKG release candidate. Requires Developer ID and notary credentials.
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -17,6 +22,8 @@ on:
       - "Scripts/verify-release-artifact.sh"
       - "Scripts/package-pkg.sh"
       - "Scripts/verify-pkg-artifact.sh"
+      - "Scripts/private-release-candidate.sh"
+      - "Scripts/verify-private-release-workflow.sh"
       - "Package.swift"
       - "Package.resolved"
       - "Sources/**"
@@ -93,3 +100,78 @@ jobs:
             .build/release-artifacts/*.pkg
             .build/release-artifacts/*.sha256
           if-no-files-found: error
+
+  private-signed-pkg:
+    name: Private signed/notarized PKG
+    runs-on: macos-26
+    if: github.event_name == 'workflow_dispatch' && inputs.private_signed_pkg
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Toolchain version
+        run: swift --version
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REF_VERSION: ${{ github.ref_name }}
+        run: |
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            version="$REQUESTED_VERSION"
+          else
+            version="$REF_VERSION"
+          fi
+
+          if [[ -z "$version" ]]; then
+            echo "version must not be empty" >&2
+            exit 64
+          fi
+
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "version may contain only letters, numbers, dots, underscores, and hyphens" >&2
+            exit 64
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate private release workflow
+        run: bash Scripts/verify-private-release-workflow.sh
+
+      - name: Build signed and notarized private PKG
+        env:
+          DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD }}
+          DEVELOPER_ID_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_INSTALLER_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_INSTALLER_CERTIFICATE_PASSWORD }}
+          GOH_APP_SIGN_IDENTITY: ${{ vars.DEVELOPER_ID_APPLICATION_IDENTITY }}
+          GOH_INSTALLER_SIGN_IDENTITY: ${{ vars.DEVELOPER_ID_INSTALLER_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+        run: bash Scripts/private-release-candidate.sh "${{ steps.version.outputs.version }}" .build/private-release-artifacts
+
+      - name: Verify signed PKG artifact
+        run: bash Scripts/verify-pkg-artifact.sh ".build/private-release-artifacts/goh-${{ steps.version.outputs.version }}-macos-arm64.pkg"
+
+      - name: Upload private signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: goh-${{ steps.version.outputs.version }}-signed-macos-arm64
+          path: |
+            .build/private-release-artifacts/*.pkg
+            .build/private-release-artifacts/*.pkg.sha256
+            .build/private-release-artifacts/*.notary-*.json
+          if-no-files-found: error
+
+      - name: Upload private signing diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goh-${{ steps.version.outputs.version }}-signing-diagnostics
+          path: |
+            .build/private-release-artifacts/*.notary-*.json
+          if-no-files-found: ignore

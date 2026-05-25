@@ -1882,16 +1882,27 @@ register the daemon. `Scripts/package-pkg.sh` builds the artifact, and
 `Scripts/verify-pkg-artifact.sh` verifies its checksum, distribution metadata,
 script-free requirement, payload, packaged plist, and packaged `goh --help`.
 
+Credential-backed signing and notarization are a separate manual private gate,
+not a publication gate. The release-artifact workflow exposes a
+`private_signed_pkg` dispatch input that is false by default and ignored on PRs
+and tag pushes. When explicitly enabled on a manual run, the workflow imports
+the Developer ID Application and Developer ID Installer certificates into an
+ephemeral keychain, signs `goh` and `gohd` with hardened runtime and a secure
+timestamp, signs the flat PKG with the installer identity, submits it through
+`xcrun notarytool submit --wait`, downloads the notary log, staples the ticket,
+verifies Gatekeeper install assessment with `spctl`, rewrites the checksum after
+stapling, and uploads the private artifacts for inspection. CI validates the
+shape of that gate with `Scripts/verify-private-release-workflow.sh` so future
+packaging edits cannot accidentally delete the signing/notarization path while
+still keeping credentials out of PRs.
+
 This workflow does **not** create a GitHub Release, publish a Homebrew tap, fill
-the stable Homebrew formula SHA, sign binaries, sign the installer package,
-submit notarization, or staple notarization tickets. Credential-backed signing
-and notarization may be added before public launch, but publication remains a
-separate explicit gate. The trusted v0.1 direct-download channel is a Developer
-ID Application-signed payload inside a Developer ID Installer-signed, notarized,
-stapled PKG; Homebrew remains the CLI-native install channel once the public
-launch gate opens.
-`RELEASE.md` records the credential prerequisites and the notarization packaging
-constraints.
+the stable Homebrew formula SHA, or advertise the signed package as an install
+path. Publication remains a separate explicit gate. The trusted v0.1
+direct-download channel is a Developer ID Application-signed payload inside a
+Developer ID Installer-signed, notarized, stapled PKG; Homebrew remains the
+CLI-native install channel once the public launch gate opens. `RELEASE.md`
+records the credential prerequisites and the notarization packaging constraints.
 
 ## Dependencies
 

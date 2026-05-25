@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `docs/private-release-posture`
+- **Branch:** `chore/private-release-readiness`
 - **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
   `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
   CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -17,7 +17,8 @@ session; update at the start of every PR and at the end of every session.
   `5ad60b6`; PR #31 — release artifact workflow — `main` at `e79c0bd`;
   PR #32 — release artifact verification — `main` at `b668aa0`; PR #33 —
   release signing prerequisites — `main` at `580b7c2`; PR #34 — unsigned PKG
-  release artifact — `main` at `865d6aa`.
+  release artifact — `main` at `865d6aa`; PR #35 — private release posture —
+  `main` at `33b1ea9`.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
   release pipeline. The first branch shipped the formula/README truth refresh in
   PR #29. PR #30 added CI validation for the in-repo Homebrew formula. The
@@ -26,10 +27,12 @@ session; update at the start of every PR and at the end of every session.
   PR #33 documented signing/notarization prerequisites and the credential
   boundary for the remaining release work. PR #34 added an unsigned PKG
   release-candidate artifact and verifier so the 10x direct-download path is
-  exercised in CI before credential-backed signing/notarization lands. The
-  current branch codifies the private release posture: build every release gate,
-  but do not publish an official install channel until the explicit public
-  launch decision.
+  exercised in CI before credential-backed signing/notarization lands. PR #35
+  codified the private release posture: build every release gate, but do not
+  publish an official install channel until the explicit public launch decision.
+  The current branch adds the manual private signed/notarized/stapled PKG gate
+  and a CI verifier for that workflow shape, while keeping official publication
+  out of scope.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -129,8 +132,10 @@ remaining adaptive host scheduling work to v0.2.
   validation to CI. PR #31 added unsigned release artifacts and checksums. PR #32
   added packaged-artifact verification. PR #33 documented signing and
   notarization prerequisites. PR #34 added an unsigned PKG artifact and verifier
-  for the future direct-download channel. The current branch removes premature
-  public install guidance and records the private launch gate.
+  for the future direct-download channel. PR #35 removed premature public install
+  guidance and recorded the private launch gate. The current branch adds a
+  manual private signed/notarized PKG release-candidate workflow that can be
+  run only with credentials and an explicit workflow-dispatch input.
 
 ## Recent 3b validation notes
 
@@ -215,32 +220,38 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/private-release-posture`.
+Current branch: `chore/private-release-readiness`.
 
-PR #34 passed CI, the `Package release artifacts` workflow, and CodeRabbit, then
-was squash-merged into `main` at `865d6aa`. It added the unsigned PKG
-release-candidate artifact and verifier.
+PR #35 passed CI, the `Package release artifacts` workflow, and CodeRabbit, then
+was squash-merged into `main` at `33b1ea9`. It codified the private release
+posture: build and test the release path privately, but do not publish an
+official install channel until the explicit public launch decision.
 
-This branch continues Slice 9 by codifying the launch posture: build and test the
-entire release path privately, but do not publish an official install channel
-until the explicit public launch decision.
+This branch continues Slice 9 by adding the private credential-backed release
+candidate gate:
 
-- `README.md` no longer advertises a public `brew install` command.
-- `RELEASE.md` records that formula, tarball, PKG, signing, notarization, and
-  stapling machinery are readiness gates, not publication gates.
-- `DESIGN.md` records that GitHub Releases, public taps, stable checksums, and
-  public direct-download packages are separate explicit launch gates.
-- `Formula/goh.rb` now labels the formula private release-candidate machinery
-  until a tap exists.
+- `Scripts/private-release-candidate.sh` builds the signed PKG, imports
+  Developer ID credentials into an ephemeral keychain, signs payload binaries
+  with hardened runtime, signs the installer, submits notarization, downloads
+  the notary log, staples the accepted ticket, verifies installer assessment,
+  and rewrites the checksum after stapling.
+- `.github/workflows/release-artifacts.yml` exposes a manual-only
+  `private_signed_pkg` dispatch input for the signed/notarized PKG path.
+- `Scripts/verify-private-release-workflow.sh` and CI statically verify that the
+  private gate remains wired without exposing credentials to PRs.
+- `DESIGN.md` and `RELEASE.md` record that this is a readiness gate only, not a
+  public distribution channel.
 
-Next pickup: commit/push/open this docs PR. Merge only if CI and comments are
-clean.
+Next pickup: finish local verification, commit/push/open the PR, then merge only
+if CI, release-artifact checks, and comments are clean.
 
 Local gates to run on this branch:
 
+- `bash -n Scripts/private-release-candidate.sh Scripts/verify-private-release-workflow.sh`
+- `bash Scripts/verify-private-release-workflow.sh`
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release-artifacts.yml"); YAML.load_file(".github/workflows/ci.yml")'`
 - `git diff --check`
-- `ruby -c Formula/goh.rb`
-- `brew style Formula/goh.rb`
+- `swift test`
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

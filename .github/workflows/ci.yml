@@ -29,6 +29,9 @@ jobs:
           ruby -c Formula/goh.rb
           brew style Formula/goh.rb
 
+      - name: Validate private release workflow
+        run: bash Scripts/verify-private-release-workflow.sh
+
       - name: Build (warnings as errors)
         run: swift build -Xswiftc -warnings-as-errors
 
