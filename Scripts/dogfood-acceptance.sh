@@ -349,15 +349,20 @@ if [[ "$run_performance" == true ]]; then
   command -v aria2c >/dev/null || fail "Benchmarks/competitive.sh" "Missing aria2c. Run: brew install aria2"
   command -v curl >/dev/null || fail "Benchmarks/competitive.sh" "Missing curl."
   run_capture "release build for performance" swift build --package-path "$repo_root" --configuration release --disable-sandbox
+  performance_log="$logs_dir/acceptance-performance-$run_id.log"
   printf '[..] Benchmarks/competitive.sh\n'
-  if benchmark_output="$(cd "$repo_root" && RUNS="${GOH_ACCEPTANCE_PERF_RUNS:-1}" Benchmarks/competitive.sh 2>&1)"; then
+  if (
+    cd "$repo_root"
+    RUNS="${GOH_ACCEPTANCE_PERF_RUNS:-1}" Benchmarks/competitive.sh 2>&1 \
+      | tee "$performance_log"
+  ); then
     ok "Benchmarks/competitive.sh"
-    if grep -F "WARN" <<<"$benchmark_output" >/dev/null; then
+    printf '     Performance log: %s\n' "$performance_log"
+    if grep -F "WARN" "$performance_log" >/dev/null; then
       warn "competitive benchmark emitted WARN lines" "Inspect the benchmark output before treating performance as accepted."
-      printf '%s\n' "$benchmark_output"
     fi
   else
-    fail "Benchmarks/competitive.sh" "$benchmark_output"
+    fail "Benchmarks/competitive.sh" "Benchmark failed. Performance log: $performance_log"
   fi
 else
   warn "performance comparison skipped" "Run: GOH_ACCEPTANCE_PERF_RUNS=1 Scripts/dogfood-acceptance.sh --performance"

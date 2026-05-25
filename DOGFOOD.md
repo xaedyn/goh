@@ -56,7 +56,8 @@ goh top
   installs, runs doctor and smoke, checks `goh ls --json`, exercises foreground
   `goh <url>`, pauses/resumes/removes an active larger download, restarts the
   daemon, and optionally runs the live competitive benchmark with
-  `--performance`.
+  `--performance`. Performance runs print the benchmark table and save the same
+  output under `.build/dogfood/logs/acceptance-performance-*`.
 - `Scripts/dogfood-reset.sh` unloads and removes only the marked dogfood
   LaunchAgent. Add `--data` to delete the daemon catalog and checkpoints in
   `~/Library/Application Support/dev.goh.daemon`; add `--all` to delete dogfood
@@ -82,7 +83,9 @@ smoke file under `.build/dogfood/downloads/smoke-*`, one foreground file under
 `.build/dogfood/downloads/acceptance-control-*`. It refuses to touch a
 pre-existing foreground file and removes its own test files during cleanup. The
 `--performance` mode runs real network benchmarks against `goh`, `aria2c`, and
-`curl`; leave it off for quick readiness checks.
+`curl`, streams the timing output to the terminal, and records a timestamped log
+under `.build/dogfood/logs/acceptance-performance-*`; leave it off for quick
+readiness checks.
 
 The unsigned release tarball and PKG are still useful for layout checks:
 
@@ -107,4 +110,5 @@ Run this before treating a local build as usable:
 - Dashboard: `goh top`, then stop it with Ctrl-C
 - Auth: `goh auth import safari` after granting Full Disk Access
 - Performance: `GOH_ACCEPTANCE_PERF_RUNS=1 Scripts/dogfood-acceptance.sh --performance`
+  and inspect the printed benchmark table plus the `Performance log:` path
 - Reset: `Scripts/dogfood-reset.sh`, then repeat install and smoke

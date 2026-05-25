@@ -47,7 +47,8 @@ bandwidth budgets; hashes beyond SHA-256.
   pre-public "can we actually use this?" gate: build/install, doctor, smoke,
   foreground download, JSON list, active pause/resume/remove cleanup, daemon
   restart, and an opt-in competitive benchmark against `aria2c` and `curl`.
-  It is local-only, creates uniquely named test files, and publishes nothing.
+  It is local-only, creates uniquely named test files, publishes nothing, and
+  saves opt-in performance evidence under `.build/dogfood/logs`.
 
 ## v0.2 — backlog
 
