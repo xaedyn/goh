@@ -30,6 +30,19 @@ struct DownloadEngineTests {
         Issue.record("job \(jobID) did not reach \(expected)")
     }
 
+    private func waitForProgressGreaterThan(
+        _ bytesCompleted: UInt64, jobID: UInt64, in store: JobStore
+    ) async throws {
+        for _ in 0..<100 {
+            if let job = store.job(id: jobID),
+               job.progress.bytesCompleted > bytesCompleted {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("job \(jobID) did not advance past \(bytesCompleted) bytes")
+    }
+
     @Test("a successful download lands the bytes on disk and completes the job")
     func successfulDownload() async throws {
         let directory = try temporaryDirectory()
@@ -495,6 +508,139 @@ struct DownloadEngineTests {
         #expect(checkpointStore.load(jobID: job.id).checkpoint != nil)
     }
 
+    @Test("removing a range-parallel active download cancels sibling ranges before replying")
+    func removeRangeParallelActiveDownloadCancelsSiblingRanges() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(16 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            headers: ["ETag": "\"rm-parallel-validator\""],
+            bodyChunkSize: 256 << 10,
+            bodyChunkDelayMicroseconds: 20_000)
+
+        let store = JobStore()
+        let control = DownloadControl()
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        let engine = DownloadEngine(
+            session: mockSession(), checkpointStore: checkpointStore, control: control)
+        let engineTask = Mutex<Task<Void, Never>?>(nil)
+        let dispatcher = CommandDispatcher(
+            store: store,
+            control: control,
+            checkpointStore: checkpointStore,
+            onJobQueued: { id in
+                engineTask.withLock { task in
+                    task = Task { await engine.run(jobID: id, in: store) }
+                }
+            })
+
+        let destination = directory.appending(path: "out.bin")
+        guard case .job(let added) = dispatcher.reply(to: .add(request: AddRequest(
+            url: url, destination: destination.path, connectionCount: 8)))
+        else {
+            Issue.record("expected .job from add")
+            return
+        }
+        try await waitForState(.active, jobID: added.id, in: store)
+        try await waitForProgressGreaterThan(0, jobID: added.id, in: store)
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        guard case .removed = dispatcher.reply(to: .rm(request: RmRequest(jobID: added.id))) else {
+            Issue.record("expected .removed")
+            return
+        }
+        let elapsed = started.duration(to: clock.now)
+
+        #expect(elapsed < .milliseconds(500))
+        #expect(FileManager.default.fileExists(atPath: destination.path) == false)
+        #expect(checkpointStore.load(jobID: added.id).checkpoint == nil)
+        await engineTask.withLock { $0 }?.value
+        #expect(store.job(id: added.id) == nil)
+    }
+
+    @Test("removing a resumed active download without keep deletes partials and checkpoints")
+    func removeResumedActiveDownloadDeletesPartialAndCheckpoint() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let validator = "\"rm-resume-validator\""
+        let payload = Data((0..<(8 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            headers: ["ETag": validator],
+            bodyChunkSize: 256 << 10,
+            bodyChunkDelayMicroseconds: 20_000)
+
+        let store = JobStore()
+        let control = DownloadControl()
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        let engine = DownloadEngine(
+            session: mockSession(), checkpointStore: checkpointStore, control: control)
+        let engineTask = Mutex<Task<Void, Never>?>(nil)
+        let dispatcher = CommandDispatcher(
+            store: store,
+            control: control,
+            checkpointStore: checkpointStore,
+            onJobQueued: { id in
+                engineTask.withLock { task in
+                    task = Task { await engine.run(jobID: id, in: store) }
+                }
+            })
+
+        let destination = directory.appending(path: "out.bin")
+        guard case .job(let added) = dispatcher.reply(to: .add(request: AddRequest(
+            url: url, destination: destination.path, connectionCount: 1)))
+        else {
+            Issue.record("expected .job from add")
+            return
+        }
+        try await waitForState(.active, jobID: added.id, in: store)
+        guard case .job = dispatcher.reply(to: .pause(jobID: added.id)) else {
+            Issue.record("expected .job from pause")
+            return
+        }
+        await engineTask.withLock { $0 }?.value
+        let checkpoint = try #require(checkpointStore.load(jobID: added.id).checkpoint)
+        let checkpointedBytes = try #require(checkpoint.durableBytesCompleted)
+        #expect(checkpoint.completedPieces.isEmpty == false)
+
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            headers: ["ETag": validator],
+            requiredIfRange: validator,
+            bodyChunkSize: 256 << 10,
+            bodyChunkDelayMicroseconds: 20_000)
+        guard case .job = dispatcher.reply(to: .resume(jobID: added.id)) else {
+            Issue.record("expected .job from resume")
+            return
+        }
+        try await waitForState(.active, jobID: added.id, in: store)
+        try await waitForProgressGreaterThan(checkpointedBytes, jobID: added.id, in: store)
+
+        guard case .removed(let removed) = dispatcher.reply(
+            to: .rm(request: RmRequest(jobID: added.id)))
+        else {
+            Issue.record("expected .removed")
+            return
+        }
+        #expect(FileManager.default.fileExists(atPath: destination.path) == false)
+        #expect(checkpointStore.load(jobID: added.id).checkpoint == nil)
+        await engineTask.withLock { $0 }?.value
+
+        #expect(removed.removedJobID == added.id)
+        #expect(store.job(id: added.id) == nil)
+        #expect(FileManager.default.fileExists(atPath: destination.path) == false)
+        #expect(checkpointStore.load(jobID: added.id).checkpoint == nil)
+    }
+
     @Test("add after rm keep adopts the kept partial and resumes it")
     func addAfterRemoveKeepAdoptsPartial() async throws {
         let directory = try temporaryDirectory()
@@ -593,8 +739,9 @@ struct DownloadEngineTests {
         let payload = Data((0..<4096).map { UInt8($0 & 0xff) })
         MockURLProtocol.stub(url, body: payload)
 
-        let (http, stream) = try await mockSession()
+        let (http, stream, cancelStream) = try await mockSession()
             .streamingResponse(for: URLRequest(url: URL(string: url)!))
+        defer { cancelStream() }
 
         #expect(http.statusCode == 200)
         var received = Data()

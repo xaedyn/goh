@@ -22,28 +22,54 @@ extension URLSession {
     func streamingResponse(
         for request: URLRequest,
         onMetrics: (@Sendable (URLSessionTaskTransactionMetrics) -> Void)? = nil
-    ) async throws -> (HTTPURLResponse, AsyncThrowingStream<Data, Error>) {
+    ) async throws -> (
+        HTTPURLResponse,
+        AsyncThrowingStream<Data, Error>,
+        @Sendable () -> Void
+    ) {
         var streamContinuation: AsyncThrowingStream<Data, Error>.Continuation!
         let stream = AsyncThrowingStream<Data, Error>(
             bufferingPolicy: .unbounded
         ) { continuation in
             streamContinuation = continuation
         }
+        let taskBox = StreamingDataTaskBox()
 
-        let response = try await withCheckedThrowingContinuation {
-            (responseContinuation: CheckedContinuation<HTTPURLResponse, Error>) in
-            let delegate = StreamingDataTaskDelegate(
-                onResponse: responseContinuation,
-                onChunk: streamContinuation,
-                onMetrics: onMetrics)
-            let task = self.dataTask(with: request)
-            task.delegate = delegate
-            streamContinuation.onTermination = { @Sendable [weak task] _ in
-                task?.cancel()
+        let response = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (responseContinuation: CheckedContinuation<HTTPURLResponse, Error>) in
+                let delegate = StreamingDataTaskDelegate(
+                    onResponse: responseContinuation,
+                    onChunk: streamContinuation,
+                    onMetrics: onMetrics)
+                let task = self.dataTask(with: request)
+                taskBox.set(task)
+                task.delegate = delegate
+                streamContinuation.onTermination = { @Sendable _ in
+                    taskBox.cancel()
+                }
+                task.resume()
             }
-            task.resume()
+        } onCancel: {
+            taskBox.cancel()
         }
-        return (response, stream)
+        return (response, stream, { taskBox.cancel() })
+    }
+}
+
+private final class StreamingDataTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+
+    func set(_ task: URLSessionDataTask) {
+        lock.withLock {
+            self.task = task
+        }
+    }
+
+    func cancel() {
+        let task = lock.withLock { self.task }
+        task?.cancel()
     }
 }
 

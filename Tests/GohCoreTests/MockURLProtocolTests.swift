@@ -20,7 +20,8 @@ struct MockURLProtocolTests {
 
         var request = URLRequest(url: try #require(URL(string: url)))
         request.setValue("bytes=9-12", forHTTPHeaderField: "Range")
-        let (response, stream) = try await mockSession().streamingResponse(for: request)
+        let (response, stream, cancelStream) = try await mockSession().streamingResponse(for: request)
+        defer { cancelStream() }
 
         var body = Data()
         for try await chunk in stream {

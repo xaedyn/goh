@@ -178,6 +178,88 @@ struct CommandDispatcherTests {
         #expect(after.jobs.isEmpty)
     }
 
+    @Test("rm without keep deletes a paused partial and checkpoint")
+    func rmDeletesPausedPartialAndCheckpoint() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let destination = directory.appending(path: "partial.bin")
+        try Data("partial".utf8).write(to: destination)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        let store = JobStore()
+        let job = store.create(
+            url: "https://example.com/partial.bin",
+            destination: destination.path,
+            requestedConnectionCount: 8)
+        _ = try store.pause(id: job.id)
+        try checkpointStore.save(DownloadCheckpoint(
+            jobID: job.id,
+            url: job.url,
+            destination: destination.path,
+            partialFileSize: 7,
+            totalBytes: 100,
+            strongETag: "\"paused\"",
+            completedPieces: [CheckpointPiece(start: 0, length: 7)]))
+
+        let dispatcher = CommandDispatcher(store: store, checkpointStore: checkpointStore)
+        guard case .removed = dispatcher.reply(to: .rm(request: RmRequest(jobID: job.id))) else {
+            Issue.record("expected .removed")
+            return
+        }
+
+        #expect(FileManager.default.fileExists(atPath: destination.path) == false)
+        #expect(checkpointStore.load(jobID: job.id).checkpoint == nil)
+    }
+
+    @Test("rm of a never-started queued job keeps a pre-existing destination")
+    func rmQueuedJobKeepsPreExistingDestination() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let destination = directory.appending(path: "user-owned.bin")
+        let existingBytes = Data("not from goh".utf8)
+        try existingBytes.write(to: destination)
+
+        let store = JobStore()
+        let job = store.create(
+            url: "https://example.com/user-owned.bin",
+            destination: destination.path,
+            requestedConnectionCount: 8)
+        let dispatcher = CommandDispatcher(store: store)
+
+        guard case .removed = dispatcher.reply(to: .rm(request: RmRequest(jobID: job.id))) else {
+            Issue.record("expected .removed")
+            return
+        }
+
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect((try? Data(contentsOf: destination)) == existingBytes)
+    }
+
+    @Test("rm of a completed job keeps the finished file")
+    func rmCompletedKeepsFinishedFile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let destination = directory.appending(path: "finished.bin")
+        try Data("finished".utf8).write(to: destination)
+        let store = JobStore()
+        let job = store.create(
+            url: "https://example.com/finished.bin",
+            destination: destination.path,
+            requestedConnectionCount: 8)
+        _ = try store.start(id: job.id)
+        _ = try store.complete(id: job.id)
+
+        let dispatcher = CommandDispatcher(store: store)
+        guard case .removed = dispatcher.reply(to: .rm(request: RmRequest(jobID: job.id))) else {
+            Issue.record("expected .removed")
+            return
+        }
+
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+    }
+
     @Test("onJobQueued fires with the new job's id when add creates a job")
     func onJobQueuedFiresOnAdd() {
         let signalled = Mutex<[UInt64]>([])

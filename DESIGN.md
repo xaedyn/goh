@@ -381,8 +381,25 @@ For active jobs, `pause` and `rm --keep` block the command reply until the engin
 has written and checkpointed its current piece; `rm` without `--keep` uses the
 same acknowledgement and then deletes the daemon-owned partial and checkpoint.
 This keeps the v1 wire state honest without adding a transient `pausing` state:
-when the client receives the reply, the engine has stopped touching that job's
-file.
+when the client receives the reply, the visible job/file contract for that
+command has already been satisfied.
+
+The engine registers the job with `DownloadControl` before publishing the
+`queued -> active` transition. That ordering is intentional: once `active` is
+visible to another command, `pause` and `rm` must be able to find the worker and
+wait for it. A stop request stays visible until the engine unregisters the job,
+so every sibling range in a parallel transfer can observe the same stop and tear
+itself down. For `rm` without `--keep`, the command path deletes the visible
+partial file and checkpoint after the stop acknowledgement and before replying;
+engine-side cleanup is idempotent and may race only against an already-unlinked
+path.
+
+Queued or otherwise never-started jobs are treated differently: their
+destination path may be an unrelated user file selected before the engine ever
+opened it. The command path deletes an unfinished destination only when it has
+evidence that the daemon owns a partial there: the job was active for this stop
+request, recorded downloaded bytes, or has a valid checkpoint. Otherwise `rm`
+removes only the catalog row.
 
 **Considered alternatives.**
 - *Separate mechanisms for crash, pause, and keep-partial* — easier to stage but
@@ -1208,9 +1225,12 @@ the stop. Non-active `rm` remains a synchronous catalog mutation.
 job. A finished file on disk is the **user's**; the daemon never deletes a file
 it has finished writing. So `rm` of a *completed* job drops only the job from
 `ls`, and `--keep` is irrelevant for a completed job. Deletion of a *partial*
-file on `rm` of an unfinished job is not a counter-example — an abandoned partial
-is daemon scratch state, not a finished artifact, and `--keep` exists precisely
-to reclassify it as something the user wants kept.
+file on `rm` of an unfinished job is not a counter-example when the daemon has
+ownership evidence — an abandoned partial is daemon scratch state, not a
+finished artifact, and `--keep` exists precisely to reclassify it as something
+the user wants kept. A queued, never-started job with no downloaded bytes and no
+checkpoint has no such evidence, so `rm` preserves any pre-existing destination
+file.
 
 ### 4 · Wire-format rules
 

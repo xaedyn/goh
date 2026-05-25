@@ -35,6 +35,7 @@ final class MockURLProtocol: URLProtocol {
     }
 
     private static let stubs = Mutex<[String: Stub]>([:])
+    private let stopped = Mutex(false)
 
     /// Registers a successful response for `url`.
     static func stub(
@@ -68,7 +69,9 @@ final class MockURLProtocol: URLProtocol {
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func stopLoading() {}
+    override func stopLoading() {
+        stopped.withLock { $0 = true }
+    }
 
     override func startLoading() {
         guard
@@ -149,6 +152,7 @@ final class MockURLProtocol: URLProtocol {
             if let chunkSize = stubChunkSize(headers: headers), chunkSize > 0 {
                 var offset = body.startIndex
                 while offset < body.endIndex {
+                    guard !isStopped else { return }
                     let end = body.index(offset, offsetBy: chunkSize, limitedBy: body.endIndex)
                         ?? body.endIndex
                     client?.urlProtocol(self, didLoad: body[offset..<end])
@@ -158,10 +162,16 @@ final class MockURLProtocol: URLProtocol {
                     }
                 }
             } else {
+                guard !isStopped else { return }
                 client?.urlProtocol(self, didLoad: body)
             }
         }
+        guard !isStopped else { return }
         client?.urlProtocolDidFinishLoading(self)
+    }
+
+    private var isStopped: Bool {
+        stopped.withLock { $0 }
     }
 
     private func stubChunkSize(headers: [String: String]) -> Int? {
