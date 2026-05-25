@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/catchphrase-copy`
+- **Branch:** `docs/refresh-state-after-catchphrase`
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -42,9 +42,9 @@ session; update at the start of every PR and at the end of every session.
   install channel opens.
   PR #42 fixed dogfood-discovered destination parent-directory creation at
   `6506089`, PR #43 refreshed state at `5247964`, and PR #44 fixed dogfood
-  usability gaps in `goh top` at `34d8646`. The current branch adds the
-  product catchphrase to restrained visible surfaces: `goh --help`, the
-  `goh top` title, and the README identity line.
+  usability gaps in `goh top` at `34d8646`, and PR #45 added the product
+  catchphrase to restrained visible surfaces at `4c6a784`. The current branch
+  refreshes `STATE.md` after that merge.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -232,14 +232,15 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/catchphrase-copy`.
+Current branch: `docs/refresh-state-after-catchphrase`.
 
 PR #40 merged into `main` at `fd93b8d`, PR #41 refreshed state at `9989612`,
 PR #42 fixed destination parent-directory creation at `6506089`, and PR #43
 refreshed state at `5247964`. PR #44 fixed the `goh top` exit and table-layout
-dogfood issues at `34d8646`. This branch adds `Get over here!` to `goh --help`,
-the `goh top` title, and the README identity line while keeping foreground
-download progress output free of repeated brand copy.
+dogfood issues at `34d8646`. PR #45 added `Get over here!` to `goh --help`,
+the `goh top` title, and the README identity line at `4c6a784`, while keeping
+foreground download progress output free of repeated brand copy. The
+merge-triggered main CI run for `4c6a784` passed.
 
 The local dogfood LaunchAgent is currently loaded and running:
 
@@ -259,8 +260,8 @@ Current-branch gates:
 - live dogfood checks: `goh --help` starts with `Get over here!`; `goh top`
   shows `goh top - Get over here!` and still exits `0` on `q`.
 
-Next pickup: open/merge this PR if CI is clean, then continue the manual
-dogfood checklist from `main`.
+Next pickup: merge this state-refresh PR if CI is clean, then continue the
+manual dogfood checklist from `main`.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
