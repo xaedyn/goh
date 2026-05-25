@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `fix/remove-resumed-active-download`
+- **Branch:** `main`
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -20,7 +20,8 @@ session; update at the start of every PR and at the end of every session.
   release artifact — `main` at `865d6aa`; PR #35 — private release posture —
   `main` at `33b1ea9`; PR #36 — private signed release gate — `main` at
   `b7e22e6`; PR #39 — menu bar companion roadmap/spec — `main` at `c2f4911`;
-  PR #40 — local dogfood lane — `main` at `fd93b8d`.
+  PR #40 — local dogfood lane — `main` at `fd93b8d`; PR #47 — active `rm`
+  cleanup hardening — `main` at `54317a9`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -41,12 +42,13 @@ session; update at the start of every PR and at the end of every session.
   product can be used and tested privately from source before any official
   install channel opens.
   PR #42 fixed dogfood-discovered destination parent-directory creation at
-  `6506089`, PR #43 refreshed state at `5247964`, and PR #44 fixed dogfood
-  usability gaps in `goh top` at `34d8646`, and PR #45 added the product
-  catchphrase to restrained visible surfaces at `4c6a784`. The current branch
-  fixes the dogfood-discovered active `rm` path where a resumed or range-parallel
-  download could leave a visible partial file behind after the catalog row was
-  removed.
+  `6506089`, PR #43 refreshed state at `5247964`, PR #44 fixed dogfood usability
+  gaps in `goh top` at `34d8646`, PR #45 added the product catchphrase to
+  restrained visible surfaces at `4c6a784`, and PR #47 fixed the dogfood-
+  discovered active `rm` path where a resumed or range-parallel download could
+  leave a visible partial file behind after the catalog row was removed. PR #47
+  also tightened the file-ownership boundary so `rm` of a queued never-started
+  job does not delete a pre-existing destination file.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -234,18 +236,18 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `fix/remove-resumed-active-download`.
+Current branch: `main`.
 
-This branch fixes the local dogfood failure where `goh rm` on an active resumed
-large download removed the catalog row but left the destination file on disk
-while the daemon continued writing. The fix registers engine workers before
-publishing `active`, keeps stop requests visible to sibling ranges until the job
-unregisters, explicitly cancels streaming `URLSessionDataTask`s when range tasks
-exit, and deletes unfinished partial/checkpoint state in the command path before
-the `rm` reply. Completed downloads remain user-owned and are not deleted by
-`rm`; queued never-started jobs also keep pre-existing destination files unless
-the daemon has partial ownership evidence (active stop, downloaded bytes, or a
-valid checkpoint).
+PR #47 is merged at `54317a9`. It fixed the local dogfood failure where
+`goh rm` on an active resumed large download removed the catalog row but left
+the destination file on disk while the daemon continued writing. The fix
+registers engine workers before publishing `active`, keeps stop requests visible
+to sibling ranges until the job unregisters, explicitly cancels streaming
+`URLSessionDataTask`s when range tasks exit, and deletes unfinished
+partial/checkpoint state in the command path before the `rm` reply. Completed
+downloads remain user-owned and are not deleted by `rm`; queued never-started
+jobs also keep pre-existing destination files unless the daemon has partial
+ownership evidence (active stop, downloaded bytes, or a valid checkpoint).
 
 The local dogfood LaunchAgent is currently loaded and running:
 
@@ -254,7 +256,7 @@ The local dogfood LaunchAgent is currently loaded and running:
 - Logs: `.build/dogfood/logs/goh.log`
 - Downloads: `.build/dogfood/downloads`
 
-Current-branch gates:
+Merged PR #47 gates:
 
 - `git diff --check`
 - `swift build -Xswiftc -warnings-as-errors`
@@ -267,13 +269,12 @@ Current-branch gates:
   no daemon handle on the removed path.
 - PR #47 CI: `Build & test` and `Package release artifacts` passed after the
   CI scheduling-flake fix was amended into the branch. CodeRabbit's actionable
-  file-ownership review was fixed locally with a red/green regression; push and
-  re-check PR #47 before merging.
+  file-ownership review was fixed with a red/green regression; the thread is
+  resolved and outdated.
 
-Next pickup: push the CodeRabbit review fix for
-`fix/remove-resumed-active-download`, wait for CI, confirm the review thread is
-obsolete or resolved, merge if clean, then continue the manual dogfood checklist
-from `main`.
+Next pickup: continue the manual dogfood checklist from `main`, using the
+already-installed dogfood LaunchAgent unless a rebuild is needed for the next
+code change.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
