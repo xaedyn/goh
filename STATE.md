@@ -228,10 +228,11 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/refresh-state-after-dogfood`.
+Current branch: `fix/create-download-parent-dirs`.
 
-PR #40 merged into `main` at `fd93b8d`, and the merge-triggered main CI passed.
-It added the local dogfood lane: `DOGFOOD.md`, `Scripts/dogfood-build.sh`,
+PR #40 merged into `main` at `fd93b8d`, and PR #41 refreshed state at
+`9989612`. Both merge-triggered main CI runs passed. PR #40 added the local
+dogfood lane: `DOGFOOD.md`, `Scripts/dogfood-build.sh`,
 `Scripts/dogfood-install.sh`, `Scripts/dogfood-smoke.sh`,
 `Scripts/dogfood-reset.sh`, and `Scripts/verify-dogfood-kit.sh`, with CI static
 validation. The lane uses a debug build plus
@@ -267,8 +268,15 @@ Local gates run before PR #40 merged:
 - `Scripts/dogfood-build.sh --artifacts --version dogfood-local`
 - merge-triggered main CI for `fd93b8d`
 
-Next pickup: merge this state-refresh PR if CI is clean, then continue the
-manual dogfood checklist from `main`: foreground download, larger
+This branch fixes the first dogfood UX issue found by the Ubuntu ISO test:
+`goh` failed a job with `destinationUnwritable` when the `--output` parent
+directory did not exist. `DownloadFile` now creates missing parent directories
+before opening the destination, with a regression test in `DownloadFileTests`.
+The dogfood daemon was rebuilt and reinstalled locally, and a nested
+`/Users/shane/Downloads/.build/...` destination completed successfully.
+
+Next pickup: run full verification, push/open/merge the parent-directory fix,
+then continue the manual dogfood checklist: foreground download, larger
 pause/resume/rm flow, `goh top`, Safari auth import after Full Disk Access, and
 reset/reinstall.
 

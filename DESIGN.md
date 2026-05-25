@@ -205,6 +205,14 @@ state: it exists only for unfinished jobs, may be rewritten often, and is delete
 when a job reaches `completed`, reaches non-resumable `failed`, or is removed
 without `--keep`.
 
+Downloaded file destinations are user-owned paths. When the daemon opens a
+destination, `DownloadFile` creates missing parent directories before calling
+`open(2)`. This matches common CLI behavior (`curl --create-dirs`) and avoids a
+bad first-run path where `goh add --output "$PWD/.build/..."` creates a durable
+failed job because the shell's current directory did not already contain that
+tree. If parent creation still fails, the later file open maps to
+`destinationUnwritable` or the relevant disk error.
+
 ### Checkpoint / Resume Contract
 
 This subsection is the Slice 3c implementation contract. The checkpoint format is

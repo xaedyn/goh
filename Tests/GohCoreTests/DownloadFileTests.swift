@@ -30,6 +30,24 @@ struct DownloadFileTests {
         #expect(try Data(contentsOf: url) == payload)
     }
 
+    @Test("opening a destination creates missing parent directories")
+    func createsMissingParentDirectories() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "goh-file-test-\(UUID().uuidString)")
+        let url = root
+            .appending(path: "nested", directoryHint: .isDirectory)
+            .appending(path: "deeper", directoryHint: .isDirectory)
+            .appending(path: "download.bin")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let payload = Data("parent directories are made".utf8)
+        let file = try DownloadFile(path: url.path, expectedSize: UInt64(payload.count))
+        try file.write(payload, at: 0)
+        try file.finish()
+
+        #expect(try Data(contentsOf: url) == payload)
+    }
+
     @Test("writes at out-of-order offsets assemble the whole file")
     func outOfOrderPositionedWrites() throws {
         let url = try temporaryFile()
