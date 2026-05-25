@@ -6,9 +6,9 @@ session; update at the start of every PR and at the end of every session.
 ## Current state
 
 - **Branch:** `main`
-- **Last merged:** PR #22 — Spotlight tagging and sleep assertions — `main` at
-  `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`; PR #24 —
-  CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
+- **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
+  `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
+  PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
   subscription contract — `main` at `c31283d`; PR #26 — backend progress
   subscription plumbing — `main` at `976775f`; PR #27 — foreground progress
   CLI — `main` at `076bfaf`; PR #28 — top progress dashboard — `main` at
@@ -20,6 +20,8 @@ session; update at the start of every PR and at the end of every session.
   release artifact — `main` at `865d6aa`; PR #35 — private release posture —
   `main` at `33b1ea9`; PR #36 — private signed release gate — `main` at
   `b7e22e6`.
+  Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
+  not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
   release pipeline. The first branch shipped the formula/README truth refresh in
   PR #29. PR #30 added CI validation for the in-repo Homebrew formula. The
