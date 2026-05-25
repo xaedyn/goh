@@ -6,6 +6,11 @@ session; update at the start of every PR and at the end of every session.
 ## Current state
 
 - **Branch:** `feat/menu-bar-companion-mb1`
+- **Active MB1 task:** Task 1 package and state setup adds the SwiftPM shape for
+  the private dogfood menu bar companion: the `goh-menu` executable product, the
+  `GohMenuBar` library target, and the `GohMenuBarTests` test target. The
+  bootstrap source files are intentionally logic-free so the package graph is
+  valid before the app implementation tasks land.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -354,14 +359,15 @@ PR #52 GitHub gates:
   credentials/manual dispatch.
 - CodeRabbit generated no actionable comments and no review threads.
 
-Next pickup: implement the MB1 native menu bar companion plan at
-`docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. The branch is
-`feat/menu-bar-companion-mb1`; no app code has been written yet. The target
-product shape is the private dogfood magic loop: copy a URL, click **Get over
-here!** in the menu bar, watch live daemon progress, and reveal the completed
-file in Finder. Apple credentials are still unavailable, so public
-signing/notarization remains blocked by design. Adaptive per-host scheduling
-remains deferred until logged benchmark evidence shows a material gap.
+Next pickup: continue the MB1 native menu bar companion plan at
+`docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. Task 1 established
+the SwiftPM package shape for `goh-menu`, `GohMenuBar`, and `GohMenuBarTests`;
+Task 2 should add the shared `GohCommandClient` in `GohCore` with Swift Testing
+coverage. The target product shape remains the private dogfood magic loop: copy
+a URL, click **Get over here!** in the menu bar, watch live daemon progress, and
+reveal the completed file in Finder. Apple credentials are still unavailable, so
+public signing/notarization remains blocked by design. Adaptive per-host
+scheduling remains deferred until logged benchmark evidence shows a material gap.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

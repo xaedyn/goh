@@ -22,6 +22,7 @@ let package = Package(
     products: [
         .executable(name: "goh", targets: ["goh"]),
         .executable(name: "gohd", targets: ["gohd"]),
+        .executable(name: "goh-menu", targets: ["goh-menu"]),
     ],
     dependencies: [
         // Pre-approved: HTTP message modeling. Apple-published, MIT-licensed.
@@ -63,10 +64,24 @@ let package = Package(
             dependencies: ["GohCore"],
             swiftSettings: [.defaultIsolation(MainActor.self)]
         ),
+        .executableTarget(
+            name: "goh-menu",
+            dependencies: ["GohCore", "GohMenuBar"],
+            swiftSettings: [.defaultIsolation(MainActor.self)]
+        ),
+        .target(
+            name: "GohMenuBar",
+            dependencies: ["GohCore"],
+            swiftSettings: [.defaultIsolation(MainActor.self)]
+        ),
         .testTarget(
             name: "GohCoreTests",
             dependencies: ["GohCore"],
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "GohMenuBarTests",
+            dependencies: ["GohMenuBar"]
         ),
         .testTarget(
             name: "GohTUITests",
