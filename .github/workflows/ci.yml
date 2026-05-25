@@ -32,6 +32,9 @@ jobs:
       - name: Validate private release workflow
         run: bash Scripts/verify-private-release-workflow.sh
 
+      - name: Validate dogfood kit
+        run: bash Scripts/verify-dogfood-kit.sh
+
       - name: Build (warnings as errors)
         run: swift build -Xswiftc -warnings-as-errors
 

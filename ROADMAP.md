@@ -31,6 +31,14 @@ Mirror racing; plugin system / dynamic library loading; Chrome and Firefox
 cookie import; yt-dlp integration; calendar-aware bandwidth scheduling; per-host
 bandwidth budgets; hashes beyond SHA-256.
 
+### Private pre-launch gates
+
+- **Local dogfood.** Before any public install channel opens, maintain a
+  reversible local dogfood lane that builds from source, registers a marked
+  per-user LaunchAgent, smokes real launchd/XPC behavior, and resets cleanly.
+  This lane uses a debug build until Developer ID credentials exist because
+  unsigned release binaries cannot satisfy production peer validation.
+
 ## v0.2 — backlog
 
 - **Native menu bar companion.** A 10x Mac-native control surface for users who
