@@ -84,24 +84,17 @@ public struct AuthImportSafariCommand {
     }
 
     private static func result(from response: XPCDictionary) throws -> AuthImportSafariCommandResult {
-        try response.withUnsafeUnderlyingDictionary { object in
-            if let reply = try? GohEnvelope<AuthImportSafariReply>(xpcDictionary: object),
-               reply.messageType == .reply
-            {
-                let noun = reply.payload.importedCookieCount == 1 ? "cookie" : "cookies"
-                return AuthImportSafariCommandResult(
-                    exitCode: 0,
-                    standardOutput: "Imported \(reply.payload.importedCookieCount) Safari \(noun).\n")
-            }
-
-            if let error = try? GohEnvelope<GohError>(xpcDictionary: object),
-               error.messageType == .error
-            {
-                return AuthImportSafariCommandResult(
-                    exitCode: 1,
-                    standardError: Self.daemonErrorMessage(error.payload))
-            }
-
+        switch response.decodeGohReply(as: AuthImportSafariReply.self) {
+        case .reply(_, let payload):
+            let noun = payload.importedCookieCount == 1 ? "cookie" : "cookies"
+            return AuthImportSafariCommandResult(
+                exitCode: 0,
+                standardOutput: "Imported \(payload.importedCookieCount) Safari \(noun).\n")
+        case .daemonError(_, let error):
+            return AuthImportSafariCommandResult(
+                exitCode: 1,
+                standardError: Self.daemonErrorMessage(error))
+        case .malformed:
             throw GohError(
                 code: .invalidArgument,
                 message: "daemon returned an unrecognized auth import reply")

@@ -150,27 +150,20 @@ public struct GohCommandLine {
             .xpcDictionary()
         let response = try send(XPCDictionary(request))
 
-        return try response.withUnsafeUnderlyingDictionary { object in
-            if let reply = try? GohEnvelope<Reply>(xpcDictionary: object),
-               reply.messageType == .reply
-            {
-                guard reply.requestID == requestID else {
-                    throw GohCommandLineError.malformedReply(
-                        "daemon reply requestID did not match the request")
-                }
-                return reply.payload
+        switch response.decodeGohReply(as: Reply.self) {
+        case .reply(let id, let payload):
+            guard id == requestID else {
+                throw GohCommandLineError.malformedReply(
+                    "daemon reply requestID did not match the request")
             }
-
-            if let error = try? GohEnvelope<GohError>(xpcDictionary: object),
-               error.messageType == .error
-            {
-                guard error.requestID == requestID else {
-                    throw GohCommandLineError.malformedReply(
-                        "daemon error requestID did not match the request")
-                }
-                throw GohCommandLineError.daemon(error.payload)
+            return payload
+        case .daemonError(let id, let error):
+            guard id == requestID else {
+                throw GohCommandLineError.malformedReply(
+                    "daemon error requestID did not match the request")
             }
-
+            throw GohCommandLineError.daemon(error)
+        case .malformed:
             throw GohCommandLineError.malformedReply(
                 "daemon returned an unrecognized reply")
         }
