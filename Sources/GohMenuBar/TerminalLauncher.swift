@@ -124,9 +124,12 @@ nonisolated public struct TerminalInvocation: Sendable, Equatable {
     }
 }
 
-/// Detects whether a terminal emulator is installed by bundle identifier.
+/// Detects whether a terminal emulator is installed or currently running by
+/// bundle identifier. The `isRunning` signal lets the picker prefer the
+/// terminal the user is actively using over one that is merely installed.
 nonisolated public protocol TerminalDiscovery: Sendable {
     func isAppInstalled(bundleIdentifier: String) -> Bool
+    func isAppRunning(bundleIdentifier: String) -> Bool
 }
 
 extension TerminalLauncher {
@@ -136,9 +139,26 @@ extension TerminalLauncher {
         .ghostty, .iTerm, .wezterm, .alacritty, .kitty, .appleTerminal,
     ]
 
-    /// The highest-priority installed terminal. Always returns a value —
-    /// Apple Terminal is the universal fallback.
+    /// The highest-priority terminal the user is most likely to want, in two
+    /// phases:
+    ///
+    /// 1. Prefer the highest-priority terminal that is **currently running**.
+    ///    "Running" is the strongest available signal for "this is what the
+    ///    user actually uses" — a power user with Ghostty + iTerm installed
+    ///    but only iTerm running gets iTerm, not Ghostty.
+    /// 2. Fall back to the highest-priority terminal that is merely
+    ///    **installed**. If even that yields nothing (impossible on stock
+    ///    macOS because Apple Terminal is always present), return
+    ///    ``appleTerminal`` as the universal fallback.
+    ///
+    /// Frontmost-app detection would be a stronger signal in theory, but the
+    /// menu-bar popover steals frontmost on click, so the previously-frontmost
+    /// app is no longer queryable by the time this runs.
     public static func preferred(in discovery: any TerminalDiscovery) -> TerminalLauncher {
+        for launcher in priorityOrder
+            where discovery.isAppRunning(bundleIdentifier: launcher.bundleIdentifier) {
+            return launcher
+        }
         for launcher in priorityOrder
             where discovery.isAppInstalled(bundleIdentifier: launcher.bundleIdentifier) {
             return launcher

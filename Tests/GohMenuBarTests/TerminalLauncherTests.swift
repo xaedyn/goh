@@ -6,13 +6,17 @@ import Testing
 struct TerminalLauncherTests {
 
     private struct MockDiscovery: TerminalDiscovery {
-        let installed: Set<String>
+        var installed: Set<String> = []
+        var running: Set<String> = []
         func isAppInstalled(bundleIdentifier: String) -> Bool {
             installed.contains(bundleIdentifier)
         }
+        func isAppRunning(bundleIdentifier: String) -> Bool {
+            running.contains(bundleIdentifier)
+        }
     }
 
-    // MARK: - Priority order
+    // MARK: - Priority order (installed-only, nothing running)
 
     @Test("Ghostty wins when installed alongside Apple Terminal")
     func ghosttyPreferredOverAppleTerminal() {
@@ -23,7 +27,7 @@ struct TerminalLauncherTests {
         #expect(TerminalLauncher.preferred(in: discovery) == .ghostty)
     }
 
-    @Test("Ghostty wins when every modern terminal is installed")
+    @Test("Ghostty wins when every modern terminal is installed and none are running")
     func ghosttyWinsAtTheTop() {
         let discovery = MockDiscovery(installed: Set(
             TerminalLauncher.allCases.map(\.bundleIdentifier)))
@@ -46,6 +50,53 @@ struct TerminalLauncherTests {
     func appleTerminalFallback() {
         let discovery = MockDiscovery(installed: [])
         #expect(TerminalLauncher.preferred(in: discovery) == .appleTerminal)
+    }
+
+    // MARK: - Running takes precedence over installed
+
+    @Test("a running terminal beats an installed-but-not-running higher-priority terminal")
+    func runningBeatsInstalled() {
+        // The power-user case: Ghostty is installed (maybe to evaluate) but
+        // the user is actively using iTerm. iTerm should win.
+        let discovery = MockDiscovery(
+            installed: ["com.mitchellh.ghostty", "com.googlecode.iterm2", "com.apple.Terminal"],
+            running: ["com.googlecode.iterm2"])
+        #expect(TerminalLauncher.preferred(in: discovery) == .iTerm)
+    }
+
+    @Test("when no candidate terminal is running, installed priority order applies")
+    func nothingRunningFallsBackToInstalledPriority() {
+        let discovery = MockDiscovery(
+            installed: ["com.googlecode.iterm2", "com.apple.Terminal"],
+            running: ["com.apple.Safari"])  // a running app that isn't a terminal we know about
+        #expect(TerminalLauncher.preferred(in: discovery) == .iTerm)
+    }
+
+    @Test("among multiple running terminals, fixed priority order tiebreaks")
+    func multipleRunningTerminalsTiebreakByPriority() {
+        // Both Ghostty and iTerm running → Ghostty wins by priority.
+        let discovery = MockDiscovery(
+            installed: ["com.mitchellh.ghostty", "com.googlecode.iterm2"],
+            running: ["com.mitchellh.ghostty", "com.googlecode.iterm2"])
+        #expect(TerminalLauncher.preferred(in: discovery) == .ghostty)
+    }
+
+    @Test("a running terminal that is somehow not in `installed` still wins")
+    func runningWithoutInstalledStillCounts() {
+        // Pathological but worth covering: if NSWorkspace says it's running,
+        // we trust that signal even if the installed lookup somehow misses.
+        let discovery = MockDiscovery(
+            installed: ["com.apple.Terminal"],
+            running: ["com.mitchellh.ghostty"])
+        #expect(TerminalLauncher.preferred(in: discovery) == .ghostty)
+    }
+
+    @Test("an iTerm power user with Ghostty also installed still gets iTerm when iTerm is running")
+    func powerUserWithMultipleTerminalsInstalled() {
+        let discovery = MockDiscovery(
+            installed: Set(TerminalLauncher.allCases.map(\.bundleIdentifier)),
+            running: ["com.googlecode.iterm2", "com.apple.Terminal"])
+        #expect(TerminalLauncher.preferred(in: discovery) == .iTerm)
     }
 
     @Test("priorityOrder lists every launcher exactly once")
