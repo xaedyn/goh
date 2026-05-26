@@ -125,6 +125,9 @@ do {
             } catch {
                 warn("job \(completed.id) completed but Spotlight metadata tagging failed: \(error)")
             }
+        },
+        unexpectedStoreError: { jobID, operation, error in
+            warn("job \(jobID) store.\(operation) failed unexpectedly: \(error)")
         })
     let scheduleJob = makeScheduleJob(engine: engine, store: store)
     let networkCoordinator = NetworkPauseCoordinator(

@@ -859,4 +859,78 @@ struct DownloadEngineTests {
         #expect(final?.state == .failed)
         #expect(final?.error?.code == .connectionFailed)
     }
+
+    @Test("a happy-path download reports no unexpected store errors")
+    func happyPathReportsNoUnexpectedStoreErrors() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<200_000).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+        let reportedErrors = Mutex<[(UInt64, String, String)]>([])
+
+        await DownloadEngine(
+            session: mockSession(),
+            unexpectedStoreError: { jobID, operation, error in
+                reportedErrors.withLock { $0.append((jobID, operation, "\(error)")) }
+            }
+        ).run(jobID: job.id, in: store)
+
+        #expect(store.job(id: job.id)?.state == .completed)
+        #expect(reportedErrors.withLock { $0 }.isEmpty)
+    }
+
+    @Test("rm during an active download does not surface jobNotFound to the reporter")
+    func rmDuringActiveDownloadSwallowsJobNotFound() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            headers: ["ETag": "\"reporter-rm-validator\""],
+            bodyChunkSize: 256 << 10,
+            bodyChunkDelayMicroseconds: 20_000)
+
+        let store = JobStore()
+        let control = DownloadControl()
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        let dispatcher = CommandDispatcher(store: store, control: control)
+        let destination = directory.appending(path: "out.bin")
+        let job = store.create(
+            url: url, destination: destination.path, requestedConnectionCount: 1)
+        let reportedErrors = Mutex<[(UInt64, String, String)]>([])
+
+        let engine = DownloadEngine(
+            session: mockSession(),
+            checkpointStore: checkpointStore,
+            control: control,
+            unexpectedStoreError: { jobID, operation, error in
+                reportedErrors.withLock { $0.append((jobID, operation, "\(error)")) }
+            })
+        let engineTask = Task { await engine.run(jobID: job.id, in: store) }
+
+        try await waitForState(.active, jobID: job.id, in: store)
+        guard case .removed = dispatcher.reply(
+            to: .rm(request: RmRequest(jobID: job.id)))
+        else {
+            Issue.record("expected .removed")
+            return
+        }
+        await engineTask.value
+
+        // The recordProgress / fail calls that fire after the dispatcher has
+        // deleted the job all throw `.jobNotFound`. None of those reach the
+        // reporter — the reporter is reserved for genuinely unexpected
+        // persistence failures.
+        #expect(reportedErrors.withLock { $0 }.isEmpty)
+        #expect(store.job(id: job.id) == nil)
+    }
 }

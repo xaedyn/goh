@@ -51,12 +51,21 @@ public struct DownloadEngine: Sendable {
     /// No range is split below this; smaller files download over one connection.
     private static let minChunk: UInt64 = 1 << 20
 
+    /// Reports a `JobStore` mutation failure other than the expected
+    /// `.jobNotFound` (which the engine ignores because it means the job was
+    /// removed under it). The reporter receives the `jobID`, the operation
+    /// name (`"recordProgress"`, `"fail"`), and the raw error. The daemon
+    /// wires this to its stderr `warn(...)` channel so an otherwise-silent
+    /// persistence failure becomes diagnosable.
+    public typealias UnexpectedStoreErrorReporter = @Sendable (UInt64, String, any Error) -> Void
+
     private let session: URLSession
     private let checkpointStore: CheckpointStore?
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
     private let sleepAssertionController: SleepAssertionController?
     private let completedDownloadHandler: (@Sendable (JobSummary) -> Void)?
+    private let unexpectedStoreError: UnexpectedStoreErrorReporter?
 
     public init(
         session: URLSession,
@@ -64,7 +73,8 @@ public struct DownloadEngine: Sendable {
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
-        completedDownloadHandler: (@Sendable (JobSummary) -> Void)? = nil
+        completedDownloadHandler: (@Sendable (JobSummary) -> Void)? = nil,
+        unexpectedStoreError: UnexpectedStoreErrorReporter? = nil
     ) {
         self.session = session
         self.checkpointStore = checkpointStore
@@ -72,6 +82,44 @@ public struct DownloadEngine: Sendable {
         self.cookieHeaderProvider = cookieHeaderProvider
         self.sleepAssertionController = sleepAssertionController
         self.completedDownloadHandler = completedDownloadHandler
+        self.unexpectedStoreError = unexpectedStoreError
+    }
+
+    /// Routes a `JobStore` mutation error to the reporter, silently dropping
+    /// `.jobNotFound` (which means the job was removed under the engine).
+    private func reportStoreError(
+        jobID: UInt64, operation: String, _ error: any Error
+    ) {
+        if let gohError = error as? GohError, gohError.code == .jobNotFound {
+            return
+        }
+        unexpectedStoreError?(jobID, operation, error)
+    }
+
+    /// `JobStore.recordProgress`, tolerating the expected `.jobNotFound`
+    /// (the job was removed under the engine) and reporting any other
+    /// failure via `unexpectedStoreError`.
+    private func recordProgress(
+        store: JobStore, jobID: UInt64, _ progress: JobProgress
+    ) {
+        do {
+            _ = try store.recordProgress(id: jobID, progress)
+        } catch {
+            reportStoreError(jobID: jobID, operation: "recordProgress", error)
+        }
+    }
+
+    /// `JobStore.fail`, tolerating the expected `.jobNotFound` (the job was
+    /// removed under the engine while it was unwinding) and reporting any
+    /// other failure via `unexpectedStoreError`.
+    private func recordFail(
+        store: JobStore, jobID: UInt64, error: GohError, retryEligible: Bool
+    ) {
+        do {
+            _ = try store.fail(id: jobID, error: error, retryEligible: retryEligible)
+        } catch {
+            reportStoreError(jobID: jobID, operation: "fail", error)
+        }
     }
 
     /// Downloads the job with `jobID`, driving it to a terminal state. Never
@@ -99,12 +147,14 @@ public struct DownloadEngine: Sendable {
         } catch let stop as DownloadControlStop {
             handle(stop: stop, job: job)
         } catch let error as GohError {
-            _ = try? store.fail(
-                id: jobID, error: error, retryEligible: Self.retryEligible(for: error))
+            recordFail(
+                store: store, jobID: jobID, error: error,
+                retryEligible: Self.retryEligible(for: error))
         } catch {
             let mapped = Self.mapError(error)
-            _ = try? store.fail(
-                id: jobID, error: mapped, retryEligible: Self.retryEligible(for: mapped))
+            recordFail(
+                store: store, jobID: jobID, error: mapped,
+                retryEligible: Self.retryEligible(for: mapped))
         }
     }
 
@@ -307,8 +357,8 @@ public struct DownloadEngine: Sendable {
             try recorder.recordCompletedPiece(start: pieceStart, length: pieceLength)
             written += pieceLength
             buffer.removeAll(keepingCapacity: true)
-            _ = try? store.recordProgress(
-                id: job.id,
+            recordProgress(
+                store: store, jobID: job.id,
                 Self.progress(
                     completed: completedBeforeRange + written,
                     total: total,
@@ -564,8 +614,8 @@ public struct DownloadEngine: Sendable {
             trace.timed(index, .report) {
                 assembler.advance(range: index, writtenBytes: written)
                 let overall = progress.report(index: index, written: written)
-                _ = try? store.recordProgress(
-                    id: job.id,
+                recordProgress(
+                    store: store, jobID: job.id,
                     Self.progress(completed: overall, total: total,
                                   elapsed: clock.now - started))
             }
