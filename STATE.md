@@ -5,51 +5,25 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `feat/menu-bar-companion-mb1`
-- **Active MB1 task:** Task 6 live XPC client is complete on the
-  `feat/menu-bar-companion-mb1` branch. The branch now has the SwiftPM shape
-  for `goh-menu` / `GohMenuBar`, the shared `GohCommandClient` helper in
-  `GohCore`, and pure menu-bar presentation models plus a `GohMenuPresenter`
-  that converts progress snapshots into UI-ready state: active count,
-  aggregate speed, sorted job rows, available controls, primary clipboard
-  action, and doctor-style health/recovery copy. The branch also has a pure
-  `GohClipboardURLDetector` for the menu bar quick-add flow: it accepts a
-  single trimmed `http` / `https` URL with a host and rejects non-HTTP,
-  hostless, empty, multi-line, same-line prose, interior whitespace/control
-  characters, malformed percent escapes, percent-encoded host escapes, decoded
-  host whitespace/control characters, invalid explicit ports, and explicitly
-  empty ports. Task 5 adds the MainActor `GohMenuViewModel` behavior layer and
-  `GohMenuClient` protocol, wiring clipboard quick-add, progress snapshots,
-  pause/resume/remove commands, and reveal/copy/open-top side effects without
-  adding a new daemon contract. Task 5's post-review lifecycle fix is also in:
-  `start()` owns a single cancellable progress task, repeated starts replace
-  the previous stream, `stop()` / deinit cancel normally without rendering a
-  daemon failure, and the one-shot stream consumer is internal test-only API.
-  Task 6 replaced the `goh-menu` executable placeholder with
-  `LiveGohMenuClient`: it subscribes to `.all` progress snapshots over the
-  existing XPC progress channel, yields the baseline and matching daemon
-  notifications, sends add/pause/resume/remove through one-shot existing
-  commands, and maps daemon-unavailable, peer-validation, protocol-mismatch,
-  and malformed-reply failures into `GohMenuError`. Task 6's post-review fix
-  extracted the progress-stream orchestration into a tested `GohMenuBar` helper:
-  subscription creation, the baseline `.subscribe` send, and the blocking
-  notification receive loop now run on the stream worker off the MainActor, with
-  termination canceling any opened subscription. The helper has focused coverage
-  for non-notification envelopes, mismatched progress request IDs, daemon vs peer
-  session invalidation mapping, and clean interruption termination. Task 7 adds
-  the SwiftUI `MenuBarExtra` UI shell: a compact operational popover around the
-  existing view model, clipboard refresh and **Get over here!** primary action,
-  job rows with pause/resume/reveal/remove/copy controls, Terminal and Quit
-  footer actions, AppKit accessory activation policy, pasteboard read/write,
-  Finder reveal, and Terminal handoffs for both `goh top` and `goh doctor`.
-  Task 7's post-review fix preserves the dogfood peer-validation environment in
-  Terminal handoffs, surfaces presenter recovery actions in the popover, and
-  adds explicit accessibility labels to refresh and row icon controls. Task 8
-  installs `goh-menu` into the local dogfood bin directory, updates the design
-  architecture overview, and verifies the companion can launch from the
-  dogfood install against a healthy daemon. Next pickup is PR readiness:
-  push/open the draft PR, check CI and review comments, and complete the
-  human logged-in popover click-through smoke before merge.
+- **Branch:** `docs/refresh-state-after-menu-bar-merge`, based on `main` at
+  `56f9ad9`.
+- **Current state:** PR #54 merged the first private menu bar companion slice.
+  `goh-menu` is now a SwiftPM-built, dogfood-installed MenuBarExtra backed by
+  the same daemon XPC command and progress-subscription surfaces as the CLI. It
+  shows daemon health, queue snapshots, active counts, aggregate speed,
+  doctor-style recovery copy, clipboard quick-add with **Get over here!**,
+  job controls, Finder reveal, and Terminal handoffs for `goh top` and
+  `goh doctor`. The branch also added the shared `GohCommandClient`, pure
+  menu-bar presentation/view-model layers, a hardened clipboard URL detector,
+  progress-stream orchestration off the MainActor, dogfood environment
+  preservation for Terminal handoffs, accessibility labels for icon controls,
+  and dogfood-kit installation for `goh-menu`.
+  Verification before merge included green CI, resolved review feedback,
+  `swift build -Xswiftc -warnings-as-errors`, `swift test` (274 tests), and a
+  post-merge `main` test run with 274 tests in 48 suites passing. The remaining
+  product validation is a human logged-in menu bar click-through smoke:
+  clipboard URL -> **Get over here!** -> `goh ls` job -> reveal in Finder ->
+  Terminal handoffs -> quit companion.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -69,7 +43,7 @@ session; update at the start of every PR and at the end of every session.
   `main` at `ff45e99`; PR #50 — private dogfood acceptance gate — `main` at
   `cbe2c61`; PR #51 — state refresh after acceptance gate merge — `main` at
   `0aa3887`; PR #52 — dogfood performance evidence output — `main` at
-  `befa10c`.
+  `befa10c`; PR #54 — menu bar companion MB1 — `main` at `56f9ad9`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -105,7 +79,9 @@ session; update at the start of every PR and at the end of every session.
   smoke, foreground download, JSON list, active pause/resume/remove cleanup,
   daemon restart, and opt-in competitive performance comparison. PR #52 made
   that `--performance` path evidence-grade by streaming the benchmark table and
-  saving it under `.build/dogfood/logs`.
+  saving it under `.build/dogfood/logs`. PR #54 then brought the first native
+  menu bar companion slice into private dogfood so non-terminal workflows can be
+  exercised before any official install channel opens.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -294,31 +270,17 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `feat/menu-bar-companion-mb1`.
+Current branch: `docs/refresh-state-after-menu-bar-merge`.
 
-MB1 implemented the private menu bar companion: `goh-menu` installs into the
-dogfood bin directory, shows daemon state from the progress subscription, adds
-clipboard URLs through `Command.add`, controls jobs through existing daemon
-commands, preserves dogfood peer-validation for Terminal handoffs, exposes
-doctor-style recovery actions, and reveals completed files in Finder.
+PR #54 is merged to `main` as `56f9ad9`. CI was green before merge, the valid
+review thread was fixed in `1ca37ac`, and `swift test` passed on the merged
+`main` tree with 274 tests in 48 suites.
 
-Verification completed on this branch:
-
-- `swift test --filter GohCommandClientTests`
-- `swift test --filter GohMenuPresenterTests`
-- `swift test --filter GohClipboardURLDetectorTests`
-- `swift test --filter GohMenuViewModelTests`
-- `swift build -Xswiftc -warnings-as-errors`
-- `swift test` (273 tests)
-- `Scripts/verify-dogfood-kit.sh`
-- `Scripts/dogfood-acceptance.sh --timeout 45`
-- bounded logged-in smoke: `goh-menu` launched from
-  `.build/dogfood/current/bin`, `goh doctor` was healthy with
-  `GOH_XPC_ALLOW_UNVALIDATED_PEERS=1`, and the companion was terminated cleanly.
-
-Before merge, check CI, CodeRabbit comments, and confirm the full manual
-logged-in menu bar smoke result: clipboard URL -> **Get over here!** -> `goh ls`
-job -> reveal in Finder -> Terminal handoffs -> quit companion.
+Next pickup: run the full human logged-in menu bar click-through smoke from the
+dogfood install: clipboard URL -> **Get over here!** -> `goh ls` job -> reveal
+in Finder -> Terminal handoffs -> quit companion. If that feels good, choose
+the next 10x product slice: either menu bar dogfood polish uncovered by that
+smoke or the adaptive per-host range scheduler design pass.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
