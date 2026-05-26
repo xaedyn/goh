@@ -141,6 +141,72 @@ struct GohMenuViewModelTests {
         #expect(model.state.aggregateSpeedText == "2 KB/s")
     }
 
+    @Test func repeatedStartCancelsAndReplacesPreviousProgressStream() async throws {
+        let client = LongLivedMenuClient()
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+
+        model.start()
+        await waitUntil { client.startedStreamIDs == [1] }
+        client.yield([Self.snapshot(id: 1, state: .active, speed: 1024)], to: 1)
+        await waitUntil { model.state.rows.first?.id == 1 }
+
+        model.start()
+        await waitUntil {
+            client.startedStreamIDs == [1, 2]
+                && client.terminatedStreamIDs == [1]
+                && client.activeStreamIDs == [2]
+        }
+        client.yield([Self.snapshot(id: 2, state: .active, speed: 2048)], to: 2)
+        await waitUntil { model.state.rows.first?.id == 2 }
+
+        #expect(model.state.rows.first?.id == 2)
+        #expect(model.state.health == .connected)
+        #expect(client.activeStreamIDs == [2])
+    }
+
+    @Test func stopCancelsProgressStreamWithoutRenderingFailure() async throws {
+        let client = LongLivedMenuClient()
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+
+        model.start()
+        await waitUntil { client.startedStreamIDs == [1] }
+        client.yield([Self.snapshot(id: 1, state: .active, speed: 1024)], to: 1)
+        await waitUntil { model.state.health == .connected }
+
+        model.stop()
+        await waitUntil { client.terminatedStreamIDs == [1] }
+
+        #expect(model.state.health == .connected)
+        #expect(client.activeStreamIDs.isEmpty)
+    }
+
+    @Test func deinitCancelsProgressStream() async throws {
+        let client = LongLivedMenuClient()
+        var model: GohMenuViewModel? = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+
+        model?.start()
+        await waitUntil { client.startedStreamIDs == [1] }
+        model = nil
+        await waitUntil { client.terminatedStreamIDs == [1] }
+
+        #expect(client.activeStreamIDs.isEmpty)
+    }
+
     @Test func pauseResumeAndRemoveSendExistingCommands() async throws {
         let client = FakeMenuClient()
         let model = GohMenuViewModel(
@@ -317,4 +383,54 @@ private enum FakeMenuError: Error, CustomStringConvertible {
 private struct RemoveRequest: Equatable {
     var jobID: UInt64
     var keepPartialFile: Bool
+}
+
+@MainActor
+private final class LongLivedMenuClient: GohMenuClient {
+    private var nextStreamID = 1
+    private var continuations: [Int: AsyncThrowingStream<[ProgressSnapshot], any Error>.Continuation] = [:]
+
+    private(set) var startedStreamIDs: [Int] = []
+    private(set) var terminatedStreamIDs: [Int] = []
+
+    var activeStreamIDs: [Int] {
+        Array(continuations.keys).sorted()
+    }
+
+    func progressSnapshots() -> AsyncThrowingStream<[ProgressSnapshot], any Error> {
+        let streamID = nextStreamID
+        nextStreamID += 1
+        startedStreamIDs.append(streamID)
+
+        return AsyncThrowingStream { continuation in
+            continuations[streamID] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in
+                    self?.continuations[streamID] = nil
+                    self?.terminatedStreamIDs.append(streamID)
+                }
+            }
+        }
+    }
+
+    func yield(_ snapshots: [ProgressSnapshot], to streamID: Int) {
+        continuations[streamID]?.yield(snapshots)
+    }
+
+    func add(_ request: AddRequest) async throws -> JobSummary {
+        JobSummary(
+            id: 1,
+            url: request.url,
+            destination: "/tmp/big.iso",
+            state: .queued,
+            progress: JobProgress(bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+            createdAt: Date(timeIntervalSince1970: 1),
+            lastProgressAt: nil,
+            requestedConnectionCount: request.connectionCount ?? 8,
+            actualConnectionCount: 0)
+    }
+
+    func pause(jobID: UInt64) async throws {}
+    func resume(jobID: UInt64) async throws {}
+    func remove(jobID: UInt64, keepPartialFile: Bool) async throws {}
 }

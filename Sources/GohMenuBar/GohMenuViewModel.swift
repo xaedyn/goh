@@ -24,6 +24,7 @@ public final class GohMenuViewModel: ObservableObject {
     private let copyText: (String) -> Void
     private var snapshots: [ProgressSnapshot] = []
     private var clipboardURL: URL?
+    private var progressTask: Task<Void, Never>?
 
     public init(
         client: GohMenuClient,
@@ -47,21 +48,34 @@ public final class GohMenuViewModel: ObservableObject {
             clipboardURL: nil)
     }
 
+    deinit {
+        progressTask?.cancel()
+    }
+
     public func start() {
+        stop()
         let stream = client.progressSnapshots()
-        Task { [weak self] in
+        progressTask = Task { [weak self] in
             do {
                 for try await snapshots in stream {
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     self?.applyProgressSnapshots(snapshots)
                 }
+            } catch is CancellationError {
+                return
             } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
                 self?.applyProgressError(error)
             }
         }
     }
 
     @discardableResult
-    public func consumeOneProgressUpdateForTesting() async -> Bool {
+    func consumeOneProgressUpdateForTesting() async -> Bool {
         do {
             for try await next in client.progressSnapshots() {
                 applyProgressSnapshots(next)
@@ -72,6 +86,11 @@ public final class GohMenuViewModel: ObservableObject {
             applyProgressError(error)
             return false
         }
+    }
+
+    public func stop() {
+        progressTask?.cancel()
+        progressTask = nil
     }
 
     public func refreshClipboard() async {
