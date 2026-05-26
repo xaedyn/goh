@@ -859,22 +859,30 @@ entries.
 
 ### 6 · Observability
 
-Both processes log through `os.Logger` under subsystem `dev.goh`, with categories
-(`xpc`, `queue`, `transport`, …). `log stream --predicate 'subsystem ==
-"dev.goh"'` gives one live cross-process view. Every message carries the
-envelope's `requestID` (§1.1), logged on both sides, so a request and its reply
-correlate across the two processes. The daemon logs every session accept/reject
-(with the validated identity or rejection reason, §3) and every command.
-**Privacy is a correctness requirement:** URLs and any credential-bearing fields
-are logged with `privacy: .private`, so secrets never reach the system log.
+**Current implementation (v0.1):** the daemon writes content-light status lines
+to the LaunchAgent's `goh.log` stdout/stderr file via
+`FileHandle.standardError.write(...)`. Every line that crosses this channel is
+deliberately scoped to job IDs, state transitions, operation names, and error
+descriptions — **never URLs and never credential material**. The engine-trace
+channel that emits per-range timing data (`EngineDiagnostics`) is opt-in via
+`GOH_ENGINE_TRACE=1`, off by default, and similarly carries no URLs or cookies.
+This makes the logs safe to share for diagnosis without leaking sensitive
+content.
 
-Unified logging is separate from the LaunchAgent's `goh.log` stdout/stderr file:
-structured, queryable logs go through `os.Logger`; the logfile catches crash
-output.
+**Aspirational (v0.2 candidate):** route both processes through `os.Logger`
+under subsystem `dev.goh`, with categories (`xpc`, `queue`, `transport`, …) so
+`log stream --predicate 'subsystem == "dev.goh"'` gives one live cross-process
+view, and so every envelope `requestID` (§1.1) is logged on both sides for
+request/reply correlation. **Privacy would be a correctness requirement under
+that design:** URLs and any credential-bearing fields would be logged with
+`privacy: .private` so even debug-level logs never reach the system log
+unredacted. This is a future migration, deliberately out of v0.1 scope so the
+launch ships against an implementation that exists.
 
 **Considered alternatives.**
-- *`print` / the logfile only* — not queryable, no cross-process correlation, no
-  privacy redaction.
+- *`print` / the logfile only* — what we ship today. Not queryable, no
+  cross-process correlation, but content-safe by construction (we never write
+  URLs / cookies through this channel).
 - *Signpost-based tracing as the primary mechanism* — `OSSignposter` is for
   performance instrumentation, not failure diagnosis.
 
@@ -883,6 +891,7 @@ output.
   on the CLI.
 - `OSSignposter` transfer-performance instrumentation — deferred to the transport
   slice.
+- The migration to `os.Logger` itself — deferred to v0.2.
 - Whether the envelope carries a client-info block (pid) for log attribution
   (§1.1's open item) — lean yes, since the daemon already logs per-session peer
   identity; settle when the listener is implemented.
