@@ -8,17 +8,36 @@
 > Manifest floor: macOS 26.0 (rises to 26.5 on first dependent API).
 > Supported: macOS 26.5+.
 
-A daemon-backed terminal download manager for Apple Silicon macOS.
+A daemon-backed download manager for Apple Silicon macOS. MIT-licensed,
+written in Swift, built on Apple frameworks.
 
 `goh` — pronounced "go." Get over here!
 
-## Why
+## What it is
 
-`curl` and `wget` have no persistence, no queue, and no resume across reboots.
-`aria2` predates HTTP/3 and has no native macOS integration. Folx and Downie are
-GUI tools — not scriptable, not free. `goh` is a signed, notarized native install:
-a `launchd`-managed daemon, modern transport, range-based parallel downloads,
-OS-keychain auth, Spotlight integration, and a terminal UI worth using.
+A `launchd`-managed daemon (`gohd`) owns the queue, the network, and the
+disk. The CLI (`goh`) and a SwiftUI menu bar companion (`goh-menu`) are both
+thin XPC clients of the same daemon, so downloads survive terminal closes,
+app quits, and reboots.
+
+v0.1 ships:
+
+- Range-parallel HTTP/2 over `URLSession` — 8 connections by default, tunable
+  to 16. (HTTP/3 was tried in slice 3b and reverted; see
+  [DESIGN.md §Transport](DESIGN.md#http3--tried-and-reverted-for-v01).)
+- Streaming SHA-256 verification computed during the download via a
+  contiguous-frontier read-back from the partial file.
+- Crash-safe resume from 1 MiB checkpoints with `If-Range` strong-validator
+  gating.
+- Cellular auto-pause via `NWPathMonitor`; sleep assertions via `IOKit`.
+- Safari `Cookies.binarycookies` import for authenticated downloads,
+  fd-passed from the CLI to the daemon so the daemon doesn't need Full Disk
+  Access of its own.
+- Spotlight provenance — `kMDItemWhereFroms` (source URL) and
+  `kMDItemDownloadedDate` xattrs on every completed file.
+- A `goh top` terminal dashboard and a menu bar companion with clipboard
+  quick-add and Terminal-handoff that auto-detects Ghostty, iTerm2, WezTerm,
+  Alacritty, and kitty.
 
 ## Install Status
 
