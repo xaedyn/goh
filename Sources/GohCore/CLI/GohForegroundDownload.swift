@@ -370,41 +370,7 @@ private extension GohForegroundDownload {
 
     static func progressLine(_ snapshot: ProgressSnapshot) -> String {
         let job = snapshot.job
-        return "Job \(job.id) \(job.state.rawValue): \(progressText(job.progress)) at \(formatBytes(job.progress.bytesPerSecond))/s\n"
-    }
-
-    static func progressText(_ progress: JobProgress) -> String {
-        guard let total = progress.bytesTotal else {
-            return "\(formatBytes(progress.bytesCompleted))/?"
-        }
-        let percent = total == 0
-            ? 100
-            : Int((Double(progress.bytesCompleted) / Double(total) * 100).rounded())
-        return "\(formatBytes(progress.bytesCompleted))/\(formatBytes(total)) (\(percent)%)"
-    }
-
-    static func formatBytes(_ bytes: UInt64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB", "PB"]
-        guard bytes >= 1024 else {
-            return "\(bytes) B"
-        }
-
-        var value = Double(bytes)
-        var unitIndex = 0
-        while value >= 1024, unitIndex < units.count - 1 {
-            value /= 1024
-            unitIndex += 1
-        }
-
-        let rounded = value.rounded()
-        if abs(value - rounded) < 0.05 {
-            return "\(Int(rounded)) \(units[unitIndex])"
-        }
-        return String(
-            format: "%.1f %@",
-            locale: Locale(identifier: "en_US_POSIX"),
-            value,
-            units[unitIndex])
+        return "Job \(job.id) \(job.state.rawValue): \(JobDisplayFormatter.progressText(job.progress)) at \(JobDisplayFormatter.formatBytes(job.progress.bytesPerSecond))/s\n"
     }
 
     static func daemonErrorMessage(_ error: GohError) -> String {

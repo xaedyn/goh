@@ -21,7 +21,7 @@ nonisolated public struct GohMenuPresenter: Sendable {
             healthTitle: healthCopy.title,
             healthDetail: healthCopy.detail,
             activeCount: activeJobs.count,
-            aggregateSpeedText: Self.formatBytes(aggregateSpeed) + "/s",
+            aggregateSpeedText: JobDisplayFormatter.formatBytes(aggregateSpeed) + "/s",
             primaryAction: primaryAction(
                 clipboardURL: clipboardURL,
                 recoveryAction: healthCopy.recovery),
@@ -50,8 +50,8 @@ nonisolated public struct GohMenuPresenter: Sendable {
                 : destinationURL.lastPathComponent,
             subtitle: job.destination,
             stateText: stateDisplay(for: job.state),
-            progressText: Self.progressText(job.progress),
-            speedText: Self.formatBytes(job.progress.bytesPerSecond) + "/s",
+            progressText: JobDisplayFormatter.progressText(job.progress),
+            speedText: JobDisplayFormatter.formatBytes(job.progress.bytesPerSecond) + "/s",
             destination: job.destination,
             url: job.url,
             controls: controls(for: job))
@@ -124,41 +124,4 @@ nonisolated public struct GohMenuPresenter: Sendable {
         }
     }
 
-    private static func progressText(_ progress: JobProgress) -> String {
-        guard let total = progress.bytesTotal else {
-            return "\(formatBytes(progress.bytesCompleted))/?"
-        }
-        let percent: Int
-        if total == 0 {
-            percent = 100
-        } else {
-            let rawPercent = Int((Double(progress.bytesCompleted) / Double(total) * 100).rounded())
-            percent = min(100, max(0, rawPercent))
-        }
-        return "\(formatBytes(progress.bytesCompleted))/\(formatBytes(total)) (\(percent)%)"
-    }
-
-    private static func formatBytes(_ bytes: UInt64) -> String {
-        let units = ["B", "KB", "MB", "GB", "TB", "PB"]
-        guard bytes >= 1024 else {
-            return "\(bytes) B"
-        }
-
-        var value = Double(bytes)
-        var unitIndex = 0
-        while value >= 1024, unitIndex < units.count - 1 {
-            value /= 1024
-            unitIndex += 1
-        }
-
-        let rounded = value.rounded()
-        if abs(value - rounded) < 0.05 {
-            return "\(Int(rounded)) \(units[unitIndex])"
-        }
-        return String(
-            format: "%.1f %@",
-            locale: Locale(identifier: "en_US_POSIX"),
-            value,
-            units[unitIndex])
-    }
 }
