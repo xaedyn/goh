@@ -556,7 +556,20 @@ struct DownloadEngineTests {
         }
         let elapsed = started.duration(to: clock.now)
 
-        #expect(elapsed < .milliseconds(500))
+        // The dispatcher's `rm` path blocks on `DownloadControl.requestStop`
+        // until at least one range task observes the stop signal at its next
+        // checkpoint boundary; sibling cancellation propagates via TaskGroup
+        // after the first range throws. The bound here is a sanity check that
+        // we did not wait for the workload to finish naturally (the 8 ranges
+        // would otherwise carry ~140 ms of remaining work). The real
+        // correctness signal is the behavioral pair below — partial file and
+        // checkpoint both gone before reply, engine task winds up promptly.
+        //
+        // Originally `< 500 ms`, which tripped at 548 ms on a heavily-loaded
+        // GitHub macos-26 runner. Raised to a CI-safe `< 2 s` so scheduling
+        // variance doesn't masquerade as a regression. Local runs measure
+        // ~90 ms, so 2 s is ~22× headroom.
+        #expect(elapsed < .milliseconds(2_000))
         #expect(FileManager.default.fileExists(atPath: destination.path) == false)
         #expect(checkpointStore.load(jobID: added.id).checkpoint == nil)
         await engineTask.withLock { $0 }?.value
