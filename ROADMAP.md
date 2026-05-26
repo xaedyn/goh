@@ -63,6 +63,11 @@ bandwidth budgets; hashes beyond SHA-256.
   an "open terminal dashboard" handoff to `goh top`. It must not become a second
   download engine, a full GUI clone, or a mandatory runtime dependency for CLI
   users. The daemon remains the source of truth.
+
+  **MB1 shipped in v0.1** (PR #54, with Ghostty / iTerm / WezTerm / Alacritty /
+  kitty handoff added in PR #66) as a private-dogfood companion. Remaining
+  menu bar slices on the v0.2 backlog: notifications, launch-at-login, app
+  bundle packaging for public distribution, and a preferences UI.
 - **Adaptive per-host range scheduling.** Slice 3b's competitive run validated
   saturated parity but not the ≥10 % amenable target — the residual gap is
   the structural HTTP/2-multiplexed-vs-N-TCP-connections difference between

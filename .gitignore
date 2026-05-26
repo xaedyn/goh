@@ -16,3 +16,12 @@ xcuserdata/
 
 # Private vision/strategy memos — local only, never pushed.
 docs/vision/
+
+# Local per-contributor operating manuals (e.g. AGENTS.md for Codex, when used
+# alongside the tracked CLAUDE.md). These document personal collaboration
+# preferences and shouldn't be pushed.
+AGENTS.md
+
+# Benchmark diagnostic logs — capture machine state (Darwin version, paths,
+# trace data) on whoever ran them. Keep local.
+Benchmarks/diagnose-*.log

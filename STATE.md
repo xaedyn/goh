@@ -95,9 +95,8 @@ session; update at the start of every PR and at the end of every session.
   job controls, Finder reveal, and Terminal handoffs for `goh top` and
   `goh doctor`. PR #56 fixed the root-URL default-destination bug surfaced
   by the first logged-in smoke pass (`https://example.com/` produced
-  `/Users/shane/Downloads/`; now falls back to
-  `/Users/shane/Downloads/download`). PR #66 then taught the Terminal
-  handoff to respect the user's actual terminal.
+  `~/Downloads/`; now falls back to `~/Downloads/download`). PR #66 then
+  taught the Terminal handoff to respect the user's actual terminal.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
