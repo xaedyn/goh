@@ -5,37 +5,99 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `docs/record-menu-bar-smoke-pass`, based on `main` at `7121e35`.
-- **Current state:** The first logged-in menu bar dogfood smoke has passed end
-  to end after PR #56. The smoke first exposed a real default-destination bug:
-  adding `https://example.com/` produced `/Users/shane/Downloads/` as the
-  destination, so the daemon tried to download into the Downloads directory and
-  the job failed. PR #56 fixed that root cause by treating Foundation's root-URL
-  `lastPathComponent == "/"` as the same no-filename case and falling back to
-  `/Users/shane/Downloads/download`.
-- **Menu bar smoke result:** After rebuilding/installing dogfood from `main`,
-  clipboard quick-add of `https://example.com/` completed job 49 as
-  `528 B/528 B (100%)` at `/Users/shane/Downloads/download`. The file existed
-  on disk and contained the expected Example Domain HTML. The completed-row
-  controls copied the URL and destination to the clipboard, `rm` from the
-  popover removed the job while keeping the completed file, `goh ls` returned
-  `No downloads.`, and the companion quit cleanly (`pgrep -fl goh-menu`
-  reported no running process). The Terminal footer handoff was included in
-  the final manual smoke sequence.
+- **Branch:** `docs/state-after-code-review-sweep`, based on `main` at `06564af`.
+- **Current state:** A full code-review sweep ran across `main` after the menu
+  bar smoke pass landed. An LLM-driven Phase-1 codebase audit produced 17
+  prioritized findings (S1–S7 significant, M1–M10 minor); the sweep merged
+  fixes for the five load-bearing ones plus three minors, caught two
+  reviewer-mistake findings via direct code spot-checks (S6 and M9 — both
+  rejected), and deferred the remaining seven with documented rationales (a
+  vision memo at `docs/vision/VISION-2026-05-26.md`, gitignored, captures the
+  product-strategy synthesis). One flaky CI timing assertion surfaced by the
+  sweep itself was also fixed, and the menu bar Terminal handoff was extended
+  beyond Apple Terminal to auto-detect Ghostty / iTerm / WezTerm / Alacritty /
+  kitty (running terminal preferred over merely-installed). Test count rose
+  274 → 314.
+- **Code-review sweep result (PRs #58–#66):**
+  - **#58** — gitignored `docs/vision/` for private strategy memos.
+  - **#59** — S1: extracted `XPCReplyDecoder` to collapse seven copies of the
+    `withUnsafeUnderlyingDictionary { try? GohEnvelope<X>(...) ... }` decode
+    dance into one tested helper. Net –109 / +216.
+  - **#60** — M1+M2: centralized `formatBytes` / `progressText` into
+    `JobDisplayFormatter` in `GohCore`; standardized percent clamping to
+    `[0, 100]` across all four surfaces (CLI table, `goh top`, foreground,
+    menu bar). Pre-existing inconsistency: menu bar clamped overruns to 100%
+    while the other three rendered values like 200%.
+  - **#61** — S3: replaced `_ = try? store.recordProgress(...)` and `_ = try?
+    store.fail(...)` masking in `DownloadEngine` with an
+    `unexpectedStoreError` reporter. `.jobNotFound` (the expected race when
+    `rm` runs concurrently) is still dropped silently; every other store
+    failure now lands in `goh.log` with job ID, operation name, and error.
+  - **#62** — M5: `goh top` now uses the alternate screen buffer
+    (`ESC[?1049h` / `ESC[?1049l`) and redraws in place (`ESC[H` + frame +
+    `ESC[J`) instead of clearing + homing every notification. Kills the
+    per-update flicker; preserves shell scrollback on exit.
+  - **#63** — S2: closed the XPC peer-validation accept-path CI gap by
+    testing `peerRequirement(for:)` directly (the factory function the
+    production listener consults) plus a fresh `senderSatisfies` assertion
+    against the production value. The OS-enforced session-accept path still
+    requires a signed-build smoke run; that residual gap is now documented
+    in code.
+  - **#64** — M4 + M6: `expectedContentLength > 0` → `>= 0` so
+    `Content-Length: 0` is a known empty body, not "unknown total." Added
+    the missing `@unchecked Sendable` invariant comment on
+    `GohXPCNotificationInbox` so it matches the rest of the codebase. M9
+    skipped — `XPCReconnect.attempt` is only called from synchronous CLI
+    contexts, not the `goh-menu` `Task.detached` path the reviewer cited.
+  - **#65** — flaky-test fix: the 500 ms wall-clock bound in
+    `removeRangeParallelActiveDownloadCancelsSiblingRanges` (
+    `DownloadEngineTests.swift:559`) tripped at 548 ms on PR #59's CI attempt
+    1 — three back-to-back local runs measured 88 / 89 / 91 ms, so 548 ms is
+    ~6× local scheduling overhead. Raised to `< 2 s` (~22× local headroom,
+    still meaningful as a "did not wait for siblings to finish naturally"
+    sanity check). The behavioral assertions (partial file + checkpoint
+    gone before reply) are the load-bearing checks.
+  - **#66** — M10: `goh-menu` Terminal handoff now auto-detects across
+    Ghostty (the user's terminal), iTerm2, WezTerm, Alacritty, kitty, and
+    Apple Terminal. Two-phase pick: highest-priority **running** terminal
+    first (strongest signal for "this is what the user actually uses"),
+    then highest-priority **installed** terminal as fallback. Apple Terminal
+    is the universal fallback. Each launcher emits a `Process`-ready
+    invocation: `osascript` AppleScript for Apple Terminal and iTerm,
+    `open -na <App>.app --args -e /bin/sh -c <command>` (xterm-convention)
+    for the CLI-based terminals. 22 launcher tests cover priority, the
+    running-vs-installed precedence, and AppleScript escaping. Verified
+    live: Ghostty's bare `-e <command>` form makes it try to exec a binary
+    literally named after the whole command string and fail; the
+    `-e /bin/sh -c <command>` wrapping works.
+- **Reviewer-mistake findings rejected via spot-check:**
+  - **S6** — claim: `ProgressBrokerHub.deliver` holds the lock during
+    synchronous `session.send`. Verified false: `deliver(state.withLock {
+    ... })` evaluates the closure (acquires + releases the lock) before
+    calling `deliver`, so sends already run outside the lock.
+  - **M9** — claim: `XPCReconnect.attempt`'s `Thread.sleep` blocks a
+    cooperative thread because `goh-menu` calls it from `Task.detached`.
+    Grep showed `XPCReconnect.attempt` is only called from synchronous CLI
+    contexts (`GohForegroundDownload`, `GohTop`). `Thread.sleep` is correct
+    there.
+- **Deferred findings (rationales captured in conversation):** S4 (improbable
+  fsync-during-verifyHash edge), S5 (unused `NetworkPauseCoordinator` hook —
+  dead extension point, harmless), S7 (`PendingDownloadStop` semaphore is
+  stylistic), M3 (`JobSummary` encoder `encode` vs `encodeIfPresent` split
+  is correct), M7 (`MockURLProtocol.stubs` static-but-guarded-by-UUID-URLs),
+  M8 (`SafariCookieJar` intermediate arrays — perf non-issue for ~20
+  cookies).
 - **Menu bar state:** PR #54 merged the first private menu bar companion slice.
   `goh-menu` is now a SwiftPM-built, dogfood-installed MenuBarExtra backed by
   the same daemon XPC command and progress-subscription surfaces as the CLI. It
   shows daemon health, queue snapshots, active counts, aggregate speed,
   doctor-style recovery copy, clipboard quick-add with **Get over here!**,
   job controls, Finder reveal, and Terminal handoffs for `goh top` and
-  `goh doctor`. The branch also added the shared `GohCommandClient`, pure
-  menu-bar presentation/view-model layers, a hardened clipboard URL detector,
-  progress-stream orchestration off the MainActor, dogfood environment
-  preservation for Terminal handoffs, accessibility labels for icon controls,
-  and dogfood-kit installation for `goh-menu`.
-  Verification before merge included green CI, resolved review feedback,
-  `swift build -Xswiftc -warnings-as-errors`, `swift test` (274 tests), and a
-  post-merge `main` test run with 274 tests in 48 suites passing.
+  `goh doctor`. PR #56 fixed the root-URL default-destination bug surfaced
+  by the first logged-in smoke pass (`https://example.com/` produced
+  `/Users/shane/Downloads/`; now falls back to
+  `/Users/shane/Downloads/download`). PR #66 then taught the Terminal
+  handoff to respect the user's actual terminal.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -57,7 +119,17 @@ session; update at the start of every PR and at the end of every session.
   `0aa3887`; PR #52 — dogfood performance evidence output — `main` at
   `befa10c`; PR #54 — menu bar companion MB1 — `main` at `56f9ad9`;
   PR #55 — state refresh after menu bar merge — `main` at `4e83522`; PR #56 —
-  root-URL default destination fix — `main` at `7121e35`.
+  root-URL default destination fix — `main` at `7121e35`; PR #57 — state
+  refresh after menu bar smoke — `main` at `b7bf03d`; PR #58 — gitignore
+  `docs/vision/` — `main` at `f239591`; PR #59 — XPCReplyDecoder DRY —
+  `main` at `d4a1857`; PR #60 — centralize byte/progress formatting —
+  `main` at `5c16ec1`; PR #61 — surface daemon store errors — `main` at
+  `4e24106`; PR #62 — `goh top` alternate-screen buffer — `main` at
+  `e91b1cb`; PR #63 — XPC peer-requirement coverage — `main` at `a4a4236`;
+  PR #64 — robustness sweep (content-length 0, inbox invariant) — `main`
+  at `244e9a4`; PR #65 — relax flaky range-cancel timing bound — `main`
+  at `dd7c021`; PR #66 — multi-terminal handoff w/ Ghostty — `main` at
+  `06564af`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -95,7 +167,13 @@ session; update at the start of every PR and at the end of every session.
   that `--performance` path evidence-grade by streaming the benchmark table and
   saving it under `.build/dogfood/logs`. PR #54 then brought the first native
   menu bar companion slice into private dogfood so non-terminal workflows can be
-  exercised before any official install channel opens.
+  exercised before any official install channel opens. PRs #58–#66 ran the
+  post-merge code-review sweep and added Ghostty / iTerm / WezTerm /
+  Alacritty / kitty support to the menu bar Terminal handoff (see the
+  Current state section above for the per-PR breakdown). Test count 274 →
+  314; CI green throughout. The remaining slice-9 work is the credential-
+  backed signed/notarized PKG release-candidate (PR #36's workflow is
+  ready to run with Developer ID secrets) and the Homebrew tap.
 - **Slice 7 progress:** the first CLI implementation pass adds a testable
   `GohCore` command-line runner for the one-shot control verbs: `goh add`,
   `goh ls`, `goh pause`, `goh resume`, and `goh rm [--keep]`. `Sources/goh`
@@ -199,7 +277,9 @@ remaining adaptive host scheduling work to v0.2.
   guidance and recorded the private launch gate. PR #36 added a manual private
   signed/notarized PKG release-candidate workflow that can be run only with
   credentials and an explicit workflow-dispatch input. PR #49 added the local
-  health doctor. PR #50 added the private dogfood acceptance gate.
+  health doctor. PR #50 added the private dogfood acceptance gate. PRs #58–#66
+  ran a post-merge code-review sweep and shipped multi-terminal handoff support
+  in the menu bar.
 
 ## Recent 3b validation notes
 
@@ -284,18 +364,39 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/record-menu-bar-smoke-pass`.
+Current branch: `docs/state-after-code-review-sweep`.
 
-This branch records the successful logged-in menu bar dogfood smoke after the
-root-URL destination fix landed in PR #56. Manual evidence from the user:
-quick-add completed to `/Users/shane/Downloads/download`, file bytes matched
-Example Domain HTML, copy URL and copy destination controls produced the
-expected clipboard values, remove kept the completed file while clearing the
-queue, and Quit exited `goh-menu`.
+This branch is the post-sweep refresh — `main` is at `06564af` with the
+code-review sweep (PRs #58–#66) and Ghostty terminal support merged. 314
+tests pass; CI is green; the menu bar handoff has been live-verified
+against Ghostty in the user's environment.
 
-Next pickup after this docs PR merges: choose the next 10x product slice from
-real dogfood use. Good candidates are menu bar polish discovered by repeated
-private use, or the adaptive per-host range scheduler design pass.
+**Next pickup after this docs PR merges: cut public v0.1.** The private
+strategy memo at `docs/vision/VISION-2026-05-26.md` (local-only,
+gitignored) lays out the thesis and the three bets; Bet 1 is shipping
+public v0.1. The concrete sequence:
+
+1. **Sign and notarize the PKG** by running PR #36's
+   `private-release-candidate` workflow with Developer ID credentials.
+   The workflow shape is already verified by
+   `Scripts/verify-private-release-workflow.sh` — what's missing is the
+   secrets (`GOH_APP_SIGN_IDENTITY`, `GOH_INSTALLER_SIGN_IDENTITY`,
+   notarization credentials).
+2. **Open the brew tap** (`xaedyn/homebrew-goh`) and publish the formula
+   that PR #29/#30 prepared.
+3. **Draft a launch post.** The narrative the vision memo lands on:
+   "the macOS download daemon for the AI era — Personal Asset Manager,
+   not a faster curl." Reference the buried capabilities — `goh diagnose`
+   via `GOH_ENGINE_TRACE=1`, `goh doctor` health gate, Spotlight
+   `kMDItemWhereFroms` provenance, sleep assertions, cellular auto-pause,
+   the Safari cookie import via fd-passing.
+4. **Submit to Hacker News + r/macapps + r/commandline + r/datahoarder.**
+
+Alternative pickup if v0.1 launch prep is blocked on credentials: Bet 2
+from the memo — the `gohfile.toml` + `goh sync` + `goh verify` manifest
+primitive. This is the path to the "Personal Asset Manager" 10-star
+form and is ~2–4 weeks of work; the persistence and integrity primitives
+the v0.1 engine already exposes are the foundation.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
