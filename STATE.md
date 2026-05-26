@@ -6,7 +6,7 @@ session; update at the start of every PR and at the end of every session.
 ## Current state
 
 - **Branch:** `feat/menu-bar-companion-mb1`
-- **Active MB1 task:** Task 5 view-model behavior is complete on the
+- **Active MB1 task:** Task 6 live XPC client is complete on the
   `feat/menu-bar-companion-mb1` branch. The branch now has the SwiftPM shape
   for `goh-menu` / `GohMenuBar`, the shared `GohCommandClient` helper in
   `GohCore`, and pure menu-bar presentation models plus a `GohMenuPresenter`
@@ -25,7 +25,15 @@ session; update at the start of every PR and at the end of every session.
   `start()` owns a single cancellable progress task, repeated starts replace
   the previous stream, `stop()` / deinit cancel normally without rendering a
   daemon failure, and the one-shot stream consumer is internal test-only API.
-  Next pickup is Task 6, the live XPC menu client in the `goh-menu` executable.
+  Task 6 replaced the `goh-menu` executable placeholder with
+  `LiveGohMenuClient`: it subscribes to `.all` progress snapshots over the
+  existing XPC progress channel, yields the baseline and matching daemon
+  notifications, sends add/pause/resume/remove through one-shot existing
+  commands, and maps daemon-unavailable, peer-validation, protocol-mismatch,
+  and malformed-reply failures into `GohMenuError`. The blocking notification
+  receive loop is kept off the MainActor behind a small nonisolated sendable
+  subscription wrapper. Next pickup is Task 7, the SwiftUI `MenuBarExtra` UI
+  shell and native AppKit side effects.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -375,17 +383,17 @@ PR #52 GitHub gates:
 - CodeRabbit generated no actionable comments and no review threads.
 
 Next pickup: continue the MB1 native menu bar companion plan at
-`docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. Task 5 is complete
-including the post-review lifecycle fix for `GohMenuViewModel`: repeated
-`start()` calls replace the previous progress stream, `stop()` and deinit cancel
-normally without showing a daemon failure, and the one-shot stream consumer is
-internal test-only API. Task 6 should add the live XPC menu client in the
-`goh-menu` executable. The target product shape remains the private dogfood
-magic loop: copy a URL, click **Get over here!** in the menu bar, watch live
-daemon progress, and reveal the completed file in Finder. Apple credentials are
-still unavailable, so public signing/notarization remains blocked by design.
-Adaptive per-host scheduling remains deferred until logged benchmark evidence
-shows a material gap.
+`docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. Task 6 is complete:
+`goh-menu` now has `LiveGohMenuClient` for live `.all` progress subscriptions,
+baseline snapshot delivery, notification correlation, one-shot existing daemon
+commands, and menu-specific error mapping. Task 7 should add the SwiftUI
+`MenuBarExtra` UI shell, AppKit accessory policy, Finder reveal, Terminal
+handoff, and pasteboard side effects. The target product shape remains the
+private dogfood magic loop: copy a URL, click **Get over here!** in the menu bar,
+watch live daemon progress, and reveal the completed file in Finder. Apple
+credentials are still unavailable, so public signing/notarization remains
+blocked by design. Adaptive per-host scheduling remains deferred until logged
+benchmark evidence shows a material gap.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
