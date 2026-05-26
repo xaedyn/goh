@@ -40,6 +40,18 @@ struct CommandDispatcherTests {
         #expect(summary.destination.hasSuffix("big.iso"))
     }
 
+    @Test("add without a destination gives root URLs a file destination")
+    func addDerivesFileDestinationForRootURL() {
+        let dispatcher = CommandDispatcher(store: JobStore())
+        let outcome = dispatcher.reply(
+            to: .add(request: AddRequest(url: "https://example.com/")))
+        guard case .job(let summary) = outcome else {
+            Issue.record("expected .job, got \(outcome)")
+            return
+        }
+        #expect(summary.destination.hasSuffix("/Downloads/download"))
+    }
+
     @Test("add honours an explicit destination and connection count")
     func addHonoursExplicitFields() {
         let dispatcher = CommandDispatcher(store: JobStore())
