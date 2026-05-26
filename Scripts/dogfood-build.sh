@@ -68,6 +68,7 @@ swift build --package-path "$repo_root" --configuration debug --disable-sandbox
 mkdir -p "$install_root/bin" "$install_root/Resources" "$dogfood_root/downloads"
 install -m 0755 "$repo_root/.build/debug/goh" "$install_root/bin/goh"
 install -m 0755 "$repo_root/.build/debug/gohd" "$install_root/bin/gohd"
+install -m 0755 "$repo_root/.build/debug/goh-menu" "$install_root/bin/goh-menu"
 install -m 0644 "$repo_root/Resources/dev.goh.daemon.plist" \
   "$install_root/Resources/dev.goh.daemon.plist"
 install -m 0644 "$repo_root/LICENSE" "$install_root/LICENSE"
@@ -98,4 +99,3 @@ Manual shell:
   export PATH="$current_link/bin:\$PATH"
   export GOH_XPC_ALLOW_UNVALIDATED_PEERS=1
 EOF
-

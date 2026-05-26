@@ -6,13 +6,19 @@ are filled as the corresponding slice is designed.
 
 ## Architecture overview
 
-Four targets, one repository:
+Six shipped targets, plus benchmark executables, in one repository:
 
 - **`goh`** — CLI client. Thin. Talks to `gohd` over XPC. Exits fast.
 - **`gohd`** — daemon. Runs under `launchd` as a LaunchAgent. Owns the network,
   the queue, and the disk.
+- **`goh-menu`** — optional private dogfood menu bar companion. Talks to `gohd`
+  over the same XPC command and progress subscription surface as the CLI.
 - **`GohCore`** — shared library. Transport, scheduling, persistence, hashing, auth.
 - **`GohTUI`** — terminal UI module. Used by `goh top`.
+- **`GohMenuBar`** — shared menu bar presentation and view-model module.
+
+`goh-bench` is a non-shipped benchmark executable for local and CI performance
+evidence, not an end-user product surface.
 
 ## Concurrency model
 
