@@ -27,6 +27,15 @@ public enum GohXPCNotificationInboxError: Error, Sendable, Equatable {
     case interrupted
 }
 
+/// A synchronous bridge between asynchronous XPC notification delivery and a
+/// blocking `receive()` consumer used by `goh top` and the foreground download.
+///
+/// `@unchecked Sendable` invariant: every mutable field is protected by a
+/// dedicated synchronization primitive — `Mutex` for `messages` and the
+/// `interrupted` flag, `DispatchSemaphore` for the wake signal. The class
+/// never exposes mutable state without holding the lock; `handle`,
+/// `sessionInvalidated`, and `interrupt` may be called from arbitrary
+/// XPC-delivery threads while `receive` blocks on the consumer thread.
 public final class GohXPCNotificationInbox: @unchecked Sendable {
     private typealias Message = Result<
         GohEnvelope<ProgressEvent>, GohXPCNotificationInboxError

@@ -408,7 +408,10 @@ public struct DownloadEngine: Sendable {
             throw Self.httpFailure(statusCode: initialResponse.statusCode)
         }
 
-        let total: UInt64? = initialResponse.expectedContentLength > 0
+        // `expectedContentLength` is `Int64`; the unknown sentinel is
+        // `NSURLResponseUnknownLength` (-1). `>= 0` admits `Content-Length: 0`
+        // (a real empty body) as a known total of 0; only `-1` maps to nil.
+        let total: UInt64? = initialResponse.expectedContentLength >= 0
             ? UInt64(initialResponse.expectedContentLength) : nil
         let file = try DownloadFile(path: job.destination, expectedSize: total)
         let assembler = ChunkAssembler(
