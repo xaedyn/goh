@@ -15,6 +15,7 @@ public struct GohMenuView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            recoveryAction
             primaryAction
             Divider()
             jobs
@@ -62,7 +63,24 @@ public struct GohMenuView: View {
                     .frame(width: 20, height: 20)
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel("Refresh clipboard")
             .help("Refresh clipboard")
+        }
+    }
+
+    @ViewBuilder
+    private var recoveryAction: some View {
+        if let action = model.state.recoveryAction {
+            Button {
+                performRecovery(action)
+            } label: {
+                Label(action.buttonTitle, systemImage: action.systemImageName)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityLabel(action.accessibilityLabel)
+            .help(action.helpText)
         }
     }
 
@@ -77,6 +95,15 @@ public struct GohMenuView: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
+    }
+
+    private func performRecovery(_ action: GohMenuRecoveryAction) {
+        switch action {
+        case .copyCommand(let command):
+            model.copy(command)
+        case .openDoctor:
+            model.openDoctor()
+        }
     }
 
     private var jobs: some View {
@@ -159,6 +186,7 @@ private struct GohMenuJobRowView: View {
                         .foregroundStyle(control == .remove ? .red : .secondary)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel(control.accessibilityLabel)
                 .help(control.helpText)
             }
         }
@@ -178,6 +206,39 @@ private struct GohMenuJobRowView: View {
             model.copy(row.url)
         case .copyDestination:
             model.copy(row.destination)
+        }
+    }
+}
+
+extension GohMenuRecoveryAction {
+    nonisolated var buttonTitle: String {
+        switch self {
+        case .copyCommand:
+            return "Copy recovery command"
+        case .openDoctor:
+            return "Open doctor"
+        }
+    }
+
+    nonisolated var systemImageName: String {
+        switch self {
+        case .copyCommand:
+            return "doc.on.doc"
+        case .openDoctor:
+            return "stethoscope"
+        }
+    }
+
+    nonisolated var accessibilityLabel: String {
+        buttonTitle
+    }
+
+    nonisolated var helpText: String {
+        switch self {
+        case .copyCommand:
+            return "Copy recovery command"
+        case .openDoctor:
+            return "Open goh doctor in Terminal"
         }
     }
 }
@@ -239,6 +300,10 @@ extension GohMenuControl {
         case .copyDestination:
             return "Copy destination"
         }
+    }
+
+    nonisolated var accessibilityLabel: String {
+        helpText
     }
 }
 

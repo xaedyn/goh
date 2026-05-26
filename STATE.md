@@ -42,8 +42,11 @@ session; update at the start of every PR and at the end of every session.
   job rows with pause/resume/reveal/remove/copy controls, Terminal and Quit
   footer actions, AppKit accessory activation policy, pasteboard read/write,
   Finder reveal, and Terminal handoffs for both `goh top` and `goh doctor`.
-  Next pickup is Task 8: dogfood installation, design documentation, and manual
-  smoke for the native menu bar companion.
+  Task 7's post-review fix preserves the dogfood peer-validation environment in
+  Terminal handoffs, surfaces presenter recovery actions in the popover, and
+  adds explicit accessibility labels to refresh and row icon controls. Next
+  pickup is Task 8: dogfood installation, design documentation, and manual smoke
+  for the native menu bar companion.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress

@@ -207,19 +207,18 @@ struct GohMenuApp: App {
 }
 
 private func openTopInTerminal() {
-    openGohCommandInTerminal(arguments: ["top"])
+    openGohCommandInTerminal(.top)
 }
 
 private func openDoctorInTerminal() {
-    openGohCommandInTerminal(arguments: ["doctor"])
+    openGohCommandInTerminal(.doctor)
 }
 
-private func openGohCommandInTerminal(arguments: [String]) {
-    let gohPath = URL(filePath: CommandLine.arguments[0])
-        .deletingLastPathComponent()
-        .appending(path: "goh")
-        .path
-    let command = ([gohPath] + arguments).map(shellQuoted).joined(separator: " ")
+private func openGohCommandInTerminal(_ terminalCommand: GohTerminalCommand) {
+    let command = GohTerminalCommandBuilder(
+        companionExecutablePath: CommandLine.arguments[0],
+        environment: ProcessInfo.processInfo.environment)
+        .command(for: terminalCommand)
     let script = """
     tell application "Terminal"
       activate
@@ -229,11 +228,11 @@ private func openGohCommandInTerminal(arguments: [String]) {
     let process = Process()
     process.executableURL = URL(filePath: "/usr/bin/osascript")
     process.arguments = ["-e", script]
-    try? process.run()
-}
-
-private func shellQuoted(_ value: String) -> String {
-    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    do {
+        try process.run()
+    } catch {
+        fputs("goh-menu: could not open Terminal: \(error)\n", stderr)
+    }
 }
 
 private func appleScriptStringLiteral(_ value: String) -> String {
