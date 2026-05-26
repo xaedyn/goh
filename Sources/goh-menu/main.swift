@@ -219,27 +219,14 @@ private func openGohCommandInTerminal(_ terminalCommand: GohTerminalCommand) {
         companionExecutablePath: CommandLine.arguments[0],
         environment: ProcessInfo.processInfo.environment)
         .command(for: terminalCommand)
-    let script = """
-    tell application "Terminal"
-      activate
-      do script \(appleScriptStringLiteral(command))
-    end tell
-    """
+    let launcher = TerminalLauncher.preferred(in: NSWorkspaceTerminalDiscovery())
+    let invocation = launcher.invocation(for: command)
     let process = Process()
-    process.executableURL = URL(filePath: "/usr/bin/osascript")
-    process.arguments = ["-e", script]
+    process.executableURL = URL(filePath: invocation.executablePath)
+    process.arguments = invocation.arguments
     do {
         try process.run()
     } catch {
-        fputs("goh-menu: could not open Terminal: \(error)\n", stderr)
+        fputs("goh-menu: could not open terminal via \(launcher.rawValue): \(error)\n", stderr)
     }
-}
-
-private func appleScriptStringLiteral(_ value: String) -> String {
-    "\""
-        + value
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-        .replacingOccurrences(of: "\n", with: "\\n")
-        + "\""
 }
