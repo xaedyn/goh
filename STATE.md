@@ -6,7 +6,7 @@ session; update at the start of every PR and at the end of every session.
 ## Current state
 
 - **Branch:** `feat/menu-bar-companion-mb1`
-- **Active MB1 task:** Task 4 clipboard URL detection is complete and hardened on the
+- **Active MB1 task:** Task 5 view-model behavior is complete on the
   `feat/menu-bar-companion-mb1` branch. The branch now has the SwiftPM shape
   for `goh-menu` / `GohMenuBar`, the shared `GohCommandClient` helper in
   `GohCore`, and pure menu-bar presentation models plus a `GohMenuPresenter`
@@ -18,10 +18,11 @@ session; update at the start of every PR and at the end of every session.
   hostless, empty, multi-line, same-line prose, interior whitespace/control
   characters, malformed percent escapes, percent-encoded host escapes, decoded
   host whitespace/control characters, invalid explicit ports, and explicitly
-  empty ports. Next pickup is Task 5, the
-  `GohMenuViewModel` behavior layer that connects clipboard quick-add,
-  progress-stream state, and existing daemon controls without adding a new
-  daemon contract.
+  empty ports. Task 5 adds the MainActor `GohMenuViewModel` behavior layer and
+  `GohMenuClient` protocol, wiring clipboard quick-add, progress snapshots,
+  pause/resume/remove commands, and reveal/copy/open-top side effects without
+  adding a new daemon contract. Next pickup is Task 6, the live XPC menu client
+  in the `goh-menu` executable.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
