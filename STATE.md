@@ -44,9 +44,12 @@ session; update at the start of every PR and at the end of every session.
   Finder reveal, and Terminal handoffs for both `goh top` and `goh doctor`.
   Task 7's post-review fix preserves the dogfood peer-validation environment in
   Terminal handoffs, surfaces presenter recovery actions in the popover, and
-  adds explicit accessibility labels to refresh and row icon controls. Next
-  pickup is Task 8: dogfood installation, design documentation, and manual smoke
-  for the native menu bar companion.
+  adds explicit accessibility labels to refresh and row icon controls. Task 8
+  installs `goh-menu` into the local dogfood bin directory, updates the design
+  architecture overview, and verifies the companion can launch from the
+  dogfood install against a healthy daemon. Next pickup is PR readiness:
+  push/open the draft PR, check CI and review comments, and complete the
+  human logged-in popover click-through smoke before merge.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -291,124 +294,31 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `main` after PR #52. The current bookkeeping branch only
-refreshes this state file.
+Current branch: `feat/menu-bar-companion-mb1`.
 
-PR #50 is merged at `cbe2c61`. The local dogfood lane now has three private
-readiness gates on `main`: build/install/smoke, `goh doctor`, and
-`Scripts/dogfood-acceptance.sh`. The acceptance gate builds and installs the
-dogfood debug build, runs doctor and smoke, checks `goh ls --json`, exercises
-foreground `goh <url>`, pause/resume/remove cleanup on an active larger
-download, daemon restart, and an opt-in `Benchmarks/competitive.sh` performance
-pass via `--performance`.
+MB1 implemented the private menu bar companion: `goh-menu` installs into the
+dogfood bin directory, shows daemon state from the progress subscription, adds
+clipboard URLs through `Command.add`, controls jobs through existing daemon
+commands, preserves dogfood peer-validation for Terminal handoffs, exposes
+doctor-style recovery actions, and reveals completed files in Finder.
 
-PR #52 fixed a usability hole found during manual performance dogfood:
-`Scripts/dogfood-acceptance.sh --performance` ran the competitive benchmark but
-hid the timing table on success. The fix streams the benchmark output to the
-terminal, saves it to
-`.build/dogfood/logs/acceptance-performance-*.log`, and prints the saved
-`Performance log:` path.
+Verification completed on this branch:
 
-The local dogfood LaunchAgent is currently loaded and running:
-
-- LaunchAgent: `~/Library/LaunchAgents/dev.goh.daemon.plist`
-- Binaries: `.build/dogfood/current/bin`
-- Logs: `.build/dogfood/logs/goh.log`
-- Downloads: `.build/dogfood/downloads`
-
-Merged PR #47 gates:
-
-- `git diff --check`
+- `swift test --filter GohCommandClientTests`
+- `swift test --filter GohMenuPresenterTests`
+- `swift test --filter GohClipboardURLDetectorTests`
+- `swift test --filter GohMenuViewModelTests`
 - `swift build -Xswiftc -warnings-as-errors`
-- `swift test` (218 tests)
-- `Scripts/dogfood-build.sh`
-- `Scripts/dogfood-install.sh`
-- `Scripts/dogfood-smoke.sh --timeout 30`
-- live dogfood check: add the Ubuntu 26.04 ISO, pause, resume, then `goh rm`
-  while active; the job disappears, the destination is removed, and `lsof` shows
-  no daemon handle on the removed path.
-- PR #47 CI: `Build & test` and `Package release artifacts` passed after the
-  CI scheduling-flake fix was amended into the branch. CodeRabbit's actionable
-  file-ownership review was fixed with a red/green regression; the thread is
-  resolved and outdated.
-
-PR #50 private-readiness verification:
-
-- `bash -n Scripts/dogfood-acceptance.sh`
+- `swift test` (273 tests)
 - `Scripts/verify-dogfood-kit.sh`
-- `git diff --check`
-- `swift build -Xswiftc -warnings-as-errors`
-- `swift test` (223 tests)
 - `Scripts/dogfood-acceptance.sh --timeout 45`
-  - build/install/doctor/smoke passed
-  - smoke, foreground, and active-control test files were cleaned up
-  - `goh ls --json`, foreground `goh <url>`, active pause/resume/remove,
-    active partial removal, `lsof` handle check, daemon restart, and
-    post-restart doctor passed
-  - performance comparison was intentionally skipped by default; run
-    `GOH_ACCEPTANCE_PERF_RUNS=1 Scripts/dogfood-acceptance.sh --performance`
-    when a live competitive network pass is desired
+- bounded logged-in smoke: `goh-menu` launched from
+  `.build/dogfood/current/bin`, `goh doctor` was healthy with
+  `GOH_XPC_ALLOW_UNVALIDATED_PEERS=1`, and the companion was terminated cleanly.
 
-PR #50 GitHub gates:
-
-- PR #50 CI `Build & test`: passed.
-- PR #50 CI `Package release artifacts`: passed.
-- PR #50 private signed/notarized PKG gate: skipped as expected without
-  credentials/manual dispatch.
-- CodeRabbit produced only a rate-limit notice and no actionable review threads.
-
-Manual performance evidence from 2026-05-25 after PR #50:
-
-- `GOH_ACCEPTANCE_PERF_RUNS=3 Scripts/dogfood-acceptance.sh --performance`
-  passed, but hid the benchmark table.
-- Running `RUNS=3 Benchmarks/competitive.sh | tee .build/dogfood/logs/...`
-  showed:
-  - amenable: `goh` 10.728s, `aria2c` 10.517s, `curl` 29.285s; workload check
-    passed.
-  - saturated: `goh` 6.561s, `aria2c` 7.192s, `curl` 6.204s; workload check
-    passed.
-  - conclusion: performance is competitive enough that product polish can move
-    ahead before adaptive scheduling, unless a later logged acceptance run
-    shows a material regression.
-
-PR #52 branch verification:
-
-- Red check observed: `Scripts/verify-dogfood-kit.sh` failed before the script
-  change because `Scripts/dogfood-acceptance.sh` did not contain
-  `acceptance-performance-`.
-- `Scripts/verify-dogfood-kit.sh`
-- `bash -n Scripts/dogfood-acceptance.sh`
-- `git diff --check`
-- `GOH_ACCEPTANCE_PERF_RUNS=1 AMENABLE_URL=https://example.com/ SATURATED_URL=https://example.com/ Scripts/dogfood-acceptance.sh --timeout 45 --performance`
-  streamed the benchmark table, printed `Performance log:`, saved the log under
-  `.build/dogfood/logs/acceptance-performance-20260525221708-29523.log`, and
-  ended with the expected warning because `example.com` is not an amenable
-  workload.
-- `swift build -Xswiftc -warnings-as-errors`
-- `swift test` (223 tests)
-
-PR #52 GitHub gates:
-
-- PR #52 CI `Build & test`: passed.
-- PR #52 CI `Package release artifacts`: passed.
-- PR #52 private signed/notarized PKG gate: skipped as expected without
-  credentials/manual dispatch.
-- CodeRabbit generated no actionable comments and no review threads.
-
-Next pickup: continue the MB1 native menu bar companion plan at
-`docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. Tasks 6 and 7 are
-complete: `goh-menu` has `LiveGohMenuClient` for live `.all` progress
-subscriptions, baseline snapshot delivery, notification correlation, one-shot
-existing daemon commands, menu-specific error mapping, the SwiftUI
-`MenuBarExtra` UI shell, AppKit accessory policy, Finder reveal, Terminal
-handoff, and pasteboard side effects. Task 8 should wire the companion into the
-local dogfood install path, update design docs, and perform the manual menu bar
-smoke. The target product shape remains the
-private dogfood magic loop: copy a URL, click **Get over here!** in the menu bar,
-watch live daemon progress, and reveal the completed file in Finder. Apple
-credentials are still unavailable, so public signing/notarization remains
-blocked by design. Adaptive per-host scheduling remains deferred until logged
-benchmark evidence shows a material gap.
+Before merge, check CI, CodeRabbit comments, and confirm the full manual
+logged-in menu bar smoke result: clipboard URL -> **Get over here!** -> `goh ls`
+job -> reveal in Finder -> Terminal handoffs -> quit companion.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
