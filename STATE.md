@@ -5,9 +5,16 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `docs/refresh-state-after-menu-bar-merge`, based on `main` at
-  `56f9ad9`.
-- **Current state:** PR #54 merged the first private menu bar companion slice.
+- **Branch:** `fix/root-url-default-destination`, based on `main` at `4e83522`.
+- **Current state:** The first menu bar dogfood smoke exposed a real default
+  destination bug: adding `https://example.com/` produced
+  `/Users/shane/Downloads/` as the destination, so the daemon tried to download
+  into the Downloads directory and the job failed. The root cause is
+  Foundation reporting a root URL's `lastPathComponent` as `/`; the dispatcher
+  only treated an empty component as missing. The fix branch adds a regression
+  test and treats `/` as the same no-filename case, falling back to
+  `/Users/shane/Downloads/download`.
+- **Menu bar state:** PR #54 merged the first private menu bar companion slice.
   `goh-menu` is now a SwiftPM-built, dogfood-installed MenuBarExtra backed by
   the same daemon XPC command and progress-subscription surfaces as the CLI. It
   shows daemon health, queue snapshots, active counts, aggregate speed,
@@ -43,7 +50,8 @@ session; update at the start of every PR and at the end of every session.
   `main` at `ff45e99`; PR #50 — private dogfood acceptance gate — `main` at
   `cbe2c61`; PR #51 — state refresh after acceptance gate merge — `main` at
   `0aa3887`; PR #52 — dogfood performance evidence output — `main` at
-  `befa10c`; PR #54 — menu bar companion MB1 — `main` at `56f9ad9`.
+  `befa10c`; PR #54 — menu bar companion MB1 — `main` at `56f9ad9`;
+  PR #55 — state refresh after menu bar merge — `main` at `4e83522`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -270,17 +278,20 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/refresh-state-after-menu-bar-merge`.
+Current branch: `fix/root-url-default-destination`.
 
-PR #54 is merged to `main` as `56f9ad9`. CI was green before merge, the valid
-review thread was fixed in `1ca37ac`, and `swift test` passed on the merged
-`main` tree with 274 tests in 48 suites.
+The branch fixes the root-URL destination bug found during menu bar smoke. Red
+test verified the old behavior (`https://example.com/` -> `/Users/shane/Downloads/`);
+green verification completed with:
 
-Next pickup: run the full human logged-in menu bar click-through smoke from the
-dogfood install: clipboard URL -> **Get over here!** -> `goh ls` job -> reveal
-in Finder -> Terminal handoffs -> quit companion. If that feels good, choose
-the next 10x product slice: either menu bar dogfood polish uncovered by that
-smoke or the adaptive per-host range scheduler design pass.
+- `swift test --filter CommandDispatcherTests/addDerivesFileDestinationForRootURL`
+- `swift test --filter CommandDispatcherTests`
+- `swift build -Xswiftc -warnings-as-errors`
+- `swift test` (275 tests in 48 suites)
+
+Next pickup: open/merge the fix PR if CI and review are clean, rebuild/install
+dogfood, remove the failed smoke job (`goh rm 48` if still present), then rerun
+the full human logged-in menu bar click-through smoke.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.

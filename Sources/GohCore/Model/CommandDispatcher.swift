@@ -155,7 +155,9 @@ public struct CommandDispatcher: Sendable {
     /// component in the user's Downloads directory.
     static func defaultDestination(forURL url: String) -> String {
         let lastComponent = URL(string: url)?.lastPathComponent ?? ""
-        let filename = lastComponent.isEmpty ? "download" : lastComponent
+        let filename = lastComponent.isEmpty || lastComponent == "/"
+            ? "download"
+            : lastComponent
         return FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Downloads")
             .appending(path: filename)
