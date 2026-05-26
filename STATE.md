@@ -5,15 +5,23 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `fix/root-url-default-destination`, based on `main` at `4e83522`.
-- **Current state:** The first menu bar dogfood smoke exposed a real default
-  destination bug: adding `https://example.com/` produced
-  `/Users/shane/Downloads/` as the destination, so the daemon tried to download
-  into the Downloads directory and the job failed. The root cause is
-  Foundation reporting a root URL's `lastPathComponent` as `/`; the dispatcher
-  only treated an empty component as missing. The fix branch adds a regression
-  test and treats `/` as the same no-filename case, falling back to
+- **Branch:** `docs/record-menu-bar-smoke-pass`, based on `main` at `7121e35`.
+- **Current state:** The first logged-in menu bar dogfood smoke has passed end
+  to end after PR #56. The smoke first exposed a real default-destination bug:
+  adding `https://example.com/` produced `/Users/shane/Downloads/` as the
+  destination, so the daemon tried to download into the Downloads directory and
+  the job failed. PR #56 fixed that root cause by treating Foundation's root-URL
+  `lastPathComponent == "/"` as the same no-filename case and falling back to
   `/Users/shane/Downloads/download`.
+- **Menu bar smoke result:** After rebuilding/installing dogfood from `main`,
+  clipboard quick-add of `https://example.com/` completed job 49 as
+  `528 B/528 B (100%)` at `/Users/shane/Downloads/download`. The file existed
+  on disk and contained the expected Example Domain HTML. The completed-row
+  controls copied the URL and destination to the clipboard, `rm` from the
+  popover removed the job while keeping the completed file, `goh ls` returned
+  `No downloads.`, and the companion quit cleanly (`pgrep -fl goh-menu`
+  reported no running process). The Terminal footer handoff was included in
+  the final manual smoke sequence.
 - **Menu bar state:** PR #54 merged the first private menu bar companion slice.
   `goh-menu` is now a SwiftPM-built, dogfood-installed MenuBarExtra backed by
   the same daemon XPC command and progress-subscription surfaces as the CLI. It
@@ -27,10 +35,7 @@ session; update at the start of every PR and at the end of every session.
   and dogfood-kit installation for `goh-menu`.
   Verification before merge included green CI, resolved review feedback,
   `swift build -Xswiftc -warnings-as-errors`, `swift test` (274 tests), and a
-  post-merge `main` test run with 274 tests in 48 suites passing. The remaining
-  product validation is a human logged-in menu bar click-through smoke:
-  clipboard URL -> **Get over here!** -> `goh ls` job -> reveal in Finder ->
-  Terminal handoffs -> quit companion.
+  post-merge `main` test run with 274 tests in 48 suites passing.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -51,7 +56,8 @@ session; update at the start of every PR and at the end of every session.
   `cbe2c61`; PR #51 — state refresh after acceptance gate merge — `main` at
   `0aa3887`; PR #52 — dogfood performance evidence output — `main` at
   `befa10c`; PR #54 — menu bar companion MB1 — `main` at `56f9ad9`;
-  PR #55 — state refresh after menu bar merge — `main` at `4e83522`.
+  PR #55 — state refresh after menu bar merge — `main` at `4e83522`; PR #56 —
+  root-URL default destination fix — `main` at `7121e35`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -278,20 +284,18 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `fix/root-url-default-destination`.
+Current branch: `docs/record-menu-bar-smoke-pass`.
 
-The branch fixes the root-URL destination bug found during menu bar smoke. Red
-test verified the old behavior (`https://example.com/` -> `/Users/shane/Downloads/`);
-green verification completed with:
+This branch records the successful logged-in menu bar dogfood smoke after the
+root-URL destination fix landed in PR #56. Manual evidence from the user:
+quick-add completed to `/Users/shane/Downloads/download`, file bytes matched
+Example Domain HTML, copy URL and copy destination controls produced the
+expected clipboard values, remove kept the completed file while clearing the
+queue, and Quit exited `goh-menu`.
 
-- `swift test --filter CommandDispatcherTests/addDerivesFileDestinationForRootURL`
-- `swift test --filter CommandDispatcherTests`
-- `swift build -Xswiftc -warnings-as-errors`
-- `swift test` (275 tests in 48 suites)
-
-Next pickup: open/merge the fix PR if CI and review are clean, rebuild/install
-dogfood, remove the failed smoke job (`goh rm 48` if still present), then rerun
-the full human logged-in menu bar click-through smoke.
+Next pickup after this docs PR merges: choose the next 10x product slice from
+real dogfood use. Good candidates are menu bar polish discovered by repeated
+private use, or the adaptive per-host range scheduler design pass.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
