@@ -1612,4 +1612,4 @@ The PR body should include:
 - Spec coverage: The plan covers the existing companion spec's native menu bar surface, quick-add path, live job list, daemon health, pause/resume controls, Finder reveal, terminal dashboard handoff, and private dogfood posture. Notifications and launch-at-login are intentionally outside MB1 and remain future companion slices.
 - Contract safety: No new daemon command, wire schema, protocol version, persistent format, or public installer behavior is introduced.
 - Test coverage: Pure formatting, health mapping, clipboard detection, view-model command routing, and shared command envelope handling are unit-tested. Live UI behavior is manually smoked because it requires a logged-in macOS session.
-- Product posture: The first user-visible action is **Get over here!** when a valid clipboard URL exists, which directly addresses the aria2c complexity gap.
+- Product posture: The first user-visible action is **Get over here!** when a valid clipboard URL exists, which directly addresses the no-configuration quick-add path the companion is meant to provide.

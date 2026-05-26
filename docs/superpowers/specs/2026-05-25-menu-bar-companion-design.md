@@ -1,6 +1,6 @@
 # Menu Bar Companion Design
 
-**Goal:** define the 10x Mac-native menu bar companion for `goh` before any UI
+**Goal:** define the Mac-native menu bar companion for `goh` before any UI
 implementation begins.
 
 **Status:** product direction only. This spec adds roadmap clarity; it does not
@@ -17,7 +17,7 @@ own a queue, persist job state, or maintain a separate model. It talks to `gohd`
 through the same XPC command surface and progress subscription model as `goh`
 and `goh top`.
 
-## 10x Shape
+## Shape
 
 The first version should feel like a calm, useful menu bar app:
 
@@ -71,7 +71,7 @@ terminal and companion tell the same truth.
 The companion should not become:
 
 - a second download engine;
-- a full Folx/Downie-style GUI clone;
+- a full-featured GUI clone of an existing download manager;
 - a browser-cookie manager;
 - a plugin host;
 - a mandatory component for CLI-only users;

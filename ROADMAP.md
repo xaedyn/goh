@@ -11,8 +11,9 @@ The smallest slice that already beats the category for ~80% of real use.
    daemon job.
 3. `goh add <url>` — background download, returns immediately.
 4. `goh ls`, `goh pause`, `goh resume`, `goh rm`, `goh top`.
-5. HTTP fetch via `URLSession` — it negotiates HTTP/1.1, HTTP/2, and HTTP/3
-   internally; goh does not select the protocol.
+5. HTTP fetch via `URLSession`. The session negotiates HTTP/1.1 and HTTP/2
+   internally; HTTP/3 is not actively opted into for v0.1 (see
+   [DESIGN.md §Transport](DESIGN.md#http3--tried-and-reverted-for-v01)).
 6. Single-source download with range-based parallelism (8 connections default,
    tunable).
 7. Resume after interrupt, with checkpoint to disk every 1 MB.
@@ -52,7 +53,7 @@ bandwidth budgets; hashes beyond SHA-256.
 
 ## v0.2 — backlog
 
-- **Native menu bar companion.** A 10x Mac-native control surface for users who
+- **Native menu bar companion.** A Mac-native control surface for users who
   want persistent visibility without living in a terminal. The companion is an
   optional SwiftUI/AppKit menu bar app backed by the same daemon, XPC commands,
   and progress subscriptions as the CLI. It shows daemon health, active download

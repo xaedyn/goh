@@ -139,13 +139,13 @@ session; update at the start of every PR and at the end of every session.
   packaging script. PR #32 added reusable artifact verification before upload.
   PR #33 documented signing/notarization prerequisites and the credential
   boundary for the remaining release work. PR #34 added an unsigned PKG
-  release-candidate artifact and verifier so the 10x direct-download path is
+  release-candidate artifact and verifier so the direct-download path is
   exercised in CI before credential-backed signing/notarization lands. PR #35
   codified the private release posture: build every release gate, but do not
   publish an official install channel until the explicit public launch decision.
   PR #36 added the manual private signed/notarized/stapled PKG gate and a CI
   verifier for that workflow shape, while keeping official publication out of
-  scope. PR #39 recorded the 10x native menu bar companion product direction in
+  scope. PR #39 recorded the menu bar companion product direction in
   the roadmap and a design spec. PR #40 added the local dogfood lane so the
   product can be used and tested privately from source before any official
   install channel opens.
@@ -394,9 +394,9 @@ public v0.1. The concrete sequence:
 
 Alternative pickup if v0.1 launch prep is blocked on credentials: Bet 2
 from the memo — the `gohfile.toml` + `goh sync` + `goh verify` manifest
-primitive. This is the path to the "Personal Asset Manager" 10-star
-form and is ~2–4 weeks of work; the persistence and integrity primitives
-the v0.1 engine already exposes are the foundation.
+primitive. This is the path to the "Personal Asset Manager" shape laid
+out in the vision memo and is ~2–4 weeks of work; the persistence and
+integrity primitives the v0.1 engine already exposes are the foundation.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
