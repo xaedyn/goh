@@ -22,9 +22,23 @@ nonisolated public struct GohMenuPresenter: Sendable {
             healthDetail: healthCopy.detail,
             activeCount: activeJobs.count,
             aggregateSpeedText: Self.formatBytes(aggregateSpeed) + "/s",
-            primaryAction: clipboardURL.map(GohMenuPrimaryAction.addClipboardURL) ?? .pasteURL,
+            primaryAction: primaryAction(
+                clipboardURL: clipboardURL,
+                recoveryAction: healthCopy.recovery),
             recoveryAction: healthCopy.recovery,
             rows: jobs.map(row(for:)))
+    }
+
+    private func primaryAction(
+        clipboardURL: URL?,
+        recoveryAction: GohMenuRecoveryAction?
+    ) -> GohMenuPrimaryAction {
+        switch recoveryAction {
+        case .openDoctor:
+            return .diagnose
+        case .copyCommand, nil:
+            return clipboardURL.map(GohMenuPrimaryAction.addClipboardURL) ?? .pasteURL
+        }
     }
 
     private func row(for job: JobSummary) -> GohMenuJobRow {

@@ -36,8 +36,14 @@ session; update at the start of every PR and at the end of every session.
   notification receive loop now run on the stream worker off the MainActor, with
   termination canceling any opened subscription. The helper has focused coverage
   for non-notification envelopes, mismatched progress request IDs, daemon vs peer
-  session invalidation mapping, and clean interruption termination. Next pickup
-  is Task 7, the SwiftUI `MenuBarExtra` UI shell and native AppKit side effects.
+  session invalidation mapping, and clean interruption termination. Task 7 adds
+  the SwiftUI `MenuBarExtra` UI shell: a compact operational popover around the
+  existing view model, clipboard refresh and **Get over here!** primary action,
+  job rows with pause/resume/reveal/remove/copy controls, Terminal and Quit
+  footer actions, AppKit accessory activation policy, pasteboard read/write,
+  Finder reveal, and Terminal handoffs for both `goh top` and `goh doctor`.
+  Next pickup is Task 8: dogfood installation, design documentation, and manual
+  smoke for the native menu bar companion.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -387,12 +393,14 @@ PR #52 GitHub gates:
 - CodeRabbit generated no actionable comments and no review threads.
 
 Next pickup: continue the MB1 native menu bar companion plan at
-`docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. Task 6 is complete:
-`goh-menu` now has `LiveGohMenuClient` for live `.all` progress subscriptions,
-baseline snapshot delivery, notification correlation, one-shot existing daemon
-commands, and menu-specific error mapping. Task 7 should add the SwiftUI
+`docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. Tasks 6 and 7 are
+complete: `goh-menu` has `LiveGohMenuClient` for live `.all` progress
+subscriptions, baseline snapshot delivery, notification correlation, one-shot
+existing daemon commands, menu-specific error mapping, the SwiftUI
 `MenuBarExtra` UI shell, AppKit accessory policy, Finder reveal, Terminal
-handoff, and pasteboard side effects. The target product shape remains the
+handoff, and pasteboard side effects. Task 8 should wire the companion into the
+local dogfood install path, update design docs, and perform the manual menu bar
+smoke. The target product shape remains the
 private dogfood magic loop: copy a URL, click **Get over here!** in the menu bar,
 watch live daemon progress, and reveal the completed file in Finder. Apple
 credentials are still unavailable, so public signing/notarization remains

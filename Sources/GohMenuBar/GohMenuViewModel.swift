@@ -21,6 +21,7 @@ public final class GohMenuViewModel: ObservableObject {
     private let pasteboardText: () -> String?
     private let revealInFinder: (String) -> Void
     private let openTerminalDashboard: () -> Void
+    private let openDoctorCommand: () -> Void
     private let copyText: (String) -> Void
     private var snapshots: [ProgressSnapshot] = []
     private var clipboardURL: URL?
@@ -33,6 +34,7 @@ public final class GohMenuViewModel: ObservableObject {
         pasteboardText: @escaping () -> String?,
         revealInFinder: @escaping (String) -> Void,
         openTerminalDashboard: @escaping () -> Void,
+        openDoctor: @escaping () -> Void = {},
         copyText: @escaping (String) -> Void
     ) {
         self.client = client
@@ -41,6 +43,7 @@ public final class GohMenuViewModel: ObservableObject {
         self.pasteboardText = pasteboardText
         self.revealInFinder = revealInFinder
         self.openTerminalDashboard = openTerminalDashboard
+        self.openDoctorCommand = openDoctor
         self.copyText = copyText
         self.state = presenter.state(
             health: .connecting,
@@ -109,7 +112,7 @@ public final class GohMenuViewModel: ObservableObject {
         case .pasteURL:
             await refreshClipboard()
         case .diagnose:
-            openTerminalDashboard()
+            openDoctorCommand()
         }
     }
 
@@ -147,6 +150,10 @@ public final class GohMenuViewModel: ObservableObject {
 
     public func openTop() {
         openTerminalDashboard()
+    }
+
+    public func openDoctor() {
+        openDoctorCommand()
     }
 
     private func render(health: GohMenuHealth) {

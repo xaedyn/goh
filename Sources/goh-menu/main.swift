@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import XPC
 
 import GohCore
@@ -159,4 +161,86 @@ nonisolated private final class LiveProgressSubscription: @unchecked Sendable {
                 cancel()
             })
     }
+}
+
+@MainActor
+final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.accessory)
+    }
+}
+
+@main
+struct GohMenuApp: App {
+    @NSApplicationDelegateAdaptor(GohMenuAppDelegate.self) private var appDelegate
+    @StateObject private var model = GohMenuViewModel(
+        client: LiveGohMenuClient(),
+        pasteboardText: {
+            NSPasteboard.general.string(forType: .string)
+        },
+        revealInFinder: { destination in
+            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
+        },
+        openTerminalDashboard: {
+            openTopInTerminal()
+        },
+        openDoctor: {
+            openDoctorInTerminal()
+        },
+        copyText: { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        })
+
+    var body: some Scene {
+        MenuBarExtra {
+            GohMenuView(
+                model: model,
+                quitApplication: {
+                    NSApplication.shared.terminate(nil)
+                })
+        } label: {
+            Label("goh", systemImage: "arrow.down.circle")
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+private func openTopInTerminal() {
+    openGohCommandInTerminal(arguments: ["top"])
+}
+
+private func openDoctorInTerminal() {
+    openGohCommandInTerminal(arguments: ["doctor"])
+}
+
+private func openGohCommandInTerminal(arguments: [String]) {
+    let gohPath = URL(filePath: CommandLine.arguments[0])
+        .deletingLastPathComponent()
+        .appending(path: "goh")
+        .path
+    let command = ([gohPath] + arguments).map(shellQuoted).joined(separator: " ")
+    let script = """
+    tell application "Terminal"
+      activate
+      do script \(appleScriptStringLiteral(command))
+    end tell
+    """
+    let process = Process()
+    process.executableURL = URL(filePath: "/usr/bin/osascript")
+    process.arguments = ["-e", script]
+    try? process.run()
+}
+
+private func shellQuoted(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+private func appleScriptStringLiteral(_ value: String) -> String {
+    "\""
+        + value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+        + "\""
 }

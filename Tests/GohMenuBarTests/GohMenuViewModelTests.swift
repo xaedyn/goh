@@ -248,20 +248,44 @@ struct GohMenuViewModelTests {
         var revealed: [String] = []
         var copied: [String] = []
         var openedTopCount = 0
+        var openedDoctorCount = 0
         let model = GohMenuViewModel(
             client: FakeMenuClient(),
             pasteboardText: { nil },
             revealInFinder: { revealed.append($0) },
             openTerminalDashboard: { openedTopCount += 1 },
+            openDoctor: { openedDoctorCount += 1 },
             copyText: { copied.append($0) })
 
         model.reveal(destination: "/tmp/file.iso")
         model.copy("https://example.com/file.iso")
         model.openTop()
+        model.openDoctor()
 
         #expect(revealed == ["/tmp/file.iso"])
         #expect(copied == ["https://example.com/file.iso"])
         #expect(openedTopCount == 1)
+        #expect(openedDoctorCount == 1)
+    }
+
+    @Test func diagnosePrimaryActionOpensDoctor() async throws {
+        var openedDoctorCount = 0
+        let client = FakeMenuClient()
+        client.enqueue(.failure(FakeMenuError.intentional))
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { "https://example.com/big.iso" },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            openDoctor: { openedDoctorCount += 1 },
+            copyText: { _ in })
+
+        _ = await model.consumeOneProgressUpdateForTesting()
+        await model.refreshClipboard()
+        await model.performPrimaryAction()
+
+        #expect(model.state.primaryAction == .diagnose)
+        #expect(openedDoctorCount == 1)
     }
 
     private static func snapshot(id: UInt64, state: JobState, speed: UInt64) -> ProgressSnapshot {

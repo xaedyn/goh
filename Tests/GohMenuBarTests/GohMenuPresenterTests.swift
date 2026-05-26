@@ -84,6 +84,16 @@ struct GohMenuPresenterTests {
         #expect(state.healthDetail == nil)
     }
 
+    @Test func daemonUnavailablePromotesDoctorPrimaryAction() {
+        let state = GohMenuPresenter().state(
+            health: .failed(.daemonUnavailable("launchd service is not loaded")),
+            snapshots: [],
+            clipboardURL: URL(string: "https://example.com/big.iso"))
+
+        #expect(state.primaryAction == .diagnose)
+        #expect(state.recoveryAction == .openDoctor)
+    }
+
     private func snapshot(
         id: UInt64,
         state: JobState,
