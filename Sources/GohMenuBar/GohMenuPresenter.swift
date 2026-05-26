@@ -128,9 +128,13 @@ nonisolated public struct GohMenuPresenter: Sendable {
         guard let total = progress.bytesTotal else {
             return "\(formatBytes(progress.bytesCompleted))/?"
         }
-        let percent = total == 0
-            ? 100
-            : Int((Double(progress.bytesCompleted) / Double(total) * 100).rounded())
+        let percent: Int
+        if total == 0 {
+            percent = 100
+        } else {
+            let rawPercent = Int((Double(progress.bytesCompleted) / Double(total) * 100).rounded())
+            percent = min(100, max(0, rawPercent))
+        }
         return "\(formatBytes(progress.bytesCompleted))/\(formatBytes(total)) (\(percent)%)"
     }
 

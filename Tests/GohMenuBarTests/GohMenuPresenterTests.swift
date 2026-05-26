@@ -62,6 +62,17 @@ struct GohMenuPresenterTests {
         #expect(state.rows.map(\.stateText) == ["Queued", "Active", "Paused", "Completed", "Failed"])
     }
 
+    @Test func clampsProgressPercentWhenCompletedExceedsTotal() {
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [
+                snapshot(id: 1, state: .active, completed: 2048, total: 1024, speed: 0),
+            ],
+            clipboardURL: nil)
+
+        #expect(state.rows[0].progressText == "2 KB/1 KB (100%)")
+    }
+
     @Test func explainsPeerValidationFailure() {
         let error = GohMenuError.peerValidation("Peer forbidden (code signing)")
 
