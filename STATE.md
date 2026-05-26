@@ -30,10 +30,14 @@ session; update at the start of every PR and at the end of every session.
   existing XPC progress channel, yields the baseline and matching daemon
   notifications, sends add/pause/resume/remove through one-shot existing
   commands, and maps daemon-unavailable, peer-validation, protocol-mismatch,
-  and malformed-reply failures into `GohMenuError`. The blocking notification
-  receive loop is kept off the MainActor behind a small nonisolated sendable
-  subscription wrapper. Next pickup is Task 7, the SwiftUI `MenuBarExtra` UI
-  shell and native AppKit side effects.
+  and malformed-reply failures into `GohMenuError`. Task 6's post-review fix
+  extracted the progress-stream orchestration into a tested `GohMenuBar` helper:
+  subscription creation, the baseline `.subscribe` send, and the blocking
+  notification receive loop now run on the stream worker off the MainActor, with
+  termination canceling any opened subscription. The helper has focused coverage
+  for non-notification envelopes, mismatched progress request IDs, daemon vs peer
+  session invalidation mapping, and clean interruption termination. Next pickup
+  is Task 7, the SwiftUI `MenuBarExtra` UI shell and native AppKit side effects.
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress

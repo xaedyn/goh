@@ -13,37 +13,10 @@ final class LiveGohMenuClient: GohMenuClient {
     }
 
     func progressSnapshots() -> AsyncThrowingStream<[ProgressSnapshot], any Error> {
-        AsyncThrowingStream { continuation in
-            do {
-                let subscription = try makeSubscription()
-                let commandClient = GohCommandClient { request in
-                    try subscription.sendSync(request)
-                }
-                let (requestID, reply): (UUID, SubscribeReply)
-                do {
-                    (requestID, reply) = try commandClient.sendWithRequestID(
-                        .subscribe(request: SubscribeRequest(scope: .all)),
-                        expecting: SubscribeReply.self)
-                } catch {
-                    subscription.cancel()
-                    throw error
-                }
-
-                continuation.yield(reply.snapshot)
-                let task = Task.detached { [subscription] in
-                    Self.consumeProgressNotifications(
-                        requestID: requestID,
-                        subscription: subscription,
-                        continuation: continuation)
-                }
-
-                continuation.onTermination = { _ in
-                    task.cancel()
-                    subscription.cancel()
-                }
-            } catch {
-                continuation.finish(throwing: Self.map(error))
-            }
+        let validationMode = validationMode
+        return GohMenuProgressStream.snapshots {
+            try Self.makeSubscription(validationMode: validationMode)
+                .progressSubscription()
         }
     }
 
@@ -93,13 +66,18 @@ final class LiveGohMenuClient: GohMenuClient {
         }
     }
 
-    private func makeSubscription() throws -> LiveProgressSubscription {
+    private nonisolated static func makeSubscription(
+        validationMode: PeerValidationMode
+    ) throws -> LiveProgressSubscription {
         let inbox = GohXPCNotificationInbox()
-        let session = try makeSession(inbox: inbox)
+        let session = try makeSession(inbox: inbox, validationMode: validationMode)
         return LiveProgressSubscription(inbox: inbox, session: session)
     }
 
-    private func makeSession(inbox: GohXPCNotificationInbox) throws -> GohProgressSubscriptionSession {
+    private nonisolated static func makeSession(
+        inbox: GohXPCNotificationInbox,
+        validationMode: PeerValidationMode
+    ) throws -> GohProgressSubscriptionSession {
         let client = try GohXPCClient(
             machServiceName: GohXPCService.machServiceName,
             mode: validationMode,
@@ -134,86 +112,16 @@ final class LiveGohMenuClient: GohMenuClient {
         }.value
     }
 
-    private nonisolated static func consumeProgressNotifications(
-        requestID: UUID,
-        subscription: LiveProgressSubscription,
-        continuation: AsyncThrowingStream<[ProgressSnapshot], any Error>.Continuation
-    ) {
-        while !Task.isCancelled {
-            do {
-                let envelope = try subscription.receive()
-                guard envelope.messageType == .notification else {
-                    throw GohMenuError.malformedReply(
-                        "daemon sent a non-notification progress message")
-                }
-                guard envelope.requestID == requestID else {
-                    throw GohMenuError.malformedReply(
-                        "daemon sent a progress notification for a different request")
-                }
-                continuation.yield(envelope.payload.snapshot)
-            } catch GohXPCNotificationInboxError.interrupted {
-                continuation.finish()
-                return
-            } catch GohXPCNotificationInboxError.sessionInvalidated(let reason) {
-                continuation.finish(throwing: connectionError(reason))
-                return
-            } catch GohXPCNotificationInboxError.malformedProgressNotification(let message) {
-                continuation.finish(throwing: GohMenuError.malformedReply(message))
-                return
-            } catch {
-                continuation.finish(throwing: map(error))
-                return
-            }
-        }
-        continuation.finish()
-    }
-
     private nonisolated static func map(_ error: any Error) -> GohMenuError {
-        if let error = error as? GohMenuError {
-            return error
-        }
-
-        if let error = error as? GohCommandClientError {
-            switch error {
-            case .daemon(let daemonError):
-                if daemonError.code == .protocolVersionMismatch {
-                    return .protocolMismatch(daemonError.message ?? daemonError.code.rawValue)
-                }
-                return .daemon(daemonError)
-            case .malformedReply(let message):
-                return .malformedReply(message)
-            }
-        }
-
-        if let error = error as? GohXPCNotificationInboxError {
-            switch error {
-            case .interrupted:
-                return .daemonUnavailable("progress subscription ended")
-            case .malformedProgressNotification(let message):
-                return .malformedReply(message)
-            case .sessionInvalidated(let reason):
-                return connectionError(reason)
-            }
-        }
-
-        return connectionError("\(error)")
-    }
-
-    private nonisolated static func connectionError(_ text: String) -> GohMenuError {
-        let lowercased = text.lowercased()
-        if lowercased.contains("peer")
-            || lowercased.contains("code sign")
-            || lowercased.contains("codesign")
-            || lowercased.contains("requirement")
-            || lowercased.contains("forbidden")
-        {
-            return .peerValidation(text)
-        }
-
-        return .daemonUnavailable(text)
+        GohMenuErrorMapper.map(error)
     }
 }
 
+/// @unchecked Sendable invariant: this private wrapper contains the synchronized
+/// XPC notification inbox and the XPC session closure bundle. The baseline send
+/// and blocking receive happen on the stream worker off the MainActor, while
+/// cancellation may race intentionally with setup/receive and is routed through
+/// the inbox interrupt plus session cancel hooks.
 nonisolated private final class LiveProgressSubscription: @unchecked Sendable {
     private let inbox: GohXPCNotificationInbox
     private let session: GohProgressSubscriptionSession
@@ -237,5 +145,18 @@ nonisolated private final class LiveProgressSubscription: @unchecked Sendable {
     func cancel() {
         inbox.interrupt()
         session.cancel()
+    }
+
+    func progressSubscription() -> GohMenuProgressSubscription {
+        GohMenuProgressSubscription(
+            sendSync: { [self] request in
+                try sendSync(request)
+            },
+            receiveNotification: { [self] in
+                try receive()
+            },
+            cancel: { [self] in
+                cancel()
+            })
     }
 }
