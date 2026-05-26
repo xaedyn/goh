@@ -204,27 +204,20 @@ public struct GohForegroundDownload {
             .xpcDictionary()
         let response = try session.sendSync(XPCDictionary(request))
 
-        return try response.withUnsafeUnderlyingDictionary { object in
-            if let reply = try? GohEnvelope<Reply>(xpcDictionary: object),
-               reply.messageType == .reply
-            {
-                guard reply.requestID == requestID else {
-                    throw ForegroundError(
-                        "daemon reply requestID did not match the request")
-                }
-                return (requestID, reply.payload)
+        switch response.decodeGohReply(as: Reply.self) {
+        case .reply(let id, let payload):
+            guard id == requestID else {
+                throw ForegroundError(
+                    "daemon reply requestID did not match the request")
             }
-
-            if let error = try? GohEnvelope<GohError>(xpcDictionary: object),
-               error.messageType == .error
-            {
-                guard error.requestID == requestID else {
-                    throw ForegroundError(
-                        "daemon error requestID did not match the request")
-                }
-                throw error.payload
+            return (requestID, payload)
+        case .daemonError(let id, let error):
+            guard id == requestID else {
+                throw ForegroundError(
+                    "daemon error requestID did not match the request")
             }
-
+            throw error
+        case .malformed:
             throw ForegroundError("daemon returned an unrecognized reply")
         }
     }

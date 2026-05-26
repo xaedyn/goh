@@ -80,25 +80,18 @@ func readQueueForDoctor(validationMode: PeerValidationMode) throws -> LsReply {
         .xpcDictionary()
     let response = try sendOneShot(XPCDictionary(request), validationMode: validationMode)
 
-    return try response.withUnsafeUnderlyingDictionary { object in
-        if let reply = try? GohEnvelope<LsReply>(xpcDictionary: object),
-           reply.messageType == .reply
-        {
-            guard reply.requestID == requestID else {
-                throw DoctorQueueReadError.requestIDMismatch
-            }
-            return reply.payload
+    switch response.decodeGohReply(as: LsReply.self) {
+    case .reply(let id, let payload):
+        guard id == requestID else {
+            throw DoctorQueueReadError.requestIDMismatch
         }
-
-        if let error = try? GohEnvelope<GohError>(xpcDictionary: object),
-           error.messageType == .error
-        {
-            guard error.requestID == requestID else {
-                throw DoctorQueueReadError.requestIDMismatch
-            }
-            throw DoctorQueueReadError.daemon(error.payload)
+        return payload
+    case .daemonError(let id, let error):
+        guard id == requestID else {
+            throw DoctorQueueReadError.requestIDMismatch
         }
-
+        throw DoctorQueueReadError.daemon(error)
+    case .malformed:
         throw DoctorQueueReadError.malformedReply
     }
 }
