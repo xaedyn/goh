@@ -77,8 +77,10 @@ struct GohTopTests {
         #expect(result.standardOutput == "")
         #expect(result.standardError == "")
         #expect(emittedOutput.withLock {
-            $0 == "\u{1B}[2J\u{1B}[Hrender active\n"
-                + "\u{1B}[2J\u{1B}[Hrender completed\n"
+            $0 == "\u{1B}[?1049h"
+                + "\u{1B}[Hrender active\n\u{1B}[J"
+                + "\u{1B}[Hrender completed\n\u{1B}[J"
+                + "\u{1B}[?1049l"
         })
         #expect(emittedError.withLock { $0 } == "")
     }
@@ -132,7 +134,11 @@ struct GohTopTests {
         #expect(result.exitCode == 1)
         #expect(result.standardOutput == "")
         #expect(result.standardError == "")
-        #expect(emittedOutput.withLock { $0 == "\u{1B}[2J\u{1B}[Hrender 1\n" })
+        #expect(emittedOutput.withLock {
+            $0 == "\u{1B}[?1049h"
+                + "\u{1B}[Hrender 1\n\u{1B}[J"
+                + "\u{1B}[?1049l"
+        })
         #expect(emittedError.withLock {
             $0 == "gohd connection lost; reconnecting...\n"
                 + "Could not reconnect to gohd.\nStart the daemon with: brew services start goh\n"

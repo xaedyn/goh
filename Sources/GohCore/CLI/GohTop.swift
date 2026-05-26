@@ -32,6 +32,8 @@ public struct GohTop {
     }
 
     public func run() -> GohCommandLineResult {
+        standardOutput(Self.enterAltScreen)
+        defer { standardOutput(Self.exitAltScreen) }
         do {
             var activeSession = session
             defer { activeSession.cancel() }
@@ -96,7 +98,11 @@ public struct GohTop {
     }
 
     private func repaint(_ snapshots: [ProgressSnapshot]) {
-        standardOutput(Self.clearScreenPrefix + render(snapshots))
+        // Home cursor, draw the frame, then erase from the cursor to the end
+        // of the screen so a shorter frame wipes any leftover lines from the
+        // previous one. Drawing in place avoids the brief blank flash that a
+        // full clear-then-write produces on every update.
+        standardOutput(Self.homeCursor + render(snapshots) + Self.eraseBelow)
     }
 
     private func sendCommand<Reply: Codable & Sendable>(
@@ -240,7 +246,21 @@ public struct GohTop {
 }
 
 private extension GohTop {
-    static let clearScreenPrefix = "\u{1B}[2J\u{1B}[H"
+    /// Enter the alternate screen buffer — terminal scrollback is preserved
+    /// across the lifetime of `goh top`, so on exit the user's previous shell
+    /// content reappears intact. `run()` emits this at start and a paired exit
+    /// at every return path.
+    static let enterAltScreen = "\u{1B}[?1049h"
+
+    /// Exit the alternate screen buffer, restoring the terminal contents the
+    /// user had before `goh top` started.
+    static let exitAltScreen = "\u{1B}[?1049l"
+
+    /// Position the cursor at the top-left of the screen.
+    static let homeCursor = "\u{1B}[H"
+
+    /// Erase from the cursor position to the end of the screen.
+    static let eraseBelow = "\u{1B}[J"
 
     static func reconnectingMessage() -> String {
         "gohd connection lost; reconnecting...\n"
