@@ -22,15 +22,96 @@ nonisolated public struct GohClipboardURLDetector: Sendable {
         guard let components = URLComponents(string: text),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              let host = components.host,
-              !host.isEmpty,
-              Self.isValidPort(components.port),
+              Self.isValidAuthority(in: text, components: components),
               let url = components.url
         else {
             return nil
         }
 
         return url
+    }
+
+    private static func isValidAuthority(in text: String, components: URLComponents) -> Bool {
+        guard let encodedHost = components.percentEncodedHost,
+              !encodedHost.isEmpty,
+              !encodedHost.contains("%"),
+              let host = components.host,
+              !host.isEmpty,
+              host.unicodeScalars.allSatisfy({
+                  !CharacterSet.whitespacesAndNewlines.contains($0)
+                      && !CharacterSet.controlCharacters.contains($0)
+              }),
+              let authority = Self.authority(in: text),
+              Self.hasValidRawPort(in: authority, parsedPort: components.port),
+              Self.isValidPort(components.port)
+        else {
+            return false
+        }
+
+        return true
+    }
+
+    private static func authority(in text: String) -> Substring? {
+        guard let separator = text.range(of: "://") else {
+            return nil
+        }
+
+        let start = separator.upperBound
+        let end = text[start...].firstIndex { character in
+            character == "/" || character == "?" || character == "#"
+        } ?? text.endIndex
+        let authority = text[start..<end]
+
+        return authority.isEmpty ? nil : authority
+    }
+
+    private static func hasValidRawPort(in authority: Substring, parsedPort: Int?) -> Bool {
+        let hostPortStart: Substring.Index
+        if let userInfoEnd = authority.lastIndex(of: "@") {
+            hostPortStart = authority.index(after: userInfoEnd)
+        } else {
+            hostPortStart = authority.startIndex
+        }
+
+        let hostPort = authority[hostPortStart...]
+        guard !hostPort.isEmpty else {
+            return false
+        }
+
+        if hostPort.first == "[" {
+            guard let hostEnd = hostPort.firstIndex(of: "]") else {
+                return false
+            }
+
+            let portStart = hostPort.index(after: hostEnd)
+            let portSegment = hostPort[portStart...]
+            guard !portSegment.isEmpty else {
+                return true
+            }
+            guard portSegment.first == ":" else {
+                return false
+            }
+
+            return Self.isValidRawPortText(portSegment.dropFirst(), parsedPort: parsedPort)
+        }
+
+        guard let portSeparator = hostPort.lastIndex(of: ":") else {
+            return true
+        }
+
+        let portText = hostPort[hostPort.index(after: portSeparator)...]
+        return Self.isValidRawPortText(portText, parsedPort: parsedPort)
+    }
+
+    private static func isValidRawPortText(_ portText: Substring, parsedPort: Int?) -> Bool {
+        guard !portText.isEmpty,
+              portText.allSatisfy(\.isASCIIDigit),
+              let parsedPort
+        else {
+            return false
+        }
+
+        return Self.isValidPort(parsedPort)
     }
 
     private static func isValidPort(_ port: Int?) -> Bool {
@@ -71,6 +152,16 @@ nonisolated public struct GohClipboardURLDetector: Sendable {
 }
 
 private extension Character {
+    nonisolated var isASCIIDigit: Bool {
+        guard unicodeScalars.count == 1,
+              let scalar = unicodeScalars.first
+        else {
+            return false
+        }
+
+        return (0x30...0x39).contains(scalar.value)
+    }
+
     nonisolated var isASCIIHexDigit: Bool {
         guard unicodeScalars.count == 1,
               let scalar = unicodeScalars.first

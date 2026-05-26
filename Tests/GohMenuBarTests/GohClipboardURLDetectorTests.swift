@@ -14,6 +14,11 @@ struct GohClipboardURLDetectorTests {
         #expect(url == URL(string: "http://example.com/file.zip"))
     }
 
+    @Test func acceptsPercentEncodedPath() {
+        let url = GohClipboardURLDetector().url(from: "https://example.com/file%20name.iso")
+        #expect(url == URL(string: "https://example.com/file%20name.iso"))
+    }
+
     @Test func rejectsNilClipboardText() {
         #expect(GohClipboardURLDetector().url(from: nil) == nil)
     }
@@ -31,6 +36,11 @@ struct GohClipboardURLDetectorTests {
         #expect(GohClipboardURLDetector().url(from: "https:///missing-host") == nil)
     }
 
+    @Test func rejectsPercentEncodedHostEscapes() {
+        #expect(GohClipboardURLDetector().url(from: "https://exa%20mple.com/file.iso") == nil)
+        #expect(GohClipboardURLDetector().url(from: "https://%65xample.com/file.iso") == nil)
+    }
+
     @Test func rejectsMultipleLinesOfText() {
         #expect(GohClipboardURLDetector().url(from: "https://example.com/a\nhttps://example.com/b") == nil)
     }
@@ -46,6 +56,10 @@ struct GohClipboardURLDetectorTests {
 
     @Test func rejectsOutOfRangePort() {
         #expect(GohClipboardURLDetector().url(from: "https://example.com:99999/file.iso") == nil)
+    }
+
+    @Test func rejectsExplicitEmptyPort() {
+        #expect(GohClipboardURLDetector().url(from: "https://example.com:/file.iso") == nil)
     }
 
     @Test func rejectsMalformedPercentEscape() {

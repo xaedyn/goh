@@ -16,8 +16,9 @@ session; update at the start of every PR and at the end of every session.
   `GohClipboardURLDetector` for the menu bar quick-add flow: it accepts a
   single trimmed `http` / `https` URL with a host and rejects non-HTTP,
   hostless, empty, multi-line, same-line prose, interior whitespace/control
-  characters, malformed percent escapes, and invalid explicit ports. Next
-  pickup is Task 5, the
+  characters, malformed percent escapes, percent-encoded host escapes, decoded
+  host whitespace/control characters, invalid explicit ports, and explicitly
+  empty ports. Next pickup is Task 5, the
   `GohMenuViewModel` behavior layer that connects clipboard quick-add,
   progress-stream state, and existing daemon controls without adding a new
   daemon contract.
@@ -373,12 +374,14 @@ Next pickup: continue the MB1 native menu bar companion plan at
 `docs/superpowers/plans/2026-05-25-menu-bar-companion-mb1.md`. Task 5 should add
 the `GohMenuViewModel` behavior layer that connects clipboard quick-add,
 progress-stream state, and existing daemon controls without adding a new daemon
-contract. The target product shape remains the private dogfood magic loop: copy
-a URL, click **Get over here!** in the menu bar, watch live daemon progress,
-and reveal the completed file in Finder. Apple credentials are still
-unavailable, so public signing/notarization remains blocked by design. Adaptive
-per-host scheduling remains deferred until logged benchmark evidence shows a
-material gap.
+contract. Task 4's post-review authority hardening is complete: the quick-add
+detector now rejects percent-encoded host escapes and explicitly empty ports
+while preserving encoded paths. The target product shape remains the private
+dogfood magic loop: copy a URL, click **Get over here!** in the menu bar, watch
+live daemon progress, and reveal the completed file in Finder. Apple credentials
+are still unavailable, so public signing/notarization remains blocked by design.
+Adaptive per-host scheduling remains deferred until logged benchmark evidence
+shows a material gap.
 
 Leave unrelated untracked files (`AGENTS.md`,
 `Benchmarks/diagnose-saturated.log`) untouched.
