@@ -97,6 +97,28 @@ session; update at the start of every PR and at the end of every session.
   by the first logged-in smoke pass (`https://example.com/` produced
   `~/Downloads/`; now falls back to `~/Downloads/download`). PR #66 then
   taught the Terminal handoff to respect the user's actual terminal.
+- **Post-sweep cleanups (PRs #68, #69):** PR #68 rewrote the README's "Why"
+  section to lead with what `goh` *is* (architecture + capability list)
+  instead of competitor name-drops, removed "10x" buzzwords from
+  `ROADMAP.md` / `STATE.md` / the menu bar spec, and clarified that v0.1
+  does not actively opt into HTTP/3. PR #69 redacted a home-directory
+  path that had appeared in the post-sweep state refresh, reconciled
+  DESIGN.md §6 (Observability) with the shipped implementation (`stderr`
+  writes today, `os.Logger` migration framed as a v0.2 candidate), and
+  tightened `.gitignore` for two local-only files (the Codex-style
+  operating manual `AGENTS.md` and `Benchmarks/diagnose-*.log` engine
+  traces). A separate `git config user.email` correction was applied
+  outside the PR after a prior commit was authored under a personal
+  email instead of the GitHub noreply.
+- **GitHub account + repo settings hardened (browser-driven):** Enabled
+  command-line push protection that rejects future commits authored from
+  a personal email. Enabled repository-level Private vulnerability
+  reporting, Dependency graph, Dependabot alerts / malware / security
+  updates / grouped security updates, and Secret Protection (scanning +
+  push protection). Created branch ruleset "Protect main" with basic
+  protection: require PRs to merge, block force pushes, block deletions,
+  0 required approvals (self-merge OK). 2FA verified enabled (read-only
+  check; not modified).
 - **Last roadmap merge:** PR #22 — Spotlight tagging and sleep assertions —
   `main` at `5b3884d`; PR #23 — one-shot CLI commands — `main` at `db9b82a`;
   PR #24 — CLI add options and JSON list — `main` at `58c2e73`; PR #25 — progress
@@ -128,7 +150,8 @@ session; update at the start of every PR and at the end of every session.
   PR #64 — robustness sweep (content-length 0, inbox invariant) — `main`
   at `244e9a4`; PR #65 — relax flaky range-cancel timing bound — `main`
   at `dd7c021`; PR #66 — multi-terminal handoff w/ Ghostty — `main` at
-  `06564af`.
+  `06564af`; PR #68 — positioning language cleanup — `main` at `fa97d8d`;
+  PR #69 — PII redaction + DESIGN §6 reconciliation — `main` at `b09616a`.
   Bookkeeping-only `STATE.md` refresh PRs may be newer than this entry; they do
   not advance the roadmap state.
 - **Current slice:** Slice 9, Homebrew formula, signing, notarization, and the
@@ -363,17 +386,26 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/state-after-code-review-sweep`.
+Current branch: `docs/state-after-session-2026-05-26`.
 
-This branch is the post-sweep refresh — `main` is at `06564af` with the
-code-review sweep (PRs #58–#66) and Ghostty terminal support merged. 314
-tests pass; CI is green; the menu bar handoff has been live-verified
-against Ghostty in the user's environment.
+This branch refreshes state after a long session that closed out a
+code-review sweep (PRs #58–#66), a positioning + PII cleanup
+(PRs #67–#69), and a browser-driven GitHub account + repo settings
+hardening pass. `main` is at `b09616a`. 314 tests pass; CI is green;
+the menu bar handoff has been live-verified against Ghostty.
 
-**Next pickup after this docs PR merges: cut public v0.1.** The private
-strategy memo at `docs/vision/VISION-2026-05-26.md` (local-only,
-gitignored) lays out the thesis and the three bets; Bet 1 is shipping
-public v0.1. The concrete sequence:
+**Highest-leverage pickup, before anything else in this repo:** run the
+local audit prompt against other projects under this account. The
+`git config user.email` regression caught here (a personal email landed
+in a public commit before the post-#69 mitigations were in place) is
+likely to recur in other repos. Each occurrence is a separate exposed
+email if those repos ever ship publicly. ~10–20 minutes per repo,
+asymmetric upside. The audit prompt covers identity leaks, credentials,
+PII paths, projected-but-not-shipped feature claims, competitor name
+drops, marketing puffery, telemetry, and code-level injection paths.
+
+**Next pickup *here* (in `goh`): cut public v0.1.** Bet 1 from the
+gitignored strategy memo at `docs/vision/VISION-2026-05-26.md`:
 
 1. **Sign and notarize the PKG** by running PR #36's
    `private-release-candidate` workflow with Developer ID credentials.
@@ -383,19 +415,27 @@ public v0.1. The concrete sequence:
    notarization credentials).
 2. **Open the brew tap** (`xaedyn/homebrew-goh`) and publish the formula
    that PR #29/#30 prepared.
-3. **Draft a launch post.** The narrative the vision memo lands on:
-   "the macOS download daemon for the AI era — Personal Asset Manager,
-   not a faster curl." Reference the buried capabilities — `goh diagnose`
-   via `GOH_ENGINE_TRACE=1`, `goh doctor` health gate, Spotlight
-   `kMDItemWhereFroms` provenance, sleep assertions, cellular auto-pause,
-   the Safari cookie import via fd-passing.
-4. **Submit to Hacker News + r/macapps + r/commandline + r/datahoarder.**
+3. **Polish the launch post draft** at
+   `docs/vision/LAUNCH-POST-DRAFT.md` (gitignored). Needs a menu bar
+   screenshot and a final tone pass. The narrative the vision memo
+   lands on: "the macOS download daemon for the AI era — Personal
+   Asset Manager, not a faster curl." Reference the buried capabilities
+   — `goh diagnose` via `GOH_ENGINE_TRACE=1`, `goh doctor` health gate,
+   Spotlight `kMDItemWhereFroms` provenance, sleep assertions, cellular
+   auto-pause, the Safari cookie import via fd-passing.
+4. **Add `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`** —
+   ~30 minutes of writing right before the brew tap opens. `SECURITY.md`
+   is the most important (responsible disclosure address for a tool
+   that handles cookies and sensitive URLs).
+5. **Submit to Hacker News + r/macapps + r/commandline + r/datahoarder.**
 
-Alternative pickup if v0.1 launch prep is blocked on credentials: Bet 2
-from the memo — the `gohfile.toml` + `goh sync` + `goh verify` manifest
-primitive. This is the path to the "Personal Asset Manager" shape laid
-out in the vision memo and is ~2–4 weeks of work; the persistence and
-integrity primitives the v0.1 engine already exposes are the foundation.
+**Alternative pickup if v0.1 launch prep is blocked on credentials:**
+Bet 2 from the memo — `gohfile.toml` + `goh sync` + `goh verify`.
+This is the path to the "Personal Asset Manager" shape and is ~2–4
+weeks of work; the persistence and integrity primitives the v0.1
+engine already exposes are the foundation. Doesn't depend on signing.
 
-Leave unrelated untracked files (`AGENTS.md`,
-`Benchmarks/diagnose-saturated.log`) untouched.
+**Note on the local-only files** `AGENTS.md` and
+`Benchmarks/diagnose-saturated.log`: both are now properly gitignored
+(PR #69). They will no longer appear as untracked in `git status`, but
+they remain on disk and should still be left alone.
