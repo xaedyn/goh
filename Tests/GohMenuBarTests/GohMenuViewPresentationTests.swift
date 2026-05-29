@@ -5,7 +5,7 @@ import Testing
 @Suite("GohMenuView presentation")
 struct GohMenuViewPresentationTests {
     @Test func primaryActionCopyIsUserFacing() {
-        #expect(GohMenuPrimaryAction.addClipboardURL(URL(string: "https://example.com/big.iso")!).buttonTitle == "Get over here!")
+        #expect(GohMenuPrimaryAction.addClipboardURL(URL(string: "https://example.com/big.iso")!).buttonTitle == "Download clipboard URL")
         #expect(GohMenuPrimaryAction.addClipboardURL(URL(string: "https://example.com/big.iso")!).systemImageName == "arrow.down.circle.fill")
         #expect(GohMenuPrimaryAction.pasteURL.buttonTitle == "Copy a download URL")
         #expect(GohMenuPrimaryAction.pasteURL.systemImageName == "doc.on.clipboard")

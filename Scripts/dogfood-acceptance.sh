@@ -241,7 +241,7 @@ wait_for_job_active() {
   return 1
 }
 
-echo "Get over here!"
+echo "goh - terminal download manager"
 echo
 echo "Private dogfood acceptance"
 echo

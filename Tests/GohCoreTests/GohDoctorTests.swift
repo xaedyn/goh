@@ -15,7 +15,7 @@ struct GohDoctorTests {
 
         #expect(result.exitCode == 0)
         #expect(result.standardError == "")
-        #expect(result.standardOutput.hasPrefix("Get over here!\n\ngoh doctor\n"))
+        #expect(result.standardOutput.hasPrefix("goh doctor\n"))
         #expect(result.standardOutput.contains("[ok] CLI executable: \(paths.goh)"))
         #expect(result.standardOutput.contains("[ok] daemon executable: \(paths.gohd)"))
         #expect(result.standardOutput.contains("[ok] LaunchAgent installed: \(paths.launchAgent)"))

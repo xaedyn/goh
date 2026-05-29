@@ -20,7 +20,7 @@ struct DownloadFileTests {
         let url = try temporaryFile()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let payload = Data("get over here".utf8)
+        let payload = Data("the quick brown fox".utf8)
         let file = try DownloadFile(path: url.path, expectedSize: UInt64(payload.count))
         try file.write(payload, at: 0)
         let readBack = try file.read(at: 0, count: payload.count)

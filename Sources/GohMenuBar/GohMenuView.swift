@@ -247,7 +247,7 @@ extension GohMenuPrimaryAction {
     nonisolated var buttonTitle: String {
         switch self {
         case .addClipboardURL:
-            return "Get over here!"
+            return "Download clipboard URL"
         case .pasteURL:
             return "Copy a download URL"
         case .diagnose:

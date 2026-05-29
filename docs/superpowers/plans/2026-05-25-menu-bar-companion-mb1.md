@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the first private dogfood native menu bar companion for `goh`: copy a URL, click **Get over here!**, watch live daemon progress, then reveal the completed file.
+**Goal:** Build the first private dogfood native menu bar companion for `goh`: copy a URL, click **Download clipboard URL**, watch live daemon progress, then reveal the completed file.
 
 **Architecture:** Add a testable `GohMenuBar` library plus a thin `goh-menu` SwiftPM executable. The library owns pure presentation state, clipboard URL detection, and view-model behavior; the executable owns the SwiftUI `MenuBarExtra`, AppKit process policy, Finder reveal, Terminal handoff, and live XPC wiring. `gohd` remains the only download engine and job source of truth.
 
@@ -16,7 +16,7 @@ MB1 ships a private dogfood companion, not a public app bundle or launch-at-logi
 
 - `goh-menu` appears in the macOS menu bar as an accessory app.
 - The popover shows daemon health, active count, aggregate speed, and job rows.
-- If the clipboard contains an `http` or `https` URL, the primary action is **Get over here!**.
+- If the clipboard contains an `http` or `https` URL, the primary action is **Download clipboard URL**.
 - The primary action sends `Command.add` through the same daemon surface as `goh add`.
 - Live updates come from `Command.subscribe(scope: .all)`.
 - Active and paused rows expose pause/resume controls through existing commands.
@@ -1264,7 +1264,7 @@ public struct GohMenuView: View {
     private var primaryActionTitle: String {
         switch model.state.primaryAction {
         case .addClipboardURL:
-            return "Get over here!"
+            return "Download clipboard URL"
         case .pasteURL:
             return "Copy a download URL"
         case .diagnose:
@@ -1509,7 +1509,7 @@ printf 'https://example.com/' | pbcopy
 Expected:
 
 - a `goh` menu bar item appears;
-- opening it shows **Get over here!** as the primary action;
+- opening it shows **Download clipboard URL** as the primary action;
 - clicking the action adds a daemon job;
 - `goh ls` shows the new job;
 - completed rows expose Finder reveal;
@@ -1604,7 +1604,7 @@ The PR body should include:
 - `swift test`
 - `Scripts/verify-dogfood-kit.sh`
 - `Scripts/dogfood-acceptance.sh --timeout 45`
-- manual logged-in smoke: clipboard URL -> Get over here! -> `goh ls` job -> reveal in Finder -> quit companion
+- manual logged-in smoke: clipboard URL -> Download clipboard URL -> `goh ls` job -> reveal in Finder -> quit companion
 ```
 
 ## Self-Review
@@ -1612,4 +1612,4 @@ The PR body should include:
 - Spec coverage: The plan covers the existing companion spec's native menu bar surface, quick-add path, live job list, daemon health, pause/resume controls, Finder reveal, terminal dashboard handoff, and private dogfood posture. Notifications and launch-at-login are intentionally outside MB1 and remain future companion slices.
 - Contract safety: No new daemon command, wire schema, protocol version, persistent format, or public installer behavior is introduced.
 - Test coverage: Pure formatting, health mapping, clipboard detection, view-model command routing, and shared command envelope handling are unit-tested. Live UI behavior is manually smoked because it requires a logged-in macOS session.
-- Product posture: The first user-visible action is **Get over here!** when a valid clipboard URL exists, which directly addresses the no-configuration quick-add path the companion is meant to provide.
+- Product posture: The first user-visible action is **Download clipboard URL** when a valid clipboard URL exists, which directly addresses the no-configuration quick-add path the companion is meant to provide.

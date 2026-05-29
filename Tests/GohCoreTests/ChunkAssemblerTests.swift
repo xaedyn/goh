@@ -49,7 +49,7 @@ struct ChunkAssemblerTests {
         let url = try temporaryFile()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
-        let payload = Data("get over here".utf8)
+        let payload = Data("the quick brown fox".utf8)
         let file = try DownloadFile(path: url.path, expectedSize: nil)
         let assembler = ChunkAssembler(
             file: file, ranges: [ByteRange(start: 0, length: .max)])

@@ -1685,10 +1685,11 @@ directly to `AddRequest.destination`, `connectionCount`, `priority`, and
 the command JSON codec, with a trailing newline for shell ergonomics. This is a
 presentation choice over the current protocol, not a new wire shape.
 
-The product catchphrase appears sparingly as CLI/TUI personality, not as noisy
-status copy: `goh --help` opens with `Get over here!`, and `goh top` carries the
-same line in its title. Foreground add/progress output stays focused on job
-state so scripts and long-running terminals do not get repeated brand copy.
+A short product banner appears sparingly as CLI/TUI personality, not as noisy
+status copy: `goh --help` opens with `goh - terminal download manager`, and
+`goh top`/`goh doctor` carry their own command identifiers. Foreground
+add/progress output stays focused on job state so scripts and long-running
+terminals do not get repeated banner copy.
 
 `goh doctor` is a local diagnostic, not a daemon command. It reuses the existing
 `ls` request only to prove XPC reachability and queue readability, then combines

@@ -375,7 +375,7 @@ extension GohCommandLine {
         if let error {
             text += "Error: \(error)\n\n"
         }
-        text += "Get over here!\n\n"
+        text += "goh - terminal download manager\n\n"
         text += """
         Usage:
           goh <url>
