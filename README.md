@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/wordmark/goh-wordmark-dark.svg" alt="goh — terminal download manager" width="360">
+</p>
+
 # goh
 
 > **v0.1 — in development.** The daemon, download engine, CLI controls, foreground
