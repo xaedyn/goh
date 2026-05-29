@@ -91,7 +91,7 @@ session; update at the start of every PR and at the end of every session.
   `goh-menu` is now a SwiftPM-built, dogfood-installed MenuBarExtra backed by
   the same daemon XPC command and progress-subscription surfaces as the CLI. It
   shows daemon health, queue snapshots, active counts, aggregate speed,
-  doctor-style recovery copy, clipboard quick-add with **Get over here!**,
+  doctor-style recovery copy, clipboard quick-add,
   job controls, Finder reveal, and Terminal handoffs for `goh top` and
   `goh doctor`. PR #56 fixed the root-URL default-destination bug surfaced
   by the first logged-in smoke pass (`https://example.com/` produced
@@ -393,6 +393,16 @@ code-review sweep (PRs #58–#66), a positioning + PII cleanup
 (PRs #67–#69), and a browser-driven GitHub account + repo settings
 hardening pass. `main` is at `b09616a`. 314 tests pass; CI is green;
 the menu bar handoff has been live-verified against Ghostty.
+
+**Identity exploration completed in a follow-up session (2026-05-28).**
+Brand direction was committed after multi-round image-generation
+exploration, several typographic iteration rounds, and
+register-comparison sheets. The committed spec, working HTML reference,
+prompt templates, design directive, and decision rationale all live
+in `docs/vision/` (gitignored). Production handoff work queued in the
+spec: production typeface verification, vector mark drawing, icon
+asset set export, and a font license decision before the identity is
+applied to public surfaces (`goh-menu`, README, brew tap, launch post).
 
 **Highest-leverage pickup, before anything else in this repo:** run the
 local audit prompt against other projects under this account. The

@@ -14,7 +14,7 @@ public enum GohTUI {
     public static func renderTopDashboard(snapshots: [ProgressSnapshot]) -> String {
         let sorted = snapshots.sorted { $0.job.id < $1.job.id }
         var lines = [
-            "goh top - Get over here!",
+            "goh top",
             "\(sorted.count) \(sorted.count == 1 ? "job" : "jobs")",
             "",
         ]

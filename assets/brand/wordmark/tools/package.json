@@ -1,0 +1,14 @@
+{
+  "name": "goh-wordmark-build",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Regenerates the goh vector wordmark SVGs from the source raster.",
+  "scripts": {
+    "build": "node build-wordmark.mjs"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0",
+    "potrace": "^2.1.8"
+  }
+}

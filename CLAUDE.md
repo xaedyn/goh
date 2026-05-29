@@ -7,9 +7,10 @@ works. Read it first, then `STATE.md`, `DESIGN.md`, `ROADMAP.md` — in that ord
 ## Project identity
 
 `goh` is a daemon-backed terminal download manager for macOS 26.5+ on Apple
-Silicon, building toward v0.1. The name is "Get Over Here" — a Scorpion
-fan-homage kept at the knowing-wink level only. No Mortal Kombat, NetherRealm,
-or Warner Bros. references appear anywhere in code, comments, or documentation.
+Silicon, building toward v0.1. The name is short and lowercase, pronounced
+"go." Keep all naming, copy, and visuals original and neutral: no catchphrases,
+no third-party franchise or brand allusions, and no borrowed iconography in
+code, comments, documentation, or artwork.
 
 ## Stack
 

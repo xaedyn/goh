@@ -11,7 +11,7 @@
 A daemon-backed download manager for Apple Silicon macOS. MIT-licensed,
 written in Swift, built on Apple frameworks.
 
-`goh` — pronounced "go." Get over here!
+`goh` — pronounced "go."
 
 ## What it is
 

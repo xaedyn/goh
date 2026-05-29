@@ -14,7 +14,7 @@ struct GohCommandLineTests {
         }.run()
 
         #expect(result.exitCode == 0)
-        #expect(result.standardOutput.hasPrefix("Get over here!\n\nUsage:\n"))
+        #expect(result.standardOutput.hasPrefix("goh - terminal download manager\n\nUsage:\n"))
         #expect(result.standardError == "")
     }
 

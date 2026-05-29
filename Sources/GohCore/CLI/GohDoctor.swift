@@ -85,7 +85,7 @@ public struct GohDoctor {
         let hasFailure = findings.contains { $0.severity == .failure }
         let hasWarning = findings.contains { $0.severity == .warning }
 
-        var output = "Get over here!\n\ngoh doctor\n"
+        var output = "goh doctor\n"
         output += findings.map(format).joined()
         output += "\n"
         if hasFailure {
