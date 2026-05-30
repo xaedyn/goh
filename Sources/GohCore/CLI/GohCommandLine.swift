@@ -96,6 +96,9 @@ public struct GohCommandLine {
                     .path
                 return GohWhichCommand.run(filePath: path, lockPath: lockPath)
 
+            case .verify(let lockPath, let strictUntracked):
+                return GohVerifyCommand.run(lockPath: lockPath, strictUntracked: strictUntracked)
+
             case .ls(.table):
                 let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
                 return GohCommandLineResult(
@@ -184,6 +187,7 @@ private enum ParsedCommand: Equatable {
     case top
     case doctor
     case which(path: String)
+    case verify(lockPath: String, strictUntracked: Bool)
     case ls(OutputFormat)
     case pause(UInt64)
     case resume(UInt64)
@@ -233,6 +237,23 @@ extension GohCommandLine {
                 throw ParseError(message: "usage: goh which <path>")
             }
             return .which(path: rest[0])
+        }
+        if arguments.first == "verify" {
+            let rest = Array(arguments.dropFirst())
+            var lockPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("gohfile.lock")
+                .path
+            var strictUntracked = false
+            for arg in rest {
+                if arg == "--strict-untracked" {
+                    strictUntracked = true
+                } else if arg.hasPrefix("-") {
+                    throw ParseError(message: "unknown verify option \(arg)")
+                } else {
+                    lockPath = arg
+                }
+            }
+            return .verify(lockPath: lockPath, strictUntracked: strictUntracked)
         }
         if arguments.count == 2, arguments[0] == "pause" {
             return .pause(try parseJobID(arguments[1]))
@@ -398,6 +419,7 @@ extension GohCommandLine {
           goh top
           goh doctor
           goh which <path>
+          goh verify [<path-to-gohfile.lock>] [--strict-untracked]
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
