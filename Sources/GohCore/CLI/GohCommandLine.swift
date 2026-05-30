@@ -90,6 +90,12 @@ public struct GohCommandLine {
                 }
                 return try doctor()
 
+            case .which(let path):
+                let lockPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                    .appendingPathComponent("gohfile.lock")
+                    .path
+                return GohWhichCommand.run(filePath: path, lockPath: lockPath)
+
             case .ls(.table):
                 let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
                 return GohCommandLineResult(
@@ -177,6 +183,7 @@ private enum ParsedCommand: Equatable {
     case foreground(AddRequest)
     case top
     case doctor
+    case which(path: String)
     case ls(OutputFormat)
     case pause(UInt64)
     case resume(UInt64)
@@ -219,6 +226,13 @@ extension GohCommandLine {
         }
         if arguments == ["doctor"] {
             return .doctor
+        }
+        if arguments.first == "which" {
+            let rest = Array(arguments.dropFirst())
+            guard rest.count == 1, !rest[0].hasPrefix("-") else {
+                throw ParseError(message: "usage: goh which <path>")
+            }
+            return .which(path: rest[0])
         }
         if arguments.count == 2, arguments[0] == "pause" {
             return .pause(try parseJobID(arguments[1]))
@@ -383,6 +397,7 @@ extension GohCommandLine {
           goh ls [--json]
           goh top
           goh doctor
+          goh which <path>
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
