@@ -5,7 +5,23 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-- **Branch:** `docs/state-after-code-review-sweep`, based on `main` at `06564af`.
+### 2026-05-29 — platform floor corrected; wordmark redesign parked
+
+- **Branch:** `docs/macos-floor-26.0`, off `main`. Corrects the supported-OS
+  claim from macOS 26.5+ to **26.0+** — the real floor, a hard requirement of
+  the daemon's macOS 26.0 XPC peer-validation API (`XPCPeerRequirement`,
+  `XPCRequirement.isFromSameTeam`, the requirement-carrying `XPCListener` /
+  `XPCSession` initializers). Proven by building at a 15.0 floor and watching the
+  compiler reject exactly those symbols. Docs-only plus a `Package.swift` comment;
+  the `.macOS("26.0")` value is unchanged. Also fixed the `CLAUDE.md` IPC note
+  that had mislabeled `XPCPeerRequirement` as macOS 14+. See `DESIGN.md`
+  §Platform support.
+- **Logo redesign parked:** a wordmark reconstruction effort (cormorant-italic /
+  custom-cormorant / free-font drafts) is committed as WIP on branch
+  `fix/smooth-wordmark-vector` (commit `5cf22a5`). Current logo kept as-is;
+  direction to be revisited later. Leave that branch alone until then.
+- **Prior context (code-review sweep):** branch
+  `docs/state-after-code-review-sweep`, based on `main` at `06564af`.
 - **Current state:** A full code-review sweep ran across `main` after the menu
   bar smoke pass landed. An LLM-driven Phase-1 codebase audit produced 17
   prioritized findings (S1–S7 significant, M1–M10 minor); the sweep merged
