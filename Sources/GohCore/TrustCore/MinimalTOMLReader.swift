@@ -201,33 +201,27 @@ public struct MinimalTOMLReader {
     // MARK: Private helpers
 
     private static func parseValue(_ raw: String, lineNumber: Int) throws -> TOMLValue {
-        let stripped = stripInlineComment(raw)
-
-        // Multiline basic string — rejected before single-line check.
-        if stripped.hasPrefix("\"\"\"") {
+        // Quoted strings are handled BEFORE inline-comment stripping so a '#'
+        // inside the quotes is preserved and \" / \\ escapes are honored.
+        if raw.hasPrefix("\"\"\"") {
             throw ParseError(
                 "unsupported TOML construct 'multiline string' at line \(lineNumber); "
                 + "goh accepts only basic single-line double-quoted strings",
                 line: lineNumber)
         }
-
-        // Basic double-quoted string.
-        if stripped.hasPrefix("\"") {
-            guard stripped.hasSuffix("\""), stripped.count >= 2 else {
-                throw ParseError(
-                    "unclosed string at line \(lineNumber)",
-                    line: lineNumber)
-            }
-            return .string(String(stripped.dropFirst().dropLast()))
+        if raw.hasPrefix("\"") {
+            return try parseQuotedString(raw, lineNumber: lineNumber)
         }
-
         // Literal (single-quoted) string — rejected.
-        if stripped.hasPrefix("'") {
+        if raw.hasPrefix("'") {
             throw ParseError(
                 "unsupported TOML construct 'literal string' at line \(lineNumber); "
                 + "goh accepts only double-quoted strings",
                 line: lineNumber)
         }
+
+        // Non-string scalar: strip a trailing inline comment, then classify.
+        let stripped = stripInlineComment(raw)
 
         // Inline table — rejected.
         if stripped.hasPrefix("{") {
@@ -284,7 +278,45 @@ public struct MinimalTOMLReader {
             line: lineNumber)
     }
 
-    /// Strips a trailing `# comment` from a raw value string, respecting quoted strings.
+    /// Parses a basic double-quoted string value, honoring `\"` and `\\` escapes,
+    /// preserving any `#` inside the quotes, and stripping an optional trailing
+    /// `# comment` after the closing quote. Any other escape, an unclosed string,
+    /// or non-comment text after the closing quote is a `ParseError`.
+    private static func parseQuotedString(_ raw: String, lineNumber: Int) throws -> TOMLValue {
+        let chars = Array(raw)
+        var result = ""
+        var i = 1  // skip the opening quote
+        var closed = false
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\" {
+                let next = i + 1 < chars.count ? chars[i + 1] : nil
+                switch next {
+                case "\"": result.append("\""); i += 2; continue
+                case "\\": result.append("\\"); i += 2; continue
+                default:
+                    throw ParseError(
+                        #"unsupported escape sequence at line \#(lineNumber); only \" and \\ are supported"#,
+                        line: lineNumber)
+                }
+            }
+            if c == "\"" { closed = true; i += 1; break }
+            result.append(c)
+            i += 1
+        }
+        guard closed else {
+            throw ParseError("unclosed string at line \(lineNumber)", line: lineNumber)
+        }
+        let rest = String(chars[i...]).trimmingCharacters(in: .whitespaces)
+        if !rest.isEmpty, !rest.hasPrefix("#") {
+            throw ParseError(
+                "unexpected text after string at line \(lineNumber): \(rest)",
+                line: lineNumber)
+        }
+        return .string(result)
+    }
+
+    /// Strips a trailing `# comment` from a raw (non-string) value, respecting quotes.
     private static func stripInlineComment(_ s: String) -> String {
         var inString = false
         var idx = s.startIndex
