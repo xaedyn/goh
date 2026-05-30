@@ -40,15 +40,40 @@ complete strict-concurrency checking, so no upcoming-feature flag is set.
 
 ## Platform support
 
-**Supported OS:** macOS 26.5+ (Tahoe), Apple Silicon.
+**Supported OS:** macOS 26.0+ (Tahoe), Apple Silicon.
 **SwiftPM manifest floor:** `platforms: [.macOS("26.0")]`.
 
-These two numbers are deliberately different, and the gap is intentional.
+The supported-OS policy and the manifest floor are the same number — macOS 26.0
+— and it is a **hard requirement**, not a build convenience.
 
-### Why the manifest floor is macOS 26.0, not 26.5
+### Why the floor is macOS 26.0
 
-The manifest floor only needs to be as high as the oldest SDK that can compile
-the code. Building a package that declares a 26.5 floor requires the macOS 26.5
+The daemon's secure XPC peer validation depends on macOS 26.0 API:
+`XPCPeerRequirement`, `XPCRequirement.isFromSameTeam(andMatchesSigningIdentifier:)`,
+and the requirement-carrying `XPCListener` / `XPCSession` initializers
+(`Sources/GohCore/IPC/XPCTransport.swift`). These OS-enforced primitives prove a
+process talking to `gohd` is the genuine signed `goh` binary and not an impostor —
+the daemon's IPC security boundary. They are annotated `@available(macOS 26.0, *)`;
+a lower deployment target fails to compile. Confirmed empirically: setting the
+floor to 15.0 made the compiler reject exactly these symbols and nothing else.
+
+The next-lowest version-sensitive APIs in use are below 26.0 and not binding —
+`Synchronization.Mutex` (macOS 15.0, used pervasively) and the base `XPCSession` /
+`XPCListener` types (macOS 14.0). Apple Silicon never shipped a macOS older than
+11.0, so a 26.0 floor strands no supported hardware: every Apple Silicon Mac, M1
+through the current generation, runs Tahoe.
+
+The floor could only go lower by reimplementing peer validation on the legacy C
+XPC API (`xpc_connection_set_peer_code_signing_requirement`, macOS 12.0) — trading
+a type-safe, Apple-recommended Swift API for an error-prone requirement-string API
+on the project's most security-sensitive path. Rejected: on an Apple-Silicon-only
+product there is no aged-hardware tail below 26.0 to recover, so the rewrite would
+buy a near-empty audience at the cost of risk to the security boundary.
+
+### Why not macOS 26.5 (and why CI stays on stable Xcode)
+
+26.5 buys nothing the code uses, and a 26.5 floor would force CI onto a beta
+toolchain. Building a package that declares a 26.5 floor requires the macOS 26.5
 SDK on the build machine — and on GitHub's `macos-26` runner, the only hosted
 runner carrying a macOS 26 SDK, the 26.5 SDK is bundled with a beta Xcode.
 
@@ -68,28 +93,28 @@ image `20260427.0026.1`
 Installed macOS SDKs: 26.0, 26.1, 26.2, 26.4, 26.5. The newest **stable** Xcode
 is 26.4.1, which bundles the 26.4 SDK; the 26.5 SDK pairs with the beta Xcode 26.5.
 
-A 26.5 manifest floor would therefore force CI onto a beta toolchain. GitHub
-rotates and removes beta Xcodes from runner images without notice, so CI could
-turn red with no change to our code. Under the "no beta toolchains" constraint, a
-26.0 floor is the only value that builds on a stable Xcode today — and it costs
-nothing: v0.1 code calls no API newer than macOS 26.0 yet, and the manifest floor
-is a build-time minimum, not a runtime support promise.
+A 26.5 floor would therefore force CI onto a beta toolchain. GitHub rotates and
+removes beta Xcodes from runner images without notice, so CI could turn red with
+no change to our code. Under the "no beta toolchains" constraint, 26.0 is both the
+version the code requires and the highest that builds on a stable Xcode today. The
+code calls macOS 26.0 API (the XPC peer-validation primitives above) but nothing
+newer than 26.0, so the floor is neither higher nor lower than it needs to be.
 
 ### Floor-bump policy
 
-The manifest floor rises to macOS 26.5 the first time code depends on a
-macOS 26.5-only API. When that happens:
+The floor rises the first time code depends on an API from a newer macOS, and the
+supported-OS line rises with it — the two numbers stay equal. When that happens:
 
-- Bump `platforms:` to `.macOS("26.5")` **in the same PR** as the dependent
-  code — never speculatively, ahead of need.
+- Bump `platforms:` **in the same PR** as the dependent code — never
+  speculatively, ahead of need — and only once the required SDK ships in a
+  *stable* Xcode on the `macos-26` runner (see above).
 - Do **not** introduce `#available` ladders or version-gated branches. The
   project targets a single OS floor: the floor moves as a whole, the code does
-  not fork. Once the floor is 26.5, every 26.5 API is unconditionally available.
+  not fork.
 
-At that point the manifest floor and the supported-OS policy converge and the
-gap documented above closes. The string form `.macOS("26.5")` is used
-deliberately — SwiftPM's `MacOSVersion` exposes `.v26` but no `.v26_5` symbol,
-and the string form matches the manifest's existing style.
+If the target is a `.5` release, use the string form (e.g. `.macOS("26.5")`) —
+SwiftPM's `MacOSVersion` exposes `.v26` but no `.v26_5` symbol, and the string
+form matches the manifest's existing style.
 
 ## Transport
 
@@ -1943,7 +1968,7 @@ The same workflow also produces an unsigned flat PKG release candidate for the
 public direct-download path. The PKG installs `goh` and `gohd` into
 `/usr/local/bin`, docs into `/usr/local/share/doc/goh`, and a direct-install
 reference LaunchAgent plist into `/usr/local/share/goh`. It carries a macOS
-26.5+ arm64 product requirement, has no installer scripts, and does not start or
+26.0+ arm64 product requirement, has no installer scripts, and does not start or
 register the daemon. `Scripts/package-pkg.sh` builds the artifact, and
 `Scripts/verify-pkg-artifact.sh` verifies its checksum, distribution metadata,
 script-free requirement, payload, packaged plist, and packaged `goh --help`.

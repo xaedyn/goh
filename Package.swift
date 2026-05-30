@@ -8,9 +8,13 @@
 //    Swift 6.3.x toolchain; the tools-version stays at the feature floor on purpose.
 //  * Swift 6 language mode (the default at tools-version 6.x) already enables complete
 //    strict-concurrency checking, so no `.enableUpcomingFeature("StrictConcurrency")`.
-//  * The platform floor is macOS 26.0 so CI builds on the stable default Xcode. The
-//    *supported* OS is macOS 26.5+ (see README/DESIGN); the floor rises to 26.5 the
-//    first time code calls a 26.5-only API.
+//  * The platform floor is macOS 26.0, and it is a HARD requirement, not a CI
+//    convenience: the daemon's secure XPC peer validation depends on macOS 26.0 API
+//    (XPCPeerRequirement, XPCRequirement.isFromSameTeam, and the requirement-carrying
+//    XPCListener/XPCSession initializers in IPC/XPCTransport.swift). Lower-versioned
+//    APIs in use — Synchronization.Mutex (15.0), base XPCSession/XPCListener (14.0) —
+//    are not binding. Apple Silicon never ran anything below macOS 11. The floor rises
+//    only when code adopts a higher-versioned API (see DESIGN §Platform support).
 
 import PackageDescription
 

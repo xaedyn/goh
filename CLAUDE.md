@@ -6,7 +6,7 @@ works. Read it first, then `STATE.md`, `DESIGN.md`, `ROADMAP.md` — in that ord
 
 ## Project identity
 
-`goh` is a daemon-backed terminal download manager for macOS 26.5+ on Apple
+`goh` is a daemon-backed terminal download manager for macOS 26.0+ on Apple
 Silicon, building toward v0.1. The name is short and lowercase, pronounced
 "go." Keep all naming, copy, and visuals original and neutral: no catchphrases,
 no third-party franchise or brand allusions, and no borrowed iconography in
@@ -22,15 +22,19 @@ Verified May 2026 against `Package.swift`, `DESIGN.md`, and `ci.yml`.
   nonisolated-default on `GohCore` and `gohd`. No upcoming-feature flags.
 - **HTTP transport** — `URLSession`, with `apple/swift-http-types`
   (`HTTPRequest` / `HTTPResponse`).
-- **IPC** — the modern low-level Swift XPC API (`XPCSession` / `XPCListener`,
-  macOS 14+), with `XPCPeerRequirement` for mutual peer validation.
+- **IPC** — the modern low-level Swift XPC API. Base `XPCSession` / `XPCListener`
+  are macOS 14+, but the secure variant the daemon actually uses —
+  `XPCPeerRequirement` + `XPCRequirement.isFromSameTeam` for mutual peer
+  validation, via the requirement-carrying initializers — is **macOS 26.0**, and
+  is what sets the platform floor.
 - **Hashing** — `CryptoKit` SHA-256, streamed during the download.
 - **Tests** — Swift Testing (not XCTest).
 - **Distribution** — a `launchd` LaunchAgent, installed via `brew services`.
-- **Platform** — SwiftPM manifest floor `platforms: [.macOS("26.0")]`; supported
-  OS macOS 26.5+. The floor rises to `.macOS("26.5")` in the same PR as the
-  first 26.5-only API — never speculatively, and with no `#available` ladders
-  (the floor moves as a whole; the code does not fork). See `DESIGN.md`
+- **Platform** — SwiftPM manifest floor and supported OS are both `macOS 26.0`.
+  The 26.0 floor is a hard requirement: the daemon's secure XPC peer validation
+  uses macOS 26.0 API (`XPCPeerRequirement`). The floor rises in the same PR as
+  the first API from a newer macOS — never speculatively, with no `#available`
+  ladders (the floor moves as a whole; the code does not fork). See `DESIGN.md`
   §Platform support.
 
 ## Hard constraints
@@ -97,8 +101,8 @@ Feature branches always — never commit to `main` directly:
 - **Cross-SDK skew on C-bridged Apple APIs.** Some C-imported signatures differ
   between SDKs — e.g. `xpc_dictionary_set_data`'s `bytes` parameter is
   non-optional under one SDK and optional under another (SDK 26.2 vs 26.5). Fix
-  portably by unwrapping to a non-optional pointer. Recurs until the manifest
-  floor bumps to 26.5.
+  portably by unwrapping to a non-optional pointer. Recurs as long as CI compiles
+  with the stable 26.2 SDK while local builds use a newer SDK (e.g. 26.5).
 - **`XPCListener` and `XPCSession` are active on creation.** Calling
   `activate()` on them trips `_xpc_api_misuse`. Do not call it.
 - **Toolchain selection.** The user runs
