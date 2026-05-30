@@ -9,8 +9,8 @@
 > prepared privately; no official install channel or tagged v0.1.0 artifact
 > exists yet.
 >
-> Manifest floor: macOS 26.0 (rises to 26.5 on first dependent API).
-> Supported: macOS 26.5+.
+> Floor: macOS 26.0 (hard requirement — secure XPC peer-validation API).
+> Supported: macOS 26.0+ (Tahoe), Apple Silicon.
 
 A daemon-backed download manager for Apple Silicon macOS. MIT-licensed,
 written in Swift, built on Apple frameworks.
@@ -71,12 +71,13 @@ goh auth import safari
 
 ## Requirements
 
-- macOS 26.5+ (Tahoe), Apple Silicon
+- macOS 26.0+ (Tahoe), Apple Silicon
 - Built with Swift 6.2+ (developed against the Swift 6.3 toolchain)
 
-The Swift package manifest declares a macOS 26.0 build floor for portability
-across stable Xcode toolchains; the supported runtime OS is macOS 26.5+. See
-[DESIGN.md](DESIGN.md) for the rationale.
+The Swift package manifest declares a macOS 26.0 floor — a hard requirement of the
+daemon's macOS 26.0 XPC peer-validation API, and conveniently also the highest
+floor that builds on a stable Xcode toolchain. The supported runtime OS matches at
+macOS 26.0+. See [DESIGN.md](DESIGN.md) for the rationale.
 
 ## Status
 
