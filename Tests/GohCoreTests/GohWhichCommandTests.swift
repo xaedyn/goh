@@ -102,6 +102,39 @@ struct GohWhichCommandTests {
                 || r.standardError.contains("no provenance record"))
     }
 
+    @Test("lock decodes but has no matching entry → exit 4")
+    func decodedLockNoMatchExitsFour() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // A valid lockfile with one entry for a different file.
+        let lockText = """
+            lockfileVersion = 1
+            manifestHash = "sha256:a3f9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+
+            [[entry]]
+            url = "https://example.org/other.bin"
+            path = "other.bin"
+            sha256 = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            size = 5
+            downloadedAt = "2026-05-29T12:00:00Z"
+            """
+        let lockURL = dir.appendingPathComponent("gohfile.lock")
+        try lockText.write(to: lockURL, atomically: true, encoding: .utf8)
+
+        // "other.bin" exists (so the entry path is valid), but we query a different file.
+        try Data("other".utf8).write(to: dir.appendingPathComponent("other.bin"))
+
+        let target = dir.appendingPathComponent("query.bin")
+        try Data("q".utf8).write(to: target)
+
+        let r = GohWhichCommand.run(filePath: target.path, lockPath: lockURL.path)
+        #expect(r.exitCode == 4)
+        #expect(
+            r.standardOutput.contains("no provenance record")
+                || r.standardError.contains("no provenance record"))
+    }
+
     @Test("missing lock falls through to no-provenance (not an error)")
     func missingLockFallsThrough() throws {
         let dir = try tempDir()
