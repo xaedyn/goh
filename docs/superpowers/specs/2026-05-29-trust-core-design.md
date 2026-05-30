@@ -259,7 +259,7 @@ manifest without `sync` flagging it stale. Documented, not "fixed".
 `auth` is reserved in the manifest (§7) and **must not** trigger any credential
 read, network header, or cookie use in v1. A v1 parser that encounters an `auth`
 key that is **present and non-null rejects it loudly** (`'auth' is reserved and
-not supported in this version of goh`, exit `1`) rather than silently ignoring
+not supported in this version of goh`, exit `64`) rather than silently ignoring
 it — reserved ≠ silently accepted, so the field cannot quietly accumulate values
 that do nothing (or, worse, are assumed to do something). A future version may
 attach behavior and begin accepting it. No secret is ever read or written into
@@ -326,7 +326,7 @@ no rollback and no separate recovery command.
 | **Unpinned TOFU change** (no `sha256`, recorded hash differs from new download) | Named event `hash changed for unpinned entry <path>`: old `sha256:…` → new `sha256:…`. Lock **not** updated unless `--accept-changed` / interactive confirm. *Distinct from pinned mismatch.* | `3` (without opt-in); `0` (with opt-in) |
 | **Concurrent sync/verify** on the same lock | Each holds an **advisory `flock`** (`LOCK_EX`) on `gohfile.lock` for the duration of its read-modify-write. A second process waits briefly then fails fast: `another goh sync/verify is running on this lockfile`. Atomic rename + flock together prevent a lost update. | `7` (could not acquire lock) |
 | **Missing lock** | `verify` / `which` (lock path): `no gohfile.lock; run goh sync first`. `sync`: treated as first sync (TOFU for all unpinned). | verify `6`; sync `0` |
-| **Corrupt lock** (unparseable / bad `lockfileVersion`) | Quarantine to `gohfile.lock.corrupt-<unix>` (project recovery pattern), then: `sync` rebuilds from manifest + disk; `verify` errors `corrupt lockfile`. Unknown `lockfileVersion` is *not* corruption → `unsupported lockfileVersion` instead. | sync `0`; verify `6`; unknown-version `1` |
+| **Corrupt lock** (unparseable / bad `lockfileVersion`) | Quarantine to `gohfile.lock.corrupt-<unix>` (project recovery pattern), then: `sync` rebuilds from manifest + disk; `verify` errors `corrupt lockfile`. Unknown `lockfileVersion` is *not* corruption → `unsupported lockfileVersion` instead (but both are an unusable lock → exit `6`). | sync `0`; verify `6`; unknown-version `6` |
 | **File present but unrecorded** (on disk, not in lock) | `verify` lists it `untracked <path>` (informational, does not fail the run unless `--strict-untracked`). `which` on it falls back to the xattr provenance reader; if neither lock nor xattr has it → `no provenance record`. | verify `0` (or `10` with `--strict-untracked`); which `4` |
 | **Locked entry's file missing on disk** (in lock, absent on disk) | `verify`: distinct signal `MISSING <path> (expected sha256:…)`, **not** a content mismatch — `verify` is read-only and does not re-download. `sync`: the same absence is repaired (re-downloaded, §9.1 step 4). | verify `9`; sync `0` (re-downloaded) |
 | **Interrupted-download remnant present** (file on disk hashes to neither the pinned nor the locked value, e.g. a truncated partial) | `sync` treats it as not-present and **re-downloads** (reconcile/repair — §9.1 step 4), *not* a verify-style failure and *not* an AC5 change event. `verify` (read-only) reports the disagreement as `FAILED`. | sync `0` (after re-download); verify `2` |
@@ -357,7 +357,7 @@ Top-level (table) fields:
 | `path` | string | **required** | Destination, **always a relative segment**, resolved under `base`. An **absolute** `path` (leading `/` or a drive form) is **hard-rejected** in v1 — exit `5`, never written — not merely discouraged (an opt-in flag to permit absolute destinations is a possible *future* addition, out of scope for v1). `dest` is an accepted alias (exactly one of `path`/`dest` per entry; both ⇒ error). `..`-traversal and symlinked components are likewise refused (§4.1). A literal `~` or `$` in `path` is an ordinary character, **never expanded** (§7.4). |
 | `sha256` | string | optional | Expected hash, `sha256:<64-lowercase-hex>`. **Presence = pinned/strict** (AC3). Absence = trust-on-first-use. |
 | `verify` | boolean | optional (default `true`) | Per-entry escape hatch. `verify = false` skips integrity enforcement **for this entry only**. There is **no global off switch** (the SSH `StrictHostKeyChecking=no` footgun is deliberately avoided). |
-| `auth` | (reserved) | optional | **Reserved name — must be absent/null in v1.** Present and non-null ⇒ **rejected loudly** (`'auth' is reserved and not supported in this version of goh`), exit `1`. Reserved ≠ silently ignored: a v1 build attaches no behavior, so accepting the key would give a false sense it does something. Documented as the forward slot for private URLs. |
+| `auth` | (reserved) | optional | **Reserved name — must be absent/null in v1.** Present and non-null ⇒ **rejected loudly** (`'auth' is reserved and not supported in this version of goh`), exit `64` (bad manifest input). Reserved ≠ silently ignored: a v1 build attaches no behavior, so accepting the key would give a false sense it does something. Documented as the forward slot for private URLs. |
 
 Unknown top-level or per-asset keys: **rejected loudly**
 (`unknown key 'foo' in [[asset]]`). This keeps the frozen format honest — a typo
@@ -632,7 +632,7 @@ bytes transferred, all `up to date`, exit `0`.
 
 ### 9.2 `goh verify [<path-to-gohfile.lock>] [--strict-untracked]`
 
-1. Load lock (missing ⇒ exit `6`; corrupt ⇒ exit `6`; unknown version ⇒ exit `1`).
+1. Load lock (missing ⇒ exit `6`; corrupt ⇒ exit `6`; unknown version ⇒ exit `6`).
 2. Acquire advisory `flock(LOCK_SH)`.
 3. If a `gohfile.toml` is alongside, recompute `manifestHash`; mismatch ⇒
    `lock is stale (manifestHash mismatch); run goh sync`, exit `6`.
@@ -690,10 +690,18 @@ is. The base used for read-back resolution is recorded/derived the same way
 Every exit code referenced anywhere in this spec appears in this table exactly
 once, with one unambiguous meaning; no code carries two meanings.
 
+This table reconciles with goh's existing exit-code convention (DESIGN.md
+§"Exit codes"): `0` success, `64` (`EX_USAGE`) usage/bad-input, `1` generic
+daemon-domain/transport failure — all **unchanged**, applying uniformly across
+every `goh` verb. The trust-core verbs add the granular semantic codes `2`–`10`;
+no existing code's meaning changes, so existing scripts on `add`/`ls`/`rm` are
+unaffected.
+
 | Code | Meaning |
 |------|---------|
 | `0` | Success / all up to date / all verified / provenance found. |
-| `1` | Usage error, unparseable args, unsupported `lockfileVersion`/`version`, or the manifest reserved-field rejection (`auth` present and non-null, §4.4/§7.1). *(The lock reserved field `chunks` present/non-null is handled as a corrupt lock, exit `6`, not `1` — §8.1, §6.)* |
+| `64` | Usage / bad-input error (`EX_USAGE`, unchanged convention): unparseable CLI args, **and** malformed manifest input — unknown manifest `version`, unknown key, malformed `sha256:` shape, or the manifest reserved-field rejection (`auth` present and non-null, §4.4/§7.1). *(The lock reserved field `chunks` present/non-null is handled as a corrupt lock, exit `6` — §8.1, §6.)* |
+| `1` | Generic daemon-domain / transport failure (unchanged convention) — e.g. the daemon is unreachable or returns a malformed reply during a `sync` `add` call that is not attributable to a more specific code below. |
 | `2` | Integrity failure — pinned mismatch or `verify` content drift (`checksumMismatch`). |
 | `3` | Unpinned TOFU hash change without opt-in (AC5, **distinct from `2`**). |
 | `4` | No provenance record (`which`). |
@@ -755,9 +763,11 @@ and points the user back to the supported subset, e.g.
 `unsupported TOML construct 'inline table' at line N; goh accepts only <subset>`,
 `unsupported TOML construct 'dotted key'`, `unsupported value type 'float'`,
 `unsupported value type 'array'`. This guarantees a user who pastes otherwise-valid
-TOML gets a clear, specified diagnostic rather than a silent misparse. Exit `1`
-(usage/parse error) for `sync`; corrupt-lock handling (§6) for a lock that parses
-as TOML but violates the subset.
+TOML gets a clear, specified diagnostic rather than a silent misparse. Exit `64`
+(`EX_USAGE`, bad-input — same bucket as bad CLI args and a malformed manifest,
+§9.4) for `sync`; corrupt-lock handling (§6) for a lock that parses as TOML but
+violates the subset. *(Exit `1` is reserved for generic daemon/transport failure,
+§9.4, never for out-of-subset manifest input.)*
 
 Mitigation of the "brittle hand-roll" risk: the reader/writer is covered by
 **golden-file fixtures** (CLAUDE.md test discipline — "golden-file fixtures for
