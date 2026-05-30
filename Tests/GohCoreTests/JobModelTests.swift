@@ -32,15 +32,24 @@ struct JobModelTests {
         #expect(try wire(Priority.high) == "\"high\"")
     }
 
-    @Test("ErrorCode is exactly the sixteen frozen cases, in table order")
+    @Test("ErrorCode is exactly the frozen cases, in table order")
     func errorCodeCases() {
+        // The original sixteen are frozen in order; symlinkComponentRefused was
+        // appended in Phase 3 (trust core). Appending is wire-safe because the
+        // raw value is the case name, so the sixteen keep their wire strings.
         #expect(ErrorCode.allCases.map(\.rawValue) == [
             "dnsResolutionFailed", "connectionFailed", "tlsFailure", "timedOut",
             "httpStatus", "diskFull", "destinationUnwritable",
             "destinationPermissionDenied", "checksumMismatch", "unauthorized",
             "unsupportedURL", "jobNotFound", "queueFull", "protocolVersionMismatch",
-            "cancelled", "invalidArgument",
+            "cancelled", "invalidArgument", "symlinkComponentRefused",
         ])
+    }
+
+    @Test("symlinkComponentRefused is a distinct ErrorCode")
+    func symlinkComponentRefusedExists() {
+        let err = GohError(code: .symlinkComponentRefused, message: "refused")
+        #expect(err.code == .symlinkComponentRefused)
     }
 
     @Test("an unrecognised enum wire string is rejected, not crashed")

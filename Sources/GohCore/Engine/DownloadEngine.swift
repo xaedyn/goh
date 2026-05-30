@@ -750,7 +750,10 @@ public struct DownloadEngine: Sendable {
             return true
         case .tlsFailure, .unsupportedURL, .destinationUnwritable,
              .destinationPermissionDenied, .unauthorized, .jobNotFound,
-             .protocolVersionMismatch, .cancelled, .invalidArgument:
+             .protocolVersionMismatch, .cancelled, .invalidArgument,
+             .symlinkComponentRefused:
+            // A symlinked path component is a deterministic confinement
+            // refusal — the same path will be refused again, so no retry.
             return false
         }
     }
