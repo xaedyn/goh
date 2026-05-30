@@ -2,7 +2,7 @@
 date: 2026-05-30
 feature: trust-core
 phase: 5
-status: template (fill after execution)
+status: executed (verified by passing tests)
 ---
 
 # Phase 5 Progress — `goh verify`

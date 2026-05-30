@@ -5,6 +5,67 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-30 — Trust core: IMPLEMENTED (all 6 phases), on `design/trust-core`, ready to push + PR
+
+- **Branch:** `design/trust-core`, off `main`, **20 commits ahead of origin (not yet pushed)**.
+  Built with `superpowers:subagent-driven-development` — one phase at a time, TDD,
+  a two-stage (spec + quality) review gate after each phase, plus a final
+  cross-cutting review. **Test count 314 → 418, all green, `-warnings-as-errors`
+  clean. `protocolVersion` stayed 3; catalog schema unchanged — purely additive,
+  no migration.**
+- **What shipped:** `gohfile.toml` (manifest) + `gohfile.lock` (lockfile) frozen
+  on-disk formats, and `goh sync` / `goh verify` / `goh which`.
+- **The 6 phases as built:**
+  1. **TOML reader+writer** — `Sources/GohCore/TrustCore/MinimalTOMLReader.swift`
+     (+`MinimalTOMLWriter.swift`): hand-rolled subset parser (§9.5), 14 golden
+     fixtures, named errors for every out-of-subset construct. Review hardened the
+     underscore-int + bare-string diagnostics and added message-content assertions.
+  2. **Codecs + digest** — `ManifestCodec` (§7), `LockfileCodec` (§8, encode/decode),
+     `FileDigest` (at-rest streaming SHA-256), shared `Sha256Format` validator.
+  3. **Daemon write-path hardening** — `DownloadFile` now materializes paths via a
+     base-free `openat` descent (`mkdirat` for missing dirs; `O_NOFOLLOW` on the
+     final + immediate-parent + every created component; `O_CLOEXEC` throughout);
+     new `ErrorCode.symlinkComponentRefused`. **Running-code gate passed:** 8
+     symlink-swap/TOCTOU tests written first, seen fail, then pass. macOS forces
+     following pre-existing prefix symlinks (`/var`→`/private/var`); an independent
+     security review ruled the residual base-free-undecidable and the CLI realpath
+     layer's + accepted-v0.1-residual's job — NO-OP on further daemon tightening.
+     DESIGN.md §Persistence + §2.4 reconciled.
+  4. **`goh which`** — `CLI/GohWhichCommand.swift`: lock lookup (entries resolved
+     under the lock dir, symlink-resolved compare for `/var`, confined to the lock
+     tree) then `getxattr` Spotlight provenance; exit 4 when neither. Default lock
+     = cwd `./gohfile.lock`.
+  5. **`goh verify`** — `CLI/GohVerifyCommand.swift`: read-only re-hash vs lock;
+     `OK`/`FAILED`(2)/`MISSING`(9); `flock(LOCK_SH)` busy→7; stale manifestHash→6;
+     unknown lockfileVersion→6 (NOT 1); `--strict-untracked`→10; precedence 9>2>10.
+  6. **`goh sync`** — `CLI/GohSyncCommand.swift` + `TrustCore/SyncPathConfinement.swift`:
+     lexical+realpath CLI confinement (rules 1–2, exit 5); loop `add` + poll `ls`
+     by job id with an injectable no-progress watchdog; CLI-side re-hash only
+     (never trusts a daemon hash); pinned acceptance with `.corrupt-<unix>`
+     quarantine (exit 2); TOFU first-use + AC5 change event (exit 3 /
+     `--accept-changed`; `verify=false` suppresses the drift event); atomic lock
+     write (`.tmp`→fsync→`rename`→fsync dir); precedence 5>2>3>8. Also wired
+     `which`/`verify`/`sync` into the real CLI parse/run/usage.
+- **Final cross-cutting review** caught a frozen-format round-trip bug: the TOML
+  codecs didn't escape `"`/`\` in url/path strings. Fixed — `LockfileCodec.encode`
+  escapes, `MinimalTOMLReader` un-escapes `\"`/`\\` and preserves `#` inside quotes
+  while still stripping a real trailing comment. A `TrustCoreRoundTripTests` corpus
+  (`"`, `\`, `#`, `=`, `?`, spaces, unicode) is now a CI guard for both formats.
+- **Exit-code contract (frozen §9.4):** 0; 2 integrity; 3 TOFU-change; 4
+  no-provenance; 5 path-escape; 6 lock missing/corrupt/stale/unknown-version; 7
+  lock-busy; 8 download-failed; 9 verify-missing; 10 strict-untracked; 64
+  usage/bad-manifest (incl. `auth` reserved); 1 only generic daemon/transport.
+- **NEXT ACTION:** push `design/trust-core` and open the PR (CodeRabbit + Socket
+  on PR per global prefs). After merge, Phase 2 of the strategic arc (adaptive
+  per-host range scheduling) is next.
+- **Process notes:** Phase 3's running-code gate worked as designed — the spec's
+  literal "O_NOFOLLOW every component" was caught as unshippable on macOS by the
+  full suite (broke ~85 tests), corrected to the base-free boundary, confirmed by
+  an independent security review. The hand-rolled TOML parser's missing string
+  escaping was caught only by the final cross-cutting round-trip review, not the
+  per-phase reviews — a reminder that frozen wire/disk formats need an explicit
+  adversarial round-trip corpus, which now exists.
+
 ### 2026-05-30 — Trust core (Phase 1 of strategic arc): design + plan COMPLETE, ready to implement
 
 - **Branch:** `design/trust-core`, off `main`, **pushed to origin**. Two commits:

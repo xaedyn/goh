@@ -2,7 +2,7 @@
 date: 2026-05-30
 feature: trust-core
 phase: 1
-status: template (fill after execution)
+status: executed (verified by passing tests)
 ---
 
 # Phase 1 Progress — Hand-rolled TOML reader+writer

@@ -2,7 +2,7 @@
 date: 2026-05-30
 feature: trust-core
 phase: 2
-status: template (fill after execution)
+status: executed (verified by passing tests)
 ---
 
 # Phase 2 Progress — Manifest + Lockfile codecs + FileDigest
