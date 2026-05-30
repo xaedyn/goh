@@ -112,13 +112,18 @@ public struct LockfileCodec {
     /// Encodes `lock` to a TOML string suitable for writing to `gohfile.lock`.
     ///
     /// `lockfileVersion` is always the first field.
+    private static func escapeTOML(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
     public static func encode(_ lock: Lockfile) -> String {
         var out = "lockfileVersion = \(lock.lockfileVersion)\n"
-        out += "manifestHash = \"\(lock.manifestHash)\"\n"
+        out += "manifestHash = \"\(Self.escapeTOML(lock.manifestHash))\"\n"
         for entry in lock.entries {
             out += "\n[[entry]]\n"
-            out += "url = \"\(entry.url)\"\n"
-            out += "path = \"\(entry.path)\"\n"
+            out += "url = \"\(Self.escapeTOML(entry.url))\"\n"
+            out += "path = \"\(Self.escapeTOML(entry.path))\"\n"
             out += "sha256 = \"\(entry.sha256)\"\n"
             out += "size = \(entry.size)\n"
             out += "downloadedAt = \"\(entry.downloadedAt)\"\n"
