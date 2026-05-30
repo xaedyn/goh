@@ -11,7 +11,7 @@ status: executed (verified by passing tests)
 
 - `Sources/GohCore/CLI/GohVerifyCommand.swift`
   - `GohVerifyCommand.run(lockPath:strictUntracked:)` → `GohCommandLineResult`
-  - Loads lock; maps `unsupported lockfileVersion` → exit 1, corrupt → quarantine + exit 6
+  - Loads lock; maps `unsupported lockfileVersion` → exit 6 (NOT 1), corrupt → quarantine + exit 6
   - Acquires `flock(LOCK_SH | LOCK_NB)` → exit 7 if busy
   - Re-computes `manifestHash` from alongside `gohfile.toml`; mismatch → exit 6 "lock is stale"
   - Per-entry: `OK` / `FAILED expected … actual …` (exit 2) / `MISSING` (exit 9)
@@ -23,7 +23,7 @@ status: executed (verified by passing tests)
   - Missing file exit 9, MISSING line (§6 / distinct from FAILED)
   - MISSING > FAILED precedence
   - Missing lock exit 6
-  - Unknown lockfileVersion exit 1
+  - Unknown lockfileVersion exit 6
   - --strict-untracked exit 10
   - Stale manifestHash exit 6
   - Concurrent verify (flock busy) exit 7
