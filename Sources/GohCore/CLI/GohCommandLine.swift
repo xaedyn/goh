@@ -99,6 +99,13 @@ public struct GohCommandLine {
             case .verify(let lockPath, let strictUntracked):
                 return GohVerifyCommand.run(lockPath: lockPath, strictUntracked: strictUntracked)
 
+            case .sync(let manifestPath, let base, let acceptChanged):
+                return GohSyncCommand.run(
+                    manifestPath: manifestPath,
+                    base: base,
+                    acceptChanged: acceptChanged,
+                    send: send)
+
             case .ls(.table):
                 let reply: LsReply = try sendCommand(.ls, expecting: LsReply.self)
                 return GohCommandLineResult(
@@ -188,6 +195,7 @@ private enum ParsedCommand: Equatable {
     case doctor
     case which(path: String)
     case verify(lockPath: String, strictUntracked: Bool)
+    case sync(manifestPath: String, base: String?, acceptChanged: Bool)
     case ls(OutputFormat)
     case pause(UInt64)
     case resume(UInt64)
@@ -254,6 +262,9 @@ extension GohCommandLine {
                 }
             }
             return .verify(lockPath: lockPath, strictUntracked: strictUntracked)
+        }
+        if arguments.first == "sync" {
+            return try parseSync(Array(arguments.dropFirst()))
         }
         if arguments.count == 2, arguments[0] == "pause" {
             return .pause(try parseJobID(arguments[1]))
@@ -343,6 +354,40 @@ extension GohCommandLine {
         return arguments[valueIndex]
     }
 
+    private static func parseSync(_ arguments: [String]) throws -> ParsedCommand {
+        var manifest: String?
+        var base: String?
+        var acceptChanged = false
+        var index = 0
+
+        while index < arguments.count {
+            let argument = arguments[index]
+            switch argument {
+            case "--base":
+                base = try value(after: argument, in: arguments, at: &index)
+            case "--accept-changed":
+                acceptChanged = true
+                index += 1
+            default:
+                guard !argument.hasPrefix("-") else {
+                    throw ParseError(message: "unknown sync option \(argument)")
+                }
+                guard manifest == nil else {
+                    throw ParseError(message: "sync accepts at most one manifest path")
+                }
+                manifest = argument
+                index += 1
+            }
+        }
+
+        // Optional positional manifest defaults to ./gohfile.toml in cwd.
+        let manifestPath = manifest ?? URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("gohfile.toml")
+            .path
+        return .sync(manifestPath: manifestPath, base: base, acceptChanged: acceptChanged)
+    }
+
     private static func parseJobID(_ raw: String) throws -> UInt64 {
         guard let id = UInt64(raw) else {
             throw ParseError(message: "job id must be an unsigned integer")
@@ -419,6 +464,7 @@ extension GohCommandLine {
           goh top
           goh doctor
           goh which <path>
+          goh sync [<manifest>] [--base <dir>] [--accept-changed]   (--base is cwd-relative)
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
           goh pause <id>
           goh resume <id>
