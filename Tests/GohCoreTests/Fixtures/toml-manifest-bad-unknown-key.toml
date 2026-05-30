@@ -1,0 +1,6 @@
+version = 1
+
+[[asset]]
+url      = "https://example.org/file.bin"
+path     = "file.bin"
+misspeld = "value"
