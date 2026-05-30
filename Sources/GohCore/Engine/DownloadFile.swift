@@ -159,7 +159,7 @@ public final class DownloadFile: Sendable {
         let intermediates = components.dropLast()
 
         // Anchor at the real filesystem root. "/" is a directory, not a symlink.
-        var parentFd = open("/", O_DIRECTORY | O_RDONLY)
+        var parentFd = open("/", O_DIRECTORY | O_RDONLY | O_CLOEXEC)
         guard parentFd >= 0 else {
             throw DownloadFileError.openFailed(path: path, errno: errno)
         }
@@ -182,7 +182,7 @@ public final class DownloadFile: Sendable {
 
         // Open the final component relative to the proven parent. O_NOFOLLOW so a
         // symlinked destination is refused; no O_EXCL so resume reopens in place.
-        var flags = O_RDWR | O_CREAT | O_NOFOLLOW
+        var flags = O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC
         if truncate { flags |= O_TRUNC }
         let fd = openAt(parentFd, finalComponent, flags, 0o644)
         if fd < 0 {
@@ -215,10 +215,10 @@ public final class DownloadFile: Sendable {
     private static func descend(
         into comp: String, from parentFd: Int32, refuseSymlink: Bool, fullPath: String
     ) throws -> Int32 {
-        let strictFlags = O_DIRECTORY | O_NOFOLLOW | O_RDONLY
+        let strictFlags = O_DIRECTORY | O_NOFOLLOW | O_RDONLY | O_CLOEXEC
         // For an existing prefix component we tolerate a system symlink; for the
         // immediate parent we refuse one.
-        let openFlags = refuseSymlink ? strictFlags : (O_DIRECTORY | O_RDONLY)
+        let openFlags = refuseSymlink ? strictFlags : (O_DIRECTORY | O_RDONLY | O_CLOEXEC)
 
         var fd = openAt(parentFd, comp, openFlags, 0)
         if fd >= 0 { return fd }

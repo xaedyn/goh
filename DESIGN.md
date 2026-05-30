@@ -237,12 +237,37 @@ when a job reaches `completed`, reaches non-resumable `failed`, or is removed
 without `--keep`.
 
 Downloaded file destinations are user-owned paths. When the daemon opens a
-destination, `DownloadFile` creates missing parent directories before calling
-`open(2)`. This matches common CLI behavior (`curl --create-dirs`) and avoids a
-bad first-run path where `goh add --output "$PWD/.build/..."` creates a durable
-failed job because the shell's current directory did not already contain that
-tree. If parent creation still fails, the later file open maps to
-`destinationUnwritable` or the relevant disk error.
+destination, `DownloadFile` materializes the path with a **base-free, symlink-safe
+`openat(2)` descent** (trust-core Phase 3): it anchors at the filesystem root and
+walks the destination's own components one at a time relative to a *proven* parent
+file descriptor — never a second absolute `open(2)` — creating each missing
+directory in place with `mkdirat(2)` (matching `curl --create-dirs`, so
+`goh add --output "$PWD/.build/..."` still works on a first run). This avoids the
+bad first-run path where the shell's current directory did not already contain the
+tree.
+
+**Confinement boundary and accepted residual.** The descent opens the
+destination's *final component*, its *immediate parent*, and *every directory it
+creates* with `O_NOFOLLOW` (no `O_EXCL`, so resume reopens an existing partial in
+place; `O_TRUNC` only on a fresh download). A symlink (or non-directory) at any of
+those hops surfaces as `ELOOP`/`ENOTDIR` and maps to
+`GohError(.symlinkComponentRefused)` → CLI exit `5`; any other open failure keeps
+the `destinationUnwritable` / disk-error path. Because the daemon is **base-free**
+(it receives only an absolute `destination`, never the `sync` base directory), it
+cannot distinguish a benign system symlink in the path *prefix* (e.g.
+`/var`→`/private/var`, `/tmp`) from a malicious *pre-existing* one, so pre-existing
+symlinks in the existing prefix are **followed** — refusing them would break every
+real download. That residual (a pre-existing symlinked ancestor above the immediate
+parent) is closed at the layer that *has* the base: the CLI's lexical + realpath
+pre-flight in `goh sync` (`SyncPathConfinement`, also exit `5`). What remains — a
+same-machine attacker planting/swapping a symlink in the user's own tree — is an
+accepted v0.1 residual, consistent with the `SMAppService` deferral
+(`ROADMAP.md`). The descent's `O_NOFOLLOW` on the created portion and on the
+final/immediate-parent hops still defeats a TOCTOU swap at those hops. Because this
+hardening lives in the shared write path, it applies to **every** `goh add`, not
+just `sync`: a download whose destination or immediate parent is a symlink is now
+refused (exit `5`) where it previously followed the link. `protocolVersion` is
+unchanged (stays 3).
 
 ### Checkpoint / Resume Contract
 
@@ -953,7 +978,7 @@ fields are ISO-8601 strings (§4).
 | `JobState` | `queued`, `active`, `paused`, `completed`, `failed` |
 | `PauseReason` | `user`, `network` |
 | `Priority` | `low`, `normal`, `high` |
-| `ErrorCode` | the sixteen cases tabulated in §2.4 |
+| `ErrorCode` | the cases tabulated in §2.4 |
 
 **`JobProgress`:**
 
