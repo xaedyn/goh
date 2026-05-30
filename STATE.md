@@ -430,8 +430,18 @@ asymmetric upside. The audit prompt covers identity leaks, credentials,
 PII paths, projected-but-not-shipped feature claims, competitor name
 drops, marketing puffery, telemetry, and code-level injection paths.
 
-**Next pickup *here* (in `goh`): cut public v0.1.** Bet 1 from the
-gitignored strategy memo at `docs/vision/VISION-2026-05-26.md`:
+**Next pickup (updated 2026-05-29): Phase 1 of the strategic arc — the
+trust core.** Direction changed to *legit before ship*: the first public
+release bundles the differentiator + the speed win, so the launch described
+below is now **Phase 3**, not the immediate next step. See the phased arc in
+`ROADMAP.md` §Strategic arc. The immediate next action is a **four-round
+design pass** on `gohfile.toml` + `goh sync` + `goh verify` + `goh which` —
+the on-disk manifest/lockfile is a frozen contract, so design comes before
+code. Phase 2 (adaptive per-host range scheduling) follows, then the launch.
+
+The launch sequence below remains valid as **Phase 3**, after Phases 1–2.
+**Cut public v0.1.** Bet 1 from the gitignored strategy memo at
+`docs/vision/VISION-2026-05-26.md`:
 
 1. **Sign and notarize the PKG** by running PR #36's
    `private-release-candidate` workflow with Developer ID credentials.
