@@ -1,7 +1,117 @@
 # goh — Roadmap
 
-## v0.1 — MVP (in development)
+This roadmap has two layers. The **strategic arc** below is the spine — the
+phased road from today's engine to the end-state "Personal Asset Manager." The
+**version sections** (v0.1, v0.2) beneath it hold the granular per-feature
+scope, mapped onto the phases at the end of the arc.
 
+## Strategic arc — the road ahead
+
+### The end-state version: a trust layer, not a transfer layer
+
+The world has `apt` / `brew` / `cargo` / `npm` for software packages but no
+equivalent for the AI era's ambient assets — model weights, datasets, samples,
+archives, large binaries. Today people improvise with `wget` / `curl` /
+`huggingface-cli` plus manual `mv`, with no manifest, no integrity guarantee
+across re-downloads, and no source-of-truth lockfile. The end-state `goh` *is* that
+missing tool:
+
+```bash
+goh add hf://meta-llama/Llama-3-70B-Instruct   # smart-URL adapters
+goh add kaggle://datasets/coco/2017
+goh sync ./gohfile.toml      # reproducible bulk pull, hash-verified, idempotent
+goh verify ~/datasets/       # "is this still exactly what I downloaded?"
+goh which ./model.bin        # provenance: source URL, hash, downloaded date
+goh diagnose <url>           # engine diagnostics surfaced as a product
+```
+
+The cross-domain analog: **`restic` for inbound, with `apt`-style lockfile
+semantics.** `restic` taught the world to never trust transfer (content-address
+everything); `apt` taught the world to declare dependencies in a manifest. No
+download manager has imported either lesson; the end-state `goh` imports both. Once
+transfer is fast, the durable product is **integrity + provenance** — a registry
+of what's on disk, where it came from, and whether it still matches.
+
+### Strategy in one line
+
+In a category whose incumbents are dead (`aria2` stale since Nov 2023, Motrix
+since May 2023) or crashing (Folx), with no active product capital, *"doesn't
+die" is itself a strategy.* The moat is **integrity discipline, not transfer
+speed**, and the positioning is **"the macOS download daemon for the AI era,"**
+not "a faster curl."
+
+### Decision: legit before ship (2026-05-29)
+
+The first **public** release bundles the differentiator and the speed win, not
+just the engine. Parity with a dead competitor is a weak headline; "alive,
+faster, and uniquely capable" is a strong one — and we are willing to wait for
+it. So Phases 1–2 land *before* the public launch in Phase 3.
+
+### The phased road
+
+- **Phase 1 — Trust core** *(the moat's first brick).* `gohfile.toml` +
+  `goh sync` + `goh verify` + `goh which`. Declare assets with expected hashes;
+  `sync` pulls reproducibly and idempotently (skipping what already matches);
+  `verify` confirms on-disk state still matches; `which` answers provenance. The
+  hard primitives (streamed SHA-256, atomic persistence, Spotlight provenance)
+  already exist — this is mostly a TOML parser plus verbs. **Gate:** freezes an
+  on-disk format → starts with a four-round design pass, not code. No credentials
+  needed. ~2–4 weeks.
+
+- **Phase 2 — Performance win** *(parity → beats aria2c).* Adaptive per-host
+  range scheduling (probe-and-adapt for the optimal connection count per host,
+  persisted in `gohd`'s catalog) plus an optional HTTP/3 retry against well-tuned
+  QUIC origins. Converts today's saturated parity into a benchmarkable win.
+  **Gate:** the per-host record is a frozen on-disk format → design pass first.
+  *Honest caveat:* the amenable-workload gap is structural (HTTP/2-multiplex vs
+  N-TCP); treat the win as a goal, not a guarantee. ~2–4 weeks, design-heavy.
+
+- **Phase 3 — Public launch** *(now legit).* Sign + notarize the PKG (PR #36
+  workflow), open the `xaedyn/homebrew-goh` tap, add SECURITY / CONTRIBUTING /
+  CODE_OF_CONDUCT, write the AI-era launch post (naming the category and the
+  buried capabilities — `goh diagnose`, `goh doctor`, Spotlight provenance, sleep
+  assertion, cellular auto-pause), post to HN + r/macapps + r/commandline +
+  r/datahoarder. **Gate:** Apple Developer ID credentials — the one blocker
+  outside the code. (Phase 1 alone is a valid earlier launch point if priorities
+  change.) ~2 weeks.
+
+- **Phase 4 — Smart-URL adapters** *(realizes the end-state surface).* `hf://`,
+  `kaggle://`, and a `yt-dlp -g` handoff, each plugging a major asset source into
+  the trust layer and inheriting its audience. Ship as separate releases; let the
+  launch audience prioritize which adapter comes first. ~3–4 weeks each.
+
+- **Phase 5 — Platform / end-state polish.** Mirror racing, `goh diagnose` as a
+  first-class surface, multi-browser auth (Chrome/Firefox), public menu-bar app,
+  `SMAppService` hardening, per-host bandwidth budgets, plugin system. The trust
+  layer becomes an ecosystem.
+
+### Sequence
+
+```
+v0.1 engine (complete)
+   │
+   ▼
+Phase 1 ─────────► Phase 2 ─────────► Phase 3 ─────────► Phase 4 ─────────► Phase 5
+trust core         speed win          LAUNCH (legit)     adapters           platform
+gohfile/sync/      adaptive sched.    sign+brew+post     hf:// kaggle://     mirror racing,
+verify/which       +HTTP/3 retry      (needs Dev ID)     yt-dlp             plugins, auth…
+[design gate]      [design gate]      [credential gate]
+```
+
+### How the version sections map to phases
+
+- **v0.1 (below)** = the engine (complete) and the public launch (Phase 3).
+- **Phase 1 (trust core)** is new scope, promoted from the private vision memo;
+  it lands before launch per the decision above.
+- **v0.2 backlog** distributes across phases: adaptive scheduling + HTTP/3 →
+  Phase 2; yt-dlp + smart-URL adapters → Phase 4; mirror racing, plugin system,
+  multi-browser auth, public menu-bar app, `SMAppService` → Phase 5.
+
+---
+
+## v0.1 — MVP engine (complete) + launch (Phase 3)
+
+The engine is built and hardened; the remaining v0.1 work is the public launch.
 The smallest slice that already beats the category for ~80% of real use.
 
 1. `launchd`-managed daemon, distributed via Homebrew with a `service` block.
