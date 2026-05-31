@@ -5,12 +5,15 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-05-30 — Trust core: IMPLEMENTED (all 6 phases), **pushed + PR #75 open**, CI green
+### 2026-05-31 — Trust core: **MERGED to `main`** (PR #75), all 6 phases shipped
 
-- **Branch:** `design/trust-core`, off `main`, **pushed to origin; PR #75 open against
-  `main`** (https://github.com/xaedyn/goh/pull/75). CI green (Build & test, Package
-  artifacts); signed-PKG gate skipped (needs Developer ID). CodeRabbit reviewed and
-  its findings are addressed (see the CodeRabbit pass below).
+- **Status:** PR #75 **merged** to `main` 2026-05-31 as merge commit `fdb55e8`
+  (https://github.com/xaedyn/goh/pull/75) — `--merge` (not squash), so all 25
+  atomic phase-by-phase commits are preserved in `main` history. CI was green at
+  merge (Build & test, Package artifacts); signed-PKG gate skipped (needs Developer
+  ID). CodeRabbit findings all addressed (triage comment on the PR).
+  The `design/trust-core` branch is merged; safe to delete (still present on origin
+  at session close).
   Built with `superpowers:subagent-driven-development` — one phase at a time, TDD,
   a two-stage (spec + quality) review gate after each phase, plus a final
   cross-cutting review. **Test count 314 → 424, all green, `-warnings-as-errors`
