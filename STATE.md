@@ -5,12 +5,15 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-05-30 — Trust core: IMPLEMENTED (all 6 phases), on `design/trust-core`, ready to push + PR
+### 2026-05-30 — Trust core: IMPLEMENTED (all 6 phases), **pushed + PR #75 open**, CI green
 
-- **Branch:** `design/trust-core`, off `main`, **20 commits ahead of origin (not yet pushed)**.
+- **Branch:** `design/trust-core`, off `main`, **pushed to origin; PR #75 open against
+  `main`** (https://github.com/xaedyn/goh/pull/75). CI green (Build & test, Package
+  artifacts); signed-PKG gate skipped (needs Developer ID). CodeRabbit reviewed and
+  its findings are addressed (see the CodeRabbit pass below).
   Built with `superpowers:subagent-driven-development` — one phase at a time, TDD,
   a two-stage (spec + quality) review gate after each phase, plus a final
-  cross-cutting review. **Test count 314 → 418, all green, `-warnings-as-errors`
+  cross-cutting review. **Test count 314 → 424, all green, `-warnings-as-errors`
   clean. `protocolVersion` stayed 3; catalog schema unchanged — purely additive,
   no migration.**
 - **What shipped:** `gohfile.toml` (manifest) + `gohfile.lock` (lockfile) frozen
