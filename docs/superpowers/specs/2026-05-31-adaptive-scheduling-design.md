@@ -160,12 +160,28 @@ doesn't re-explore. Fixed schedule (1) wastes downloads re-measuring settled hos
   uniform-random arms?
 - Cold start: first-ever download of a host uses the default **8** (an arm in the
   set) — confirm.
-- **Ceiling on fat pipes.** The set tops out at 16 because `--connections` is
-  frozen-capped at `maximumConnectionCount = 16` (DESIGN §3.1). On 1 Gbps+ links
-  the true optimum for a well-tuned server may exceed 16, so adaptation can't
-  reach it. Raising the cap touches a frozen contract → explicit review-round
-  decision. Either keep 16 as the v1 ceiling (adaptation optimizes *within*
-  today's bounds) or raise the cap as part of this phase.
+- **Ceiling — RESOLVED: keep 16.** The set tops out at 16, the existing
+  `maximumConnectionCount` (DESIGN §3.1), and that cap stays. Reasoning: the
+  per-host connection ceiling should be governed by *server tolerance and protocol
+  dynamics*, not by the client's last-mile bandwidth — and those don't loosen as
+  links get faster. Past ~8–16 connections to a single host you hit diminishing-
+  or-negative returns for concrete reasons: (a) servers cap concurrent connections
+  per IP and treat excess as abuse (429/503, tarpit, ban — *slower or blocked*,
+  not faster); (b) against an HTTP/2 origin, N TCP connections fight h2's own
+  stream multiplexing and flow control (this is the documented structural gap —
+  URLSession-on-h2 was the better steady-state choice on saturated hosts); (c)
+  per-connection slow-start + TLS handshake overhead multiplies; (d) bufferbloat
+  on the local bottleneck induces loss and latency. The real reasons parallelism
+  helps at all — per-*connection* server rate limits and loss resilience on
+  long-RTT/lossy paths — both saturate by ~8–16 for essentially every single host.
+
+  **A fast pipe does not change this.** A single host is server/path-rate-limited,
+  so it typically can't fill a 1 Gbps+ link no matter the connection count. The
+  tool for saturating a fat pipe is **multiple independent sources at once —
+  mirror racing** (already the headline v0.2 feature), not more sockets to one
+  origin. Raising this cap would chase a ceiling that server limits + h2 dynamics
+  make mostly unreachable while adding real risk. This phase optimizes *within*
+  the 16 bound; saturating big pipes is mirror-racing's job.
 
 ### D5 — What throughput signal feeds the bandit, and how is noise rejected?
 
