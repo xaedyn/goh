@@ -29,7 +29,10 @@ public struct HostScheduling: Codable, Sendable, Equatable {
 public struct HostProfile: Codable, Sendable, Equatable {
     /// The D1-normalized host key (credentials stripped).
     public var host: String
-    /// One entry per connection count tried; bounded to the candidate set.
+    /// One entry per connection count observed. Normally these are candidate-set
+    /// counts ({2,4,8,16}), but an explicit `--connections N` download that passes
+    /// the observation gate records an arm for that N too; the selector simply
+    /// ignores any arm whose count is not in the candidate set.
     public var arms: [ConnObservation]
     /// Last time any arm was updated.
     public var updatedAt: Date
