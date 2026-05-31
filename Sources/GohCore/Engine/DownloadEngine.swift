@@ -630,6 +630,8 @@ public struct DownloadEngine: Sendable {
         var buffer = Data()
         buffer.reserveCapacity(Self.bufferSize)
         var written: UInt64 = 0
+        // P1: per-chunk rate accumulator (consumed by the governor in P3).
+        var rateSamples: [(bytes: UInt64, elapsed: Duration)] = []
 
         func flush() throws {
             guard !buffer.isEmpty else { return }
@@ -653,6 +655,7 @@ public struct DownloadEngine: Sendable {
                     Self.progress(completed: overall, total: total,
                                   elapsed: clock.now - started))
             }
+            rateSamples.append((bytes: written, elapsed: clock.now - started))
             try control?.stopIfRequested(jobID: job.id)
         }
 
@@ -684,6 +687,8 @@ public struct DownloadEngine: Sendable {
                 message: "range \(index) ended after \(written) of \(range.length) expected bytes")
         }
         trace.rangeFinished(index, bytes: written)
+        // P1 scaffolding: rateSamples is intentionally not consumed until P3.
+        _ = rateSamples
     }
 
     private func makeCheckpointRecorder(
