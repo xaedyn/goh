@@ -5,6 +5,64 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (later session) — Phase 2 (adaptive scheduling): design + plan COMPLETE, ready to implement
+
+- **Branch:** `design/adaptive-scheduling`, off `main` at `48ec675`. Not yet pushed.
+- **What this is:** Phase 2 of the strategic arc — **adaptive per-host range
+  scheduling**. The daemon learns the best parallel-connection count per host
+  empirically (epsilon-greedy bandit over `{2,4,8,16}`) and persists it in a new
+  daemon-owned `host-scheduling.plist` (versioned, atomic, 0600, mirrors
+  `CheckpointStore`). Scope pinned this session: **adaptive scheduling only**
+  (HTTP/3 deferred), **internal-only** (no new user command), bar = **measurable
+  adaptation** (beating aria2c is a goal, not a ship gate — the amenable gap is
+  structural). `protocolVersion` stays 3; `JobCatalog.version` stays 1 (no schema
+  change — N is resolved at admission in `CommandDispatcher`, the engine's only
+  touch is widening `completedDownloadHandler` to carry the transfer-phase
+  `Duration`).
+- **Connection ceiling decision:** keep **16**. Per-host count is governed by
+  server tolerance + protocol dynamics (per-IP abuse limits, HTTP/2 multiplexing
+  conflict, slow-start/TLS overhead, bufferbloat), NOT client bandwidth. Filling a
+  fat pipe is mirror-racing's job (v0.2), not more sockets to one origin.
+- **Where the work lives:**
+  - Design spec (FROZEN on-disk format): `docs/superpowers/specs/2026-05-31-adaptive-scheduling-design.md`
+    — 10 decisions (D1–D10); survived **2 adversarial spec-review rounds** (Opus).
+  - Plan: `docs/plans/2026-05-31-adaptive-scheduling-plan.md` — **9 tasks, 3 phases**,
+    TDD throughout; survived **2 adversarial plan-review rounds** (Opus).
+  - Phase artifacts: `docs/superpowers/progress/2026-05-31-adaptive-scheduling-phase{1,2,3}.md`
+- **The 3 phases (deployment-independent, implement in order):**
+  1. **Pure value layer** — `HostKey` normalizer (strip credentials, nil→skip,
+     IPv6 bracketed, punycode) + `HostScheduling`/`HostProfile`/`ConnObservation`
+     Codable on-disk types + golden round-trip corpus & CI guard.
+  2. **Persistence + selection** — `HostProfileStore` (atomic versioned plist,
+     0600, TTL-on-load eviction, corrupt→sidecar, in-memory `begin/wasSolo/end`
+     contended-set index) + epsilon-greedy `BanditSelector` (pure, seeded).
+  3. **Engine + wiring** — widen `completedDownloadHandler` to carry transfer-phase
+     `Duration`; admission-time N resolution in `CommandDispatcher`; D5-gated
+     observation recording (success + ≥10s + ≥8MiB + actual==requested + solo +
+     stable path; resume excluded per D8); regression guard (CI selector tests +
+     optional env-gated `goh-bench regression-guard`); `GOH_ENGINE_TRACE` decision line.
+- **Review caught (don't re-litigate):** the spec review fixed a nil-host bucket
+  collapse, credential-at-rest, the missing regression detector, the D6 resolution
+  timing, and the throughput clock provenance (the engine's `started` clock is
+  phase-local and must be threaded to the sink — the "no engine change" claim was
+  wrong). The plan review caught a **silent total-failure bug**: an inverted
+  `activeCount` gate (the `run()` defer decrement fires AFTER the completion
+  handler) — replaced with a per-job `contended`-flag faithful to D5's
+  "solo for the whole duration"; plus a non-buildable AC11 benchmark, now split
+  into CI-enforced selector tests + an optional manual harness.
+- **NEXT ACTION (fresh session):** implement the plan with
+  `superpowers:subagent-driven-development`, **Phase 1 first**, one phase at a time
+  with real `swift test` runs. Do NOT re-run design or plan review — both are
+  closed at the 2-round cap with all block issues resolved. Local `swift test`
+  needs `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. Push the branch
+  + open the PR when a phase is green (the branch is unpushed at session close).
+- **Side task done this session:** cross-repo identity audit — **DLXV (macvid)
+  made private** (it was public with `swyatt@gmail.com` + real name in all 12
+  commits). chronoscope has 40 public `Co-Authored-By: Claude` trailers (deferred,
+  lower urgency); mirelo/crown-of-the-touched/lowest_listed are private landmines
+  (personal email in history) to scrub before ever flipping public. See the
+  `cross-repo-email-audit` memory.
+
 ### 2026-05-31 — Trust core: **MERGED to `main`** (PR #75), all 6 phases shipped
 
 - **Status:** PR #75 **merged** to `main` 2026-05-31 as merge commit `fdb55e8`
