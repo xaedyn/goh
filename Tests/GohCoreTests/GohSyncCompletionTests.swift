@@ -39,7 +39,7 @@ struct GohSyncCompletionTests {
     @Test("completed → re-hash and a lock entry, exit 0")
     func completedRehashes() throws {
         let body = Data("polled-complete".utf8)
-        let pin = SyncTestSupport.digest(body)
+        let pin = try SyncTestSupport.digest(body)
         let (dir, manifestPath) = try makeManifest(pin: pin)
 
         let daemon = FakeSyncDaemon { req, id in
@@ -65,7 +65,7 @@ struct GohSyncCompletionTests {
 
     @Test("failed job → exit 8")
     func failedExits8() throws {
-        let (_, manifestPath) = try makeManifest(pin: SyncTestSupport.digest(Data("x".utf8)))
+        let (_, manifestPath) = try makeManifest(pin: try SyncTestSupport.digest(Data("x".utf8)))
 
         let daemon = FakeSyncDaemon { req, id in self.activeJob(req, id) }
         daemon.onLs = { [weak daemon] in
@@ -81,7 +81,7 @@ struct GohSyncCompletionTests {
 
     @Test("failed with symlinkComponentRefused → exit 5")
     func symlinkRefusedExits5() throws {
-        let (_, manifestPath) = try makeManifest(pin: SyncTestSupport.digest(Data("x".utf8)))
+        let (_, manifestPath) = try makeManifest(pin: try SyncTestSupport.digest(Data("x".utf8)))
 
         let daemon = FakeSyncDaemon { req, id in self.activeJob(req, id) }
         daemon.onLs = { [weak daemon] in
@@ -97,7 +97,7 @@ struct GohSyncCompletionTests {
 
     @Test("job id absent from a successful ls → disappeared → exit 8")
     func disappearedExits8() throws {
-        let (_, manifestPath) = try makeManifest(pin: SyncTestSupport.digest(Data("x".utf8)))
+        let (_, manifestPath) = try makeManifest(pin: try SyncTestSupport.digest(Data("x".utf8)))
 
         let daemon = FakeSyncDaemon { req, id in self.activeJob(req, id) }
         // ls succeeds but never lists the job.
@@ -111,7 +111,7 @@ struct GohSyncCompletionTests {
 
     @Test("watchdog: ls always active + tiny watchdogSeconds → exit 8 timed out")
     func watchdogExits8() throws {
-        let (_, manifestPath) = try makeManifest(pin: SyncTestSupport.digest(Data("x".utf8)))
+        let (_, manifestPath) = try makeManifest(pin: try SyncTestSupport.digest(Data("x".utf8)))
 
         let daemon = FakeSyncDaemon { req, id in self.activeJob(req, id) }
         // Always active, never any byte advance → watchdog fires.
@@ -133,7 +133,7 @@ struct GohSyncCompletionTests {
 
     @Test("ls always throws → transport failure → exit 1, not 8")
     func lsThrowsExits1() throws {
-        let (_, manifestPath) = try makeManifest(pin: SyncTestSupport.digest(Data("x".utf8)))
+        let (_, manifestPath) = try makeManifest(pin: try SyncTestSupport.digest(Data("x".utf8)))
 
         let daemon = FakeSyncDaemon { req, id in self.activeJob(req, id) }
         daemon.onLs = { throw NSError(domain: "transport", code: -1) }

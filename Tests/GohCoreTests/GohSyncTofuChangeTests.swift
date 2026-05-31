@@ -50,7 +50,7 @@ struct GohSyncTofuChangeTests {
         #expect(first.exitCode == 0)
 
         try changed.write(to: URL(fileURLWithPath: dir + "/u.bin"))
-        return SyncTestSupport.digest(original)
+        return try SyncTestSupport.digest(original)
     }
 
     /// A daemon that must never be asked to download (the file is present).
@@ -87,7 +87,7 @@ struct GohSyncTofuChangeTests {
         let changed = Data("changed content!!".utf8)
         try seedThenChange(
             dir: dir, manifestPath: manifestPath, original: original, changed: changed)
-        let changedHash = SyncTestSupport.digest(changed)
+        let changedHash = try SyncTestSupport.digest(changed)
 
         let daemon = noDownloadDaemon()
         let result = GohSyncCommand.run(
@@ -107,7 +107,7 @@ struct GohSyncTofuChangeTests {
         let changed = Data("changed content!!".utf8)
         try seedThenChange(
             dir: dir, manifestPath: manifestPath, original: original, changed: changed)
-        let changedHash = SyncTestSupport.digest(changed)
+        let changedHash = try SyncTestSupport.digest(changed)
 
         let daemon = noDownloadDaemon()
         let result = GohSyncCommand.run(

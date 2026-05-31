@@ -162,11 +162,12 @@ struct GohWhichCommandTests {
         let urls = ["https://src.example/y.bin"]
         let data = try PropertyListSerialization.data(
             fromPropertyList: urls, format: .binary, options: 0)
-        let result = data.withUnsafeBytes { raw -> Int32 in
-            setxattr(
+        let result = try data.withUnsafeBytes { raw -> Int32 in
+            let base = try #require(raw.baseAddress)
+            return setxattr(
                 target.path,
                 "com.apple.metadata:kMDItemWhereFroms",
-                raw.baseAddress, raw.count, 0, 0)
+                base, raw.count, 0, 0)
         }
         #expect(result == 0, "setxattr must succeed for this test to be meaningful")
 
@@ -190,22 +191,26 @@ struct GohWhichCommandTests {
         let urls = ["https://src.example/dated.bin"]
         let urlData = try PropertyListSerialization.data(
             fromPropertyList: urls, format: .binary, options: 0)
-        _ = urlData.withUnsafeBytes { raw in
-            setxattr(
+        _ = try urlData.withUnsafeBytes { raw -> Int32 in
+            let base = try #require(raw.baseAddress)
+            return setxattr(
                 target.path,
                 "com.apple.metadata:kMDItemWhereFroms",
-                raw.baseAddress, raw.count, 0, 0)
+                base, raw.count, 0, 0)
         }
 
         // kMDItemDownloadedDate is a Date (not wrapped in an array).
+        // 800_000_000 s after the 2001 reference epoch is 2026-05-09 (UTC),
+        // which is how GohWhichCommand formats it via ISO8601DateFormatter.
         let knownDate = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let dateData = try PropertyListSerialization.data(
             fromPropertyList: knownDate, format: .binary, options: 0)
-        _ = dateData.withUnsafeBytes { raw in
-            setxattr(
+        _ = try dateData.withUnsafeBytes { raw -> Int32 in
+            let base = try #require(raw.baseAddress)
+            return setxattr(
                 target.path,
                 "com.apple.metadata:kMDItemDownloadedDate",
-                raw.baseAddress, raw.count, 0, 0)
+                base, raw.count, 0, 0)
         }
 
         let r = GohWhichCommand.run(
@@ -213,8 +218,10 @@ struct GohWhichCommandTests {
             lockPath: dir.appendingPathComponent("gohfile.lock").path)
         #expect(r.exitCode == 0)
         #expect(r.standardOutput.contains("https://src.example/dated.bin"))
-        // Date should appear in some human-readable form; just check it's present.
-        #expect(!r.standardOutput.contains("(unknown)") || r.standardOutput.contains("2025"))
+        // The recorded date must round-trip into the output: assert the real
+        // date, not a `||` tautology that any output would satisfy.
+        #expect(r.standardOutput.contains("2026-05-09"))
+        #expect(r.standardOutput.contains("downloadedAt:"))
     }
 
     // MARK: - Parser routing
