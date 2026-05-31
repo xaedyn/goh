@@ -5,6 +5,58 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (design session) — In-flight adaptive parallelism: four-round design **APPROVED** + benchmark plan; **no code yet**
+
+- **Slice started:** in-flight adaptive parallelism (the v0.2 performance headline), driven through
+  `enterprise-pipeline`. This is a *design-only* session per the directive: four-round design + a
+  benchmark-sourcing plan, **no code**.
+- **Approach chosen (USER GATE):** **A3 — continuous in-flight governor + multi-edge fan-out** (the
+  end-state path). A BBR-style governor lifted to *connection count*, driven by URLSession
+  delivery-rate + coarse chunk-timing, with history-seeded warm-start unifying with the PR #77
+  bandit.
+- **Load-bearing finding (verified):** multi-edge fan-out is **infeasible on URLSession** — Apple
+  documents no SNI override when connecting to a raw IP, and a trust-delegate can't fix the SNI byte
+  on the wire. **Decision:** build multi-edge **correctly on NWConnection**
+  (`sec_protocol_options_set_tls_server_name` for SNI + `sec_protocol_options_set_verify_block` for
+  hostname-pinned trust) — a hand-rolled **HTTP/1.1 range client over `NWConnection<TLS>`** for the
+  IP-pinned edge connections. This **revises the URLSession-only transport brief** (DESIGN.md
+  §Transport — an *addition* for the one case URLSession can't serve, not a reversal). Bonus:
+  NWConnection gives **separate real TCP connections** — the structural lever that beats HTTP/2
+  multiplexing (the amenable gap).
+- **Spec APPROVED** through **2 adversarial Opus rounds**. Round 1 found 4 real BLOCKs — the
+  URLSession-SNI infeasibility, a hand-waved interval-frontier rework, `actualConnectionCount` wire
+  semantics under a varying N, and live-`TaskGroup` add/drop concurrency — all resolved; round 2 =
+  all 10 categories PASS. 5 advisories (the "10★" scrub actioned).
+- **Phasing (deployment-independent; P1–P4 independent of P5):**
+  1. **P1** — injected `ContinuousClock` + per-chunk rate instrumentation + the pure
+     `ParallelismGovernor` (deterministic SM3 test). No behaviour change. Includes the **dummynet-on-
+     macOS-26 verification spike** (fallback: Linux-VM `tc netem`).
+  2. **P2** — dynamic chunk pool + **interval-set frontier** `ChunkAssembler` + the single-control-
+     loop-inside-the-group worker pool (single edge, URLSession).
+  3. **P3** — wire the governor; **observation-gate redesign** + **candidate-only** bandit feedback
+     (off-candidate convergence records nothing — no EWMA bias) + warm-start; governor trace lines.
+  4. **P4** — global per-host connection budget; LFN `goh-bench` harness + runbook → **ships the
+     headline (SM5a)**.
+  5. **P5** — NWConnection HTTP/1.1 multi-edge transport + the verify block + the **transport-brief
+     revision**, behind a **feasibility spike** and a **dedicated security review** (trust-core
+     Phase 3 precedent). Dormant behind a constant until then.
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape, and
+  `host-scheduling.plist` v1 all **unchanged**; all governor feedback is daemon-internal (a
+  `GovernorOutcome` struct on the completion sink, no wire field). `actualConnectionCount` keeps its
+  wire shape; its meaning is re-documented as "peak concurrent connections used."
+- **Benchmark-sourcing plan (2nd deliverable):** spec §12 + the research brief's options table.
+  Local `dnctl`/`pfctl` dummynet (P1 verifies on macOS 26; `tc netem` VM fallback) as the **hermetic
+  deterministic gate**; `sin-speed.hetzner.com/1GB.bin` for the real no-throttle LFN proof (SM5a);
+  optional ~$5/mo Singapore VPS; Cloudflare `__down` for multi-edge (SM5b, best-effort, P5).
+- **Artifacts** (all under `docs/superpowers/`): `research/2026-05-31-in-flight-adaptive-parallelism-{ccb,acceptance-criteria,brief,approaches,design-validation}.md`
+  and `specs/2026-05-31-in-flight-adaptive-parallelism-design.md`. **Not yet committed** — no branch
+  cut this session (design artifacts only).
+- **NEXT ACTION:** the two requested deliverables are complete. Decide whether to (a) generate the
+  **implementation plan** (`enterprise-pipeline` Step 7 `custom-writing-plans` → Step 8 adversarial
+  plan review, 2 rounds), then implement **P1 first** via `subagent-driven-development`; or (b) hold
+  here. **No code until the directive lifts.** If continuing, cut a `design/in-flight-parallelism`
+  branch and commit the design artifacts first (branch discipline: never commit to `main`).
+
 ### 2026-05-31 (merge session) — Phase 2 adaptive scheduling **MERGED to `main`**; next = Phase 3 launch
 
 - **Both PRs merged to `main` via squash** (branch protection: PRs required, self-merge OK; branches deleted on origin + local):
@@ -667,6 +719,18 @@ remaining adaptive host scheduling work to v0.2.
   tests; CI green.
 
 ## Next-session handoff
+
+**MOST RECENT (design session): in-flight adaptive parallelism — four-round design APPROVED, no
+code.** The spec (`docs/superpowers/specs/2026-05-31-in-flight-adaptive-parallelism-design.md`)
+passed 2 adversarial Opus rounds; approach is **A3 (continuous governor + multi-edge fan-out)**,
+with multi-edge built on **NWConnection** because URLSession can't override SNI for IP connections
+(verified). Benchmark-sourcing plan is spec §12. **Pick-up options:** (a) generate the
+implementation plan (`custom-writing-plans` → adversarial plan review) then build **P1 first**; or
+(b) the Phase-3 public-launch track below (credential-gated). The design artifacts are
+**uncommitted on `main`** — cut `design/in-flight-parallelism` and commit them before any further
+work. See the top "Current state" entry dated *2026-05-31 (design session)* for the full breakdown.
+
+---
 
 `main` now includes **Phase 2 — adaptive per-host range scheduling** (PR #77,
 squash `32efda1`) and the **in-flight-parallelism design seed** (PR #78, squash
