@@ -82,8 +82,10 @@ preconditions of the very first key the helper produces, not tunables):**
 - **IPv6 literals — bracketed form in the key.** Use the canonical
   `URLComponents`-bracketed host (`[2001:db8::1]`) so a literal address keys
   consistently and parses back.
-- **IDN / punycode — store the ASCII (punycode) host** as emitted by
-  `URLComponents`, so the same host keys identically regardless of input encoding.
+- **IDN / punycode — store the ASCII (punycode) host**, so the same host keys
+  identically regardless of input encoding. (Code-time detail: `URLComponents.host`
+  may return the Unicode/percent-decoded form; use the encoded/punycode accessor so
+  the key is stable. Does not affect the frozen format.)
 
 **Open.**
 - Scheme-in-key vs. an http→https redirect landing the same origin in two arm-sets
@@ -247,19 +249,33 @@ file size, contention, or network flaps.
   sibling downloads split the host's bandwidth and poison the per-`N` signal);
 - the network path stayed stable (no cellular auto-pause mid-download).
 
-**Signal & clock — RESOLVED.** Signal = `Double(totalBytes) / seconds`, computed in
-the `HostProfileStore` and EWMA-folded into the matching arm (it is **not** read
-from `JobProgress.bytesPerSecond`, which is `UInt64` and a sampled instantaneous
-rate). For `seconds`, **v1 uses the engine's existing single download wall-clock**
-— the `started` instant at the speculative `Range: bytes=0-` GET through
-completion (`DownloadEngine.swift:172-215, 682-687`). This intentionally includes
-the 200/206-decision round-trip and slow-start ramp, but at the **≥ 10 s duration
-gate that transient is < ~1 s, i.e. < 10 % of the measured window** and identical
-across arms, so it does not bias arm-to-arm comparison. The engine therefore needs
-**no new measurement point** for v1. The more precise "discard the ramp window /
-measure only steady state" refinement is explicitly **deferred** (it would require
-the engine to surface a ranged-phase-only clock, and the duration gate already
-makes the ramp negligible).
+**Signal & clock — RESOLVED (corrected in R2).** Signal = `Double(totalBytes) /
+seconds`, computed in the `HostProfileStore` and EWMA-folded into the matching arm
+(it is **not** read from `JobProgress.bytesPerSecond`, which is `UInt64` and a
+sampled instantaneous rate).
+
+`seconds` is the **transfer-phase elapsed time**. The engine already creates a
+`ContinuousClock` `started` at the top of `fetchRanged` (`DownloadEngine.swift:487-488`)
+and `fetchSingle` (`421-422`) — crucially **after** the speculative `Range: bytes=0-`
+GET in `download()` returns, so this clock measures the parallel/single transfer
+itself and **excludes** the 200/206-decision round-trip (a cleaner signal than a
+whole-download clock would be). The only transient inside that window is TCP
+slow-start, which at the **≥ 10 s duration gate is < ~10 % of the measured time and
+is identical across arms**, so it does not bias arm-to-arm comparison.
+
+**The required engine change (the R1 draft was wrong to claim none).** That
+`started`/elapsed value is currently **phase-local and never escapes**:
+`completedDownloadHandler` is `(@Sendable (JobSummary) -> Void)?`
+(`DownloadEngine.swift:67`), and `clock.now - started` feeds only `progress()`
+today. So the daemon **cannot** compute `seconds` from anything currently surfaced
+(`completedAt − createdAt` would wrongly include queue/admission time and must NOT
+be used). v1 therefore makes **one small, additive engine change**: widen the
+completion sink to also carry the transfer-phase elapsed `Duration` — e.g.
+`completedDownloadHandler: (@Sendable (JobSummary, Duration) -> Void)?`. This is an
+**internal composition change only**; it touches no wire or on-disk contract
+(`protocolVersion` stays 3, `JobCatalog.version` stays 1). The "discard the ramp
+window / measure only steady state" refinement remains **deferred** — the duration
+gate already makes the ramp negligible.
 
 **Why duration, not bytes.** What we're measuring is the server's *steady-state*
 response to parallelism. The first few seconds of any download are TCP slow-start
@@ -286,7 +302,10 @@ only if the host's active count was exactly 1 for the whole download (a flag the
 engine path sets false if it ever observes a sibling). This index is **not
 persisted** (it is live daemon state, rebuilt from the active set on restart). The
 attribution arm is the **`actualConnectionCount` actually used**, not the requested
-count.
+count. The increment/decrement is bracketed exactly like the engine's existing live
+`control?.register(jobID:)` / `defer { control?.unregister(jobID:) }` pair in
+`run` (`DownloadEngine.swift:129-130`), so it can never leak or underflow on a
+throw / pause / cancel path.
 
 **Resolved.**
 - **Capped arm:** discard the observation when `actualConnectionCount < requested N`
@@ -324,15 +343,19 @@ profile or the chosen arm is cold — and stores *that* concrete value in
 This is deliberately the **least-invasive** wiring and it preserves the spec's
 compatibility claims:
 - `requestedConnectionCount` stays a resolved non-optional `UInt8` → **`JobSummary`
-  and `JobCatalog.version` are unchanged (stays 1)**; the engine is unchanged.
+  and `JobCatalog.version` are unchanged (stays 1)**; the engine's connection-count
+  *consumption* path is unchanged (it still reads `job.requestedConnectionCount`).
+  The only engine touch in this whole phase is the small additive duration-surfacing
+  in D5 — unrelated to connection-count wiring.
 - **No need to persist an "adaptive vs explicit" distinction.** Observation
   recording (D5) attributes to the `actualConnectionCount` that ran, and records for
   *both* adapted and user-specified downloads — a user-chosen `N` is still valid
   data for that arm. So the choice's *origin* never needs to be remembered.
 - **Accepted v1 limitation:** because `N` is resolved at admission, a job that sits
   `queued`/`network`-paused for a long time uses the profile as it was at admission,
-  not at start. Acceptable for v1 (downloads typically start promptly); noted, not
-  fixed.
+  not at start — and a `network`-pause requeue does **not** re-run admission, so it
+  keeps its admission-time `N` too. Acceptable for v1 (downloads typically start
+  promptly); noted, not fixed.
 
 **Open.** None — fully specified.
 
