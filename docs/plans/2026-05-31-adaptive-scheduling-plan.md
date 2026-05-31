@@ -39,11 +39,11 @@ that owns it.
 | AC5 | `BanditSelector` returns (8, .cold) for nil/missing profile; exploits best-EWMA arm when all ≥ minSamples; explores on epsilon draw or under-sampled arm; seeded-deterministic | Task 4 |
 | AC6 | `DownloadEngine.completedDownloadHandler` carries `(JobSummary, Duration, Bool)` — transfer-phase Duration and isResume flag | Task 6 |
 | AC7 | `CommandDispatcher` resolves nil `connectionCount` via host-profile bandit at admission time; explicit count honored unchanged | Task 7 |
-| AC8 | Observation is recorded if and only if: completed successfully, duration ≥ 10s, bytes ≥ 8 MiB, activeCount == 1, actualConnectionCount == requestedConnectionCount, not a resume | Task 8 |
-| AC9 | Active-count index increments in `run()` and decrements in `defer` — cannot leak on throw/pause/cancel | Task 5 |
+| AC8 | Observation is recorded if and only if: completed successfully, duration ≥ 10s, bytes ≥ 8 MiB, `wasSolo(jobID)` true (download was never concurrent with a sibling for its entire duration), actualConnectionCount == requestedConnectionCount, not a resume | Task 8 |
+| AC9 | Per-host active-job index: `begin(jobID:hostKey:)` brackets in `run()` with `defer { end(jobID:hostKey:) }` — cannot leak on throw/pause/cancel; contended-set tracks any job that ever had a sibling | Task 5 |
 | AC10 | Resume path does NOT record an observation (D8) | Task 8 |
 | AC11 | Converged-N throughput ≥ static-8 baseline within tolerance on saturated workload (regression guard) | Task 9 |
-| AC12 | `GOH_ENGINE_TRACE` emits host-key, chosen-N, reason, arm EWMAs per download | Task 9 |
+| AC12 | `GOH_ENGINE_TRACE` emits host-key, chosen-N, reason, arm EWMAs per download — emitted from `CommandDispatcher` at admission time (where all four fields are in hand) | Task 9 |
 | AC13 | `protocolVersion` stays 3; `JobCatalog.version` stays 1; `JobSummary` struct unchanged | Tasks 6, 7 |
 
 ---
@@ -63,7 +63,7 @@ that owns it.
 
 | Action | Path | Responsibility |
 |--------|------|----------------|
-| Create | `Sources/GohCore/Scheduling/HostProfileStore.swift` | Atomic-write store + TTL eviction + active-count index |
+| Create | `Sources/GohCore/Scheduling/HostProfileStore.swift` | Atomic-write store + TTL eviction + begin/wasSolo/end active-job + contended-set index |
 | Create | `Sources/GohCore/Scheduling/BanditSelector.swift` | Pure epsilon-greedy selector |
 | Modify | `Sources/GohCore/Scheduling/HostScheduling.swift` | Add `ConnObservation.foldingIn(throughput:alpha:)` EWMA fold |
 | Create | `Tests/GohCoreTests/HostProfileStoreTests.swift` | Tests for Task 3 |
@@ -73,12 +73,13 @@ that owns it.
 
 | Action | Path | Responsibility |
 |--------|------|----------------|
-| Modify | `Sources/GohCore/Engine/DownloadEngine.swift` | Widen handler signature (D5); active-count bracket (AC9); thread duration+isResume to handler |
-| Modify | `Sources/GohCore/Model/CommandDispatcher.swift` | Admission-time N resolution via host profile (D6) |
-| Modify | `Sources/gohd/main.swift` | Wire `HostProfileStore`; extend handler; wire dispatcher |
-| Modify | `Sources/GohCore/Engine/EngineDiagnostics.swift` | Add scheduling-decision trace line |
+| Modify | `Sources/GohCore/Engine/DownloadEngine.swift` | Widen handler signature (D5); active-count bracket (AC9 begin/end calls); thread duration+isResume to handler |
+| Modify | `Sources/GohCore/Model/CommandDispatcher.swift` | Admission-time N resolution via host profile (D6); emit AC12 scheduling-decision trace at admission (where hostKey, chosenN, reason, and arm EWMAs are all in hand) |
+| Modify | `Sources/gohd/main.swift` | Wire `HostProfileStore`; extend handler with wasSolo gate; wire dispatcher |
+| Modify | `Sources/GohCore/Engine/EngineDiagnostics.swift` | Add `recordSchedulingDecision(hostKey:chosenN:reason:armEWMAs:)` method |
 | Modify | `Tests/GohCoreTests/DownloadEngineTests.swift` | Update handler arity in test closures |
 | Modify | `Tests/GohCoreTests/CommandDispatcherTests.swift` | Add profile-driven N tests |
+| Create | `Tests/GohCoreTests/EngineDiagnosticsSchedulingTests.swift` | AC12 compile+field test using `@testable import GohCore` |
 | Modify | `Benchmarks/goh-bench/main.swift` | Add regression benchmark guard |
 
 ---
@@ -320,7 +321,18 @@ struct HostSchedulingTypesTests {
     }
 
     // AC2: Golden fixture round-trip.
-    @Test("AC: golden fixture decodes to known value and re-encodes byte-for-byte")
+    //
+    // PRIMARY guard: decoded-value equality (SDK-stable). Binary plist object-table
+    // layout and Date/Double encoding can differ between SDK versions — CI compiles
+    // with the stable 26.2 SDK while local builds use 26.5 (CLAUDE.md: cross-SDK
+    // C-API skew). Asserting byte-equality of a locally-generated committed blob
+    // against a different SDK's re-encode is therefore fragile. The unconditional
+    // primary guard is structural/value equality after decoding.
+    //
+    // ROUND-TRIP STABILITY guard: re-encode the just-decoded value and compare that
+    // re-encode back to itself by decoding again. This proves the encoder+decoder
+    // round-trips stably on this SDK without pinning to a cross-SDK blob.
+    @Test("AC: golden fixture decodes to known value; round-trip encode/decode is stable")
     func ac2GoldenFixtureRoundTrip() throws {
         // The fixture is committed binary plist at Fixtures/host-scheduling-v1.plist.
         let fixtureURL = Bundle.module.url(
@@ -330,19 +342,28 @@ struct HostSchedulingTypesTests {
 
         let decoded = try PropertyListDecoder().decode(HostScheduling.self, from: fixtureData)
 
-        // Version check.
+        // PRIMARY: structural/value equality — SDK-stable. Fails if the Codable
+        // mapping changes or the fixture was generated from a different struct version.
         #expect(decoded.version == 1)
-        // Must have exactly the two hosts encoded in the fixture.
         #expect(decoded.hosts.count == 2)
         #expect(decoded.hosts[0].host == "https://dl.example.com:443")
         #expect(decoded.hosts[0].arms.count == 2)
+        #expect(decoded.hosts[0].arms[0].connectionCount == 8)
+        #expect(abs(decoded.hosts[0].arms[0].throughputEWMA - 10_000_000) < 1)
+        #expect(decoded.hosts[0].arms[0].sampleCount == 3)
+        #expect(decoded.hosts[0].arms[1].connectionCount == 16)
         #expect(decoded.hosts[1].host == "http://cdn.example.com:80")
+        #expect(decoded.hosts[1].arms.count == 1)
+        #expect(decoded.hosts[1].arms[0].connectionCount == 4)
 
-        // Re-encode must be byte-for-byte identical to the fixture.
+        // ROUND-TRIP STABILITY: re-encode, then decode again and compare to the
+        // first decode. Proves the codec is stable on this SDK without relying on
+        // a cross-SDK committed blob.
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         let reencoded = try encoder.encode(decoded)
-        #expect(reencoded == fixtureData)
+        let redecoded = try PropertyListDecoder().decode(HostScheduling.self, from: reencoded)
+        #expect(redecoded == decoded)
     }
 
     @Test("AC: EWMA fold updates throughput and increments sampleCount")
@@ -507,8 +528,11 @@ print("written \(data.count) bytes")
 ```
 
 Run this from `/Users/shane/claude/goh`. The resulting binary plist is committed as-is.
-The golden-fixture test then asserts that `PropertyListDecoder().decode(HostScheduling.self, from: fixtureData)`
-equals the known value AND that `PropertyListEncoder(.binary).encode(decoded) == fixtureData`.
+The golden-fixture test asserts: (a) the fixture decodes to the known structural value
+(PRIMARY, SDK-stable guard); and (b) encode(decode(fixture)) decodes again to the same
+value (round-trip stability on THIS SDK). It does NOT assert byte-for-byte equality of
+the re-encode against the committed blob — binary plist layout can differ across SDKs
+(CLAUDE.md: cross-SDK C-API skew; CI is stable 26.2, local is 26.5).
 
 **Step 4 — Run, expect PASS**
 
@@ -711,9 +735,9 @@ struct HostProfileStoreTests {
         #expect(loaded.scheduling.hosts.count == 1)
     }
 
-    // AC9: active-count bracket — increment/decrement.
-    @Test("AC: active-count increments and decrements correctly")
-    func ac9ActiveCount() throws {
+    // AC9: begin/wasSolo/end — contended-set tracks any job that ever had a sibling.
+    @Test("AC: solo job is wasSolo; overlapping sibling marks both contended; subsequent solo is clean")
+    func ac9SoloContendedTracking() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -721,17 +745,24 @@ struct HostProfileStoreTests {
             fileURL: directory.appending(path: "host-scheduling.plist"))
 
         let key = "https://example.com:443"
-        #expect(store.activeCount(hostKey: key) == 0)
 
-        store.incrementActiveCount(hostKey: key)
-        store.incrementActiveCount(hostKey: key)
-        #expect(store.activeCount(hostKey: key) == 2)
+        // Solo job: begin → wasSolo should be true BEFORE end (job still registered).
+        store.begin(jobID: 1, hostKey: key)
+        #expect(store.wasSolo(jobID: 1))
+        store.end(jobID: 1, hostKey: key)
 
-        store.decrementActiveCount(hostKey: key)
-        #expect(store.activeCount(hostKey: key) == 1)
+        // Two overlapping jobs: both should be contended (wasSolo false).
+        store.begin(jobID: 2, hostKey: key)
+        store.begin(jobID: 3, hostKey: key)
+        #expect(!store.wasSolo(jobID: 2))
+        #expect(!store.wasSolo(jobID: 3))
+        store.end(jobID: 2, hostKey: key)
+        store.end(jobID: 3, hostKey: key)
 
-        store.decrementActiveCount(hostKey: key)
-        #expect(store.activeCount(hostKey: key) == 0)
+        // After full drain, a fresh solo job is clean again.
+        store.begin(jobID: 4, hostKey: key)
+        #expect(store.wasSolo(jobID: 4))
+        store.end(jobID: 4, hostKey: key)
     }
 
     // AC8 (partial): observation recording updates the arm.
@@ -805,8 +836,13 @@ public struct HostProfileLoadResult: Sendable {
 /// written at owner-only 0600 permissions because the file is daemon-internal
 /// with no external reader.
 ///
-/// The in-memory `[hostKey: activeCount]` index is NOT persisted; it is live
-/// daemon state rebuilt from the active set on restart (D5/D7).
+/// The in-memory active-job index is NOT persisted; it is live daemon state
+/// rebuilt from the active set on restart (D5/D7).
+///
+/// Persist failures in `recordObservation` are non-fatal (a failed optimization
+/// write must not break the download) but are surfaced via the injected
+/// `persistFailureReporter` so the daemon can log them via its existing
+/// `warn()` channel. Pass `nil` only in tests that don't need the callback.
 public final class HostProfileStore: Sendable {
 
     // MARK: — Tuning constants (non-frozen daemon constants per D3)
@@ -818,17 +854,27 @@ public final class HostProfileStore: Sendable {
 
     private let fileURL: URL
     private let inner: Mutex<Inner>
+    /// Called on a persist failure in `recordObservation`. Non-fatal — the
+    /// in-memory state is already updated; only the write failed.
+    private let persistFailureReporter: (@Sendable (String, any Error) -> Void)?
 
     private struct Inner: Sendable {
         var scheduling: HostScheduling
-        var activeCount: [String: Int]
+        /// Active job IDs per host key. Cleared when a host's set becomes empty.
+        var activeJobs: [String: Set<UInt64>]
+        /// Job IDs that were ever concurrent with a sibling. Cleared in end().
+        var contended: Set<UInt64>
     }
 
     // MARK: — Init
 
-    public init(fileURL: URL) {
+    public init(
+        fileURL: URL,
+        persistFailureReporter: (@Sendable (String, any Error) -> Void)? = nil
+    ) {
         self.fileURL = fileURL
-        self.inner = Mutex(Inner(scheduling: .empty, activeCount: [:]))
+        self.persistFailureReporter = persistFailureReporter
+        self.inner = Mutex(Inner(scheduling: .empty, activeJobs: [:], contended: []))
     }
 
     // MARK: — Load / Save
@@ -857,33 +903,59 @@ public final class HostProfileStore: Sendable {
         }
     }
 
-    /// Atomically and durably persists the current in-memory scheduling state.
-    public func save() throws {
-        let scheduling = inner.withLock { $0.scheduling }
+    /// Atomically and durably persists `scheduling`, updating the in-memory state.
+    /// Use for direct saves (e.g., tests, migration). In production the daemon
+    /// calls `recordObservation` which persists automatically.
+    public func save(_ scheduling: HostScheduling) throws {
+        inner.withLock { $0.scheduling = scheduling }
         try writeAtomically(scheduling)
     }
 
-    // MARK: — Active-count index (D5/D7 — not persisted)
+    // MARK: — Per-host active-job index (D5/D7 — not persisted)
+    //
+    // The spec (D5) requires the download be solo "for the WHOLE duration."
+    // A point-in-time count check at completion is insufficient: a sibling that
+    // starts and finishes entirely within another download's window returns the
+    // count to 1 by completion time, falsely appearing solo. The fix is a
+    // contended set: once a job ever had a sibling, it stays contended regardless
+    // of the count at completion.
+    //
+    // begin(jobID:hostKey:)  — call at the start of run(), like control?.register.
+    // wasSolo(jobID:)        — call in the completion handler BEFORE end() runs.
+    // end(jobID:hostKey:)    — call in a defer, like control?.unregister.
 
-    public func incrementActiveCount(hostKey: String) {
+    /// Records that jobID has started on hostKey.
+    /// If any other job is already active on hostKey, marks ALL of them (including
+    /// this one and any pre-existing siblings) contended.
+    public func begin(jobID: UInt64, hostKey: String) {
         inner.withLock { inner in
-            inner.activeCount[hostKey, default: 0] += 1
-        }
-    }
-
-    public func decrementActiveCount(hostKey: String) {
-        inner.withLock { inner in
-            let newCount = (inner.activeCount[hostKey] ?? 1) - 1
-            if newCount <= 0 {
-                inner.activeCount.removeValue(forKey: hostKey)
-            } else {
-                inner.activeCount[hostKey] = newCount
+            inner.activeJobs[hostKey, default: []].insert(jobID)
+            if inner.activeJobs[hostKey]!.count > 1 {
+                // Mark every current member contended — including pre-existing siblings.
+                for id in inner.activeJobs[hostKey]! {
+                    inner.contended.insert(id)
+                }
             }
         }
     }
 
-    public func activeCount(hostKey: String) -> Int {
-        inner.withLock { $0.activeCount[hostKey] ?? 0 }
+    /// Returns true iff jobID was never concurrent with a sibling on its host.
+    /// Call BEFORE end(jobID:hostKey:) — once end() removes the job, wasSolo
+    /// always returns false for it.
+    public func wasSolo(jobID: UInt64) -> Bool {
+        inner.withLock { !$0.contended.contains(jobID) }
+    }
+
+    /// Records that jobID has finished on hostKey.
+    /// Removes the job from both the active set and the contended set.
+    public func end(jobID: UInt64, hostKey: String) {
+        inner.withLock { inner in
+            inner.activeJobs[hostKey]?.remove(jobID)
+            if inner.activeJobs[hostKey]?.isEmpty == true {
+                inner.activeJobs.removeValue(forKey: hostKey)
+            }
+            inner.contended.remove(jobID)
+        }
     }
 
     // MARK: — Observation recording (D5, D7)
@@ -891,10 +963,14 @@ public final class HostProfileStore: Sendable {
     /// Folds a completed-download observation into the matching arm's EWMA and
     /// persists the updated state.
     ///
-    /// The D5 gates (duration ≥ 10 s, bytes ≥ 8 MiB, activeCount == 1,
+    /// The D5 gates (duration ≥ 10 s, bytes ≥ 8 MiB, `wasSolo(jobID)` true,
     /// actualConnectionCount == requestedConnectionCount, not a resume) are
     /// checked by the CALLER (the `completedDownloadHandler` in `gohd/main.swift`).
     /// This method receives only observations that have already passed the gates.
+    ///
+    /// A persist failure is non-fatal — the in-memory EWMA is updated regardless.
+    /// Failures are surfaced via the `persistFailureReporter` injected at init so
+    /// the daemon can log them via its existing `warn()` channel.
     public func recordObservation(
         hostKey: String,
         connectionCount: UInt8,
@@ -941,7 +1017,15 @@ public final class HostProfileStore: Sendable {
         }
 
         // Persist on observation commit only — write amplification is low.
-        try? writeAtomically(inner.withLock { $0.scheduling })
+        // Non-fatal: a failed optimization write must not break the download.
+        // Diagnosable: failures are reported via the injected reporter (the
+        // daemon wires this to its warn() channel).
+        let snapshot = inner.withLock { $0.scheduling }
+        do {
+            try writeAtomically(snapshot)
+        } catch {
+            persistFailureReporter?("host-profile persist hostKey=\(hostKey)", error)
+        }
     }
 
     // MARK: — Selection (D4, D6)
@@ -963,11 +1047,17 @@ public final class HostProfileStore: Sendable {
         return selector.select(profile: profile, rng: &rng)
     }
 
-    // MARK: — Snapshot (for tests)
+    // MARK: — Snapshot accessors (for tests and diagnostics)
 
     /// Returns the current in-memory scheduling (for test assertions).
     public func currentScheduling() -> HostScheduling {
         inner.withLock { $0.scheduling }
+    }
+
+    /// Returns the current in-memory profile for `hostKey`, or nil if not found.
+    /// Used by `CommandDispatcher` to read arm EWMAs for the AC12 trace.
+    public func profile(hostKey: String) -> HostProfile? {
+        inner.withLock { $0.scheduling.hosts.first { $0.host == hostKey } }
     }
 
     // MARK: — Private helpers
@@ -1627,7 +1717,8 @@ hostProfileStore: HostProfileStore? = nil,
 
 3. Assign in `init`: `self.hostProfileStore = hostProfileStore`
 
-4. In the `.add` case, replace the static resolution:
+4. In the `.add` case, replace the static resolution. Hoist `key` and `selectionReason`
+   so Task 9 can emit the AC12 trace from this same site:
 
 ```swift
 // Before:
@@ -1635,14 +1726,21 @@ let requestedConnectionCount = request.connectionCount
     ?? Self.defaultConnectionCount
 
 // After:
+// D6: hoist hostKey and selectionReason so the AC12 trace (added in Task 9)
+// can emit all four fields from this same site — the only place where hostKey,
+// chosenN, reason, and arm EWMAs are simultaneously in scope.
+let admissionHostKey = hostKey(for: request.url)
 let requestedConnectionCount: UInt8
+let selectionReason: SelectionReason
 if let explicit = request.connectionCount {
     requestedConnectionCount = explicit
+    selectionReason = .cold  // explicit count bypasses the bandit
 } else {
     // D6: when connectionCount is nil, consult the host profile bandit.
-    let key = hostKey(for: request.url)
-    let chosen = hostProfileStore?.selectN(hostKey: key) ?? (n: Self.defaultConnectionCount, reason: .cold)
+    let chosen = hostProfileStore?.selectN(hostKey: admissionHostKey)
+        ?? (n: Self.defaultConnectionCount, reason: .cold)
     requestedConnectionCount = chosen.n
+    selectionReason = chosen.reason
 }
 ```
 
@@ -1685,16 +1783,16 @@ git add Sources/GohCore/Model/CommandDispatcher.swift \
 **Pre-task reads:**
 - [ ] `Sources/GohCore/Engine/DownloadEngine.swift` — lines 127-160 (run, control bracket at 129-130), 70-87 (init)
 - [ ] `Sources/gohd/main.swift` — full main.swift; `completedDownloadHandler` closure location
-- [ ] `Sources/GohCore/Scheduling/HostProfileStore.swift` — `incrementActiveCount`, `decrementActiveCount`, `recordObservation`, `activeCount`, `selectN`
+- [ ] `Sources/GohCore/Scheduling/HostProfileStore.swift` — `begin`, `wasSolo`, `end`, `recordObservation`, `selectN`
 
 **Step 1 — Write failing tests**
 
 Append to `DownloadEngineTests.swift`:
 
 ```swift
-    // AC9: active-count bracket — cannot leak on throw/cancel.
-    @Test("AC: active-count is decremented on download failure (no leak)")
-    func ac9ActiveCountDecrementedOnFailure() async {
+    // AC9: begin/end bracket — cannot leak on throw/cancel.
+    @Test("AC: end() is called on download failure — active-job set not leaked")
+    func ac9ActiveJobEndedOnFailure() async {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -1702,9 +1800,9 @@ Append to `DownloadEngineTests.swift`:
             fileURL: directory.appending(path: "host-scheduling.plist"))
         _ = profileStore.load()
 
-        let key = "https://example.com:443"
-        // Pre-verify count starts at 0.
-        #expect(profileStore.activeCount(hostKey: key) == 0)
+        // Pre-verify: the job is not in any active set.
+        let jobID: UInt64 = 99
+        #expect(profileStore.wasSolo(jobID: jobID))  // not contended before it even starts
 
         // Use a mock session that fails immediately.
         let engine = DownloadEngine(
@@ -1720,8 +1818,13 @@ Append to `DownloadEngineTests.swift`:
             lastProgressAt: nil)
         await engine.run(jobID: job.id, in: store)
 
-        // After failure, active count must be 0 — not leaked.
-        #expect(profileStore.activeCount(hostKey: key) == 0)
+        // After failure, the job must have been removed from the active-job set
+        // (end() called by defer). A subsequent fresh job on the same host starts
+        // as solo, which would not hold if end() leaked.
+        let key = "https://example.com:443"
+        profileStore.begin(jobID: 100, hostKey: key)
+        #expect(profileStore.wasSolo(jobID: 100))
+        profileStore.end(jobID: 100, hostKey: key)
     }
 ```
 
@@ -1748,21 +1851,31 @@ Add parameter to `init`:
 hostProfileStore: HostProfileStore? = nil,
 ```
 
-In `run(jobID:in:)`, add the active-count bracket immediately after the
+In `run(jobID:in:)`, add the begin/end bracket immediately after the
 `control?.register` / `defer { control?.unregister }` pair (lines 129-130):
 
 ```swift
-// Active-count bracket (D5/D7) — mirrors control?.register/unregister.
+// Active-job bracket (D5/D7) — mirrors control?.register/unregister.
+// begin() marks the job active and flags any concurrent siblings contended.
+// end() is in a defer so it fires on every exit path (throw, pause, cancel,
+// success) — cannot leak regardless of how run() terminates.
 let jobHostKey = store.job(id: jobID).flatMap { hostKey(for: $0.url) }
 if let key = jobHostKey {
-    hostProfileStore?.incrementActiveCount(hostKey: key)
+    hostProfileStore?.begin(jobID: jobID, hostKey: key)
 }
 defer {
     if let key = jobHostKey {
-        hostProfileStore?.decrementActiveCount(hostKey: key)
+        hostProfileStore?.end(jobID: jobID, hostKey: key)
     }
 }
 ```
+
+IMPORTANT: The completion handler fires INSIDE `complete(jobID:in:)`, which is called
+INSIDE the `do` block of `run()`. The `defer { end(jobID:hostKey:) }` executes when
+`run()` exits — AFTER the completion handler returns. Therefore, at handler time the job
+is still registered in the active-job set, and `wasSolo(jobID:)` returns the correct
+answer. The handler must call `wasSolo` BEFORE `end()` runs, which is automatically
+satisfied by the defer order.
 
 No other change to `DownloadEngine` for observation recording — that lives in `gohd/main.swift`.
 
@@ -1771,7 +1884,10 @@ No other change to `DownloadEngine` for observation recording — that lives in 
 1. Construct `HostProfileStore` after `checkpointStore`:
 ```swift
 let hostProfileStore = HostProfileStore(
-    fileURL: supportDirectory.appending(path: "host-scheduling.plist"))
+    fileURL: supportDirectory.appending(path: "host-scheduling.plist"),
+    persistFailureReporter: { operation, error in
+        warn("host-profile store persist failed (\(operation)): \(error)")
+    })
 let hostProfileLoadResult = hostProfileStore.load()
 if let sidecar = hostProfileLoadResult.corruptionSidecar {
     warn("the host-scheduling file was unreadable and has been reset; "
@@ -1792,6 +1908,9 @@ let engine = DownloadEngine(
         // D8: skip observation for resume path.
         if !isResume {
             // D5 gates — all must hold to record a valid observation.
+            // wasSolo is checked BEFORE end() runs (end() is in a defer in run(),
+            // which fires after this handler returns). So at this point the job is
+            // still registered and wasSolo returns the correct whole-duration answer.
             let minDuration = Duration.seconds(10)
             let minBytes: UInt64 = 8 * 1024 * 1024
             let urlKey = hostKey(for: completed.url)
@@ -1799,7 +1918,7 @@ let engine = DownloadEngine(
             if let key = urlKey,
                transferDuration >= minDuration,
                completed.progress.bytesCompleted >= minBytes,
-               hostProfileStore.activeCount(hostKey: key) == 0,  // already decremented by defer
+               hostProfileStore.wasSolo(jobID: completed.id),  // whole-duration solo check
                completed.actualConnectionCount == completed.requestedConnectionCount
             {
                 hostProfileStore.recordObservation(
@@ -1835,14 +1954,6 @@ let dispatcher = CommandDispatcher(
     queuedJobAdmission: { networkCoordinator.jobBecameQueued($0) })
 ```
 
-**Important note on the activeCount gate in the handler:** At the moment the
-`completedDownloadHandler` fires, the engine's `defer { control?.unregister }` and
-`defer { hostProfileStore?.decrementActiveCount }` have already run (defers execute
-before the function returns to its caller; `complete(jobID:in:)` calls the handler
-before returning). This means `activeCount` for this host is already decremented to
-the count of OTHER active downloads. Therefore, the gate is `activeCount == 0`
-(not `== 1`) at handler time — if the count is 0, this was the only active download.
-
 **Step 4 — Run, expect PASS**
 
 ```
@@ -1877,28 +1988,63 @@ git add Sources/GohCore/Engine/DownloadEngine.swift \
 - Modify: `Benchmarks/goh-bench/main.swift`
 
 **Pre-task reads:**
-- [ ] `Sources/GohCore/Engine/EngineDiagnostics.swift` — existing `EngineDiagnostics` type and `GOH_ENGINE_TRACE` pattern
+- [ ] `Sources/GohCore/Engine/EngineDiagnostics.swift` — existing `EngineDiagnostics` type, `GOH_ENGINE_TRACE` pattern, access level (`internal`), and how `Tests/GohCoreTests/EngineDiagnosticsTests.swift` imports it (`@testable import GohCore`)
+- [ ] `Sources/GohCore/Model/CommandDispatcher.swift` — where N resolution happens (the `.add` case after Task 7's changes); this is where all four AC12 fields are in hand simultaneously
 - [ ] `Benchmarks/goh-bench/main.swift` — existing benchmark structure and how results are printed
 - [ ] `Sources/GohCore/Scheduling/BanditSelector.swift` — `SelectionReason` cases
 
-**Step 1 — Write failing test (trace output format)**
+**Step 1 — Write failing test (AC12 compile + field check)**
+
+Create `Tests/GohCoreTests/EngineDiagnosticsSchedulingTests.swift`.
+`EngineDiagnostics` is `internal` — matching the existing `EngineDiagnosticsTests.swift`
+which uses `@testable import GohCore`. Do the same here.
 
 ```swift
-// In DownloadEngineTests.swift or EngineDiagnosticsTests.swift:
-@Test("AC: GOH_ENGINE_TRACE emits scheduling decision with hostKey, chosenN, reason, EWMAs")
-func ac12TraceEmitsSchedulingDecision() {
-    // Read the current EngineDiagnostics API and verify the new method exists.
-    // This is a compile-time check — if the method is missing, the test fails to compile.
-    let diag = EngineDiagnostics()
-    // Verify the method signature accepts the required parameters.
-    diag.recordSchedulingDecision(
-        hostKey: "https://example.com:443",
-        chosenN: 8,
-        reason: SelectionReason.cold,
-        armEWMAs: [:])
-    // No assertion — the trace goes to stderr when GOH_ENGINE_TRACE is set;
-    // we verify the method exists and accepts the right types.
-    #expect(Bool(true))
+import Foundation
+import Testing
+
+@testable import GohCore
+
+@Suite("Engine diagnostics — scheduling decision trace (AC12)")
+struct EngineDiagnosticsSchedulingTests {
+
+    // AC12: recordSchedulingDecision must exist and accept the four required fields.
+    // EngineDiagnostics is internal; this test uses @testable import GohCore,
+    // matching the existing EngineDiagnosticsTests pattern.
+    @Test("AC: recordSchedulingDecision accepts hostKey, chosenN, reason, armEWMAs (compile check)")
+    func ac12MethodExistsAndCompiles() {
+        // Enabled=false so no stderr output during test runs.
+        let diag = EngineDiagnostics(enabled: false)
+        // If any parameter type is wrong, this fails to compile — no runtime assertion needed.
+        diag.recordSchedulingDecision(
+            hostKey: "https://example.com:443",
+            chosenN: 8,
+            reason: SelectionReason.cold,
+            armEWMAs: [8: 10_000_000.0, 16: 15_000_000.0])
+        // Disabled trace is a no-op; peakActive is unrelated but verifies the
+        // instance is in the expected disabled state.
+        #expect(diag.peakActive == 0)
+    }
+
+    // AC12: when enabled, recordSchedulingDecision does not crash and runs the body.
+    @Test("AC: recordSchedulingDecision with enabled trace does not crash")
+    func ac12EnabledDoesNotCrash() {
+        let diag = EngineDiagnostics(enabled: true)
+        // All four reason cases must be accepted.
+        diag.recordSchedulingDecision(
+            hostKey: "https://example.com:443", chosenN: 8,
+            reason: .cold, armEWMAs: [:])
+        diag.recordSchedulingDecision(
+            hostKey: "https://example.com:443", chosenN: 16,
+            reason: .exploit, armEWMAs: [8: 9_000_000, 16: 18_000_000])
+        diag.recordSchedulingDecision(
+            hostKey: "https://example.com:443", chosenN: 4,
+            reason: .explore, armEWMAs: [4: 5_000_000])
+        diag.recordSchedulingDecision(
+            hostKey: nil, chosenN: 8, reason: .cold, armEWMAs: [:])
+        // No crash and no state corruption.
+        #expect(diag.peakActive == 0)
+    }
 }
 ```
 
@@ -1906,23 +2052,28 @@ func ac12TraceEmitsSchedulingDecision() {
 
 ```
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  swift test --filter EngineDiagnosticsTests
+  swift test --filter EngineDiagnosticsSchedulingTests
 ```
 
 **Step 3 — Implement**
 
-**3a. In `EngineDiagnostics.swift`** — add:
+**3a. In `EngineDiagnostics.swift`** — add the method (keeping it `internal`, consistent with all other methods in this file):
 
 ```swift
-/// Emits a scheduling-decision line to stderr when `GOH_ENGINE_TRACE` is set.
-/// Format: `[goh-trace] scheduling host=<key> chosenN=<N> reason=<reason> ewmas=<json>`
+/// Emits a scheduling-decision trace line to stderr when `GOH_ENGINE_TRACE=1`.
+///
+/// Called from `CommandDispatcher` at admission time — the point where all four
+/// fields (hostKey, chosenN, reason, arm EWMAs) are simultaneously in hand.
+/// NOT called from `DownloadEngine`, which has none of the bandit fields.
+///
+/// Format: `[goh-trace t=Xs] scheduling host=<key> chosenN=<N> reason=<reason> ewmas=[...]`
 func recordSchedulingDecision(
     hostKey: String?,
     chosenN: UInt8,
     reason: SelectionReason,
     armEWMAs: [UInt8: Double]
 ) {
-    guard ProcessInfo.processInfo.environment["GOH_ENGINE_TRACE"] != nil else { return }
+    guard enabled else { return }
     let ewmaStr = armEWMAs
         .sorted { $0.key < $1.key }
         .map { "N\($0.key)=\(String(format: "%.0f", $0.value))B/s" }
@@ -1934,33 +2085,41 @@ func recordSchedulingDecision(
     case .exploit: reasonStr = "exploit"
     case .explore: reasonStr = "explore"
     }
-    let line = "[goh-trace] scheduling host=\(host) chosenN=\(chosenN) reason=\(reasonStr) ewmas=[\(ewmaStr)]\n"
-    FileHandle.standardError.write(Data(line.utf8))
+    emit("scheduling host=\(host) chosenN=\(chosenN) reason=\(reasonStr) ewmas=[\(ewmaStr)]")
 }
 ```
 
-**3b. In `DownloadEngine.swift`** — in `fetchRanged` and `fetchSingle`, after the
-`started = clock.now` line, emit the scheduling decision trace:
+**3b. In `CommandDispatcher.swift`** — emit the AC12 trace from the `.add` case,
+immediately after the `requestedConnectionCount`/`selectionReason` block added in
+Task 7. All four AC12 fields are in hand at this point: `admissionHostKey`, `requestedConnectionCount`,
+`selectionReason`, and the profile's arm EWMAs.
 
 ```swift
-// GOH_ENGINE_TRACE scheduling decision (D12).
-let _jobHostKey = hostKey(for: job.url)
-let armEWMAs: [UInt8: Double]  // read from hostProfileStore if available
-// (thread hostProfileStore reference if needed — or emit empty dict if unavailable)
-trace.recordSchedulingDecision(
-    hostKey: _jobHostKey,
-    chosenN: job.requestedConnectionCount,
-    reason: .cold,  // reason is known only at dispatch time; pass through as needed
-    armEWMAs: [:])
+// AC12: emit scheduling-decision trace (GOH_ENGINE_TRACE=1).
+// Emitted here because this is the only site where all four fields are
+// simultaneously in scope. The engine knows neither reason nor arm EWMAs.
+let armEWMAs: [UInt8: Double]
+if let key = admissionHostKey,
+   let profile = hostProfileStore?.profile(hostKey: key) {
+    armEWMAs = Dictionary(
+        uniqueKeysWithValues: profile.arms.map { ($0.connectionCount, $0.throughputEWMA) })
+} else {
+    armEWMAs = [:]
+}
+EngineDiagnostics().recordSchedulingDecision(
+    hostKey: admissionHostKey,
+    chosenN: requestedConnectionCount,
+    reason: selectionReason,
+    armEWMAs: armEWMAs)
 ```
 
-*Note: the `reason` and `armEWMAs` are most accurately emitted at admission time
-in `CommandDispatcher`, not in the engine. The engine can emit the `chosenN`; for
-the EWMAs and reason, extend `JobSummary` with a transient annotation OR emit the
-trace from `CommandDispatcher` at admission time and engine at transfer start.
-The simpler implementation: emit from the engine with what's available (chosenN,
-hostKey); the dispatcher emits a second trace line with reason and EWMAs. Both
-are stderr-only and not part of any frozen contract.*
+Add a `profile(hostKey:)` accessor to `HostProfileStore` returning `HostProfile?`:
+```swift
+/// Returns the current in-memory profile for `hostKey`, or nil if not found.
+public func profile(hostKey: String) -> HostProfile? {
+    inner.withLock { $0.scheduling.hosts.first { $0.host == hostKey } }
+}
+```
 
 **3c. In `Benchmarks/goh-bench/main.swift`** — add the regression benchmark guard:
 
@@ -2014,6 +2173,12 @@ func runRegressionGuard() async throws {
 
 ```
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --filter EngineDiagnosticsSchedulingTests
+```
+
+Then full suite:
+```
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift test
 ```
 
@@ -2023,9 +2188,11 @@ Expected: all green, zero warnings.
 
 ```
 git add Sources/GohCore/Engine/EngineDiagnostics.swift \
-        Sources/GohCore/Engine/DownloadEngine.swift \
+        Sources/GohCore/Model/CommandDispatcher.swift \
+        Sources/GohCore/Scheduling/HostProfileStore.swift \
+        Tests/GohCoreTests/EngineDiagnosticsSchedulingTests.swift \
         Benchmarks/goh-bench/main.swift \
-  && git commit -m "feat(adaptive-scheduling): AC12 GOH_ENGINE_TRACE scheduling decision + AC11 regression benchmark guard"
+  && git commit -m "feat(adaptive-scheduling): AC12 GOH_ENGINE_TRACE scheduling decision from CommandDispatcher + AC11 regression benchmark guard"
 ```
 
 ---
