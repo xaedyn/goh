@@ -133,4 +133,53 @@ struct BanditSelectorTests {
             #expect(reason == .explore)
         }
     }
+
+    // AC11-CI: exploit always picks best-EWMA arm; never regresses to a worse arm.
+    @Test("AC11-CI: exploit always picks best-EWMA arm; never regresses to a worse arm")
+    func ac11ExploitNeverRegresses() {
+        let selector = BanditSelector(epsilon: 0.0)
+        let profile = HostProfile(
+            host: "https://example.com:443",
+            arms: [
+                ConnObservation(connectionCount: 2, throughputEWMA: 1_000_000,
+                                sampleCount: 5, updatedAt: .now),
+                ConnObservation(connectionCount: 4, throughputEWMA: 3_000_000,
+                                sampleCount: 5, updatedAt: .now),
+                ConnObservation(connectionCount: 8, throughputEWMA: 12_000_000,
+                                sampleCount: 5, updatedAt: .now),
+                ConnObservation(connectionCount: 16, throughputEWMA: 8_000_000,
+                                sampleCount: 5, updatedAt: .now),
+            ],
+            updatedAt: .now)
+        for seed in UInt64(0)..<50 {
+            var rng = SeededRNG(seed: seed)
+            let (n, reason) = selector.select(profile: profile, rng: &rng)
+            #expect(reason == .exploit)
+            #expect(n == 8)
+        }
+    }
+
+    // AC11-CI: a thin sample on one arm forces explore, does not displace the settled best.
+    @Test("AC11-CI: thin sample on one arm forces explore, does not displace settled best")
+    func ac11ThinSampleDoesNotDisplaceBest() {
+        let selector = BanditSelector(epsilon: 0.0, minSamples: 2)
+        let profile = HostProfile(
+            host: "https://example.com:443",
+            arms: [
+                ConnObservation(connectionCount: 2, throughputEWMA: 1_000_000,
+                                sampleCount: 3, updatedAt: .now),
+                ConnObservation(connectionCount: 4, throughputEWMA: 3_000_000,
+                                sampleCount: 3, updatedAt: .now),
+                ConnObservation(connectionCount: 8, throughputEWMA: 12_000_000,
+                                sampleCount: 3, updatedAt: .now),
+                ConnObservation(connectionCount: 16, throughputEWMA: 999_000_000,
+                                sampleCount: 1, updatedAt: .now),
+            ],
+            updatedAt: .now)
+        for seed in UInt64(0)..<20 {
+            var rng = SeededRNG(seed: seed)
+            let (_, reason) = selector.select(profile: profile, rng: &rng)
+            #expect(reason == .explore)
+        }
+    }
 }

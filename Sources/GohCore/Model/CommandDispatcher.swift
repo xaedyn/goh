@@ -65,8 +65,28 @@ public struct CommandDispatcher: Sendable {
                     requestedConnectionCount = chosen.n
                     selectionReason = chosen.reason
                 }
-                _ = selectionReason  // consumed by the AC12 trace in Task 9
-                _ = admissionHostKey  // consumed by the AC12 trace in Task 9
+                // AC12: emit scheduling-decision trace (GOH_ENGINE_TRACE=1).
+                // Emitted here because this is the only site where all four fields are
+                // simultaneously in scope. The engine knows neither reason nor arm EWMAs.
+                let armEWMAs: [UInt8: Double]
+                if let key = admissionHostKey,
+                   let profile = hostProfileStore?.profile(hostKey: key) {
+                    // `uniquingKeysWith` (not `uniqueKeysWithValues`) so a corrupt
+                    // on-disk profile with duplicate connectionCount arms can never
+                    // trap the daemon at admission — mirrors the trap-safe `.first { }`
+                    // the selector uses. The store dedupes arms on write; this guards
+                    // a tampered/corrupt plist that slipped past the TTL filter.
+                    armEWMAs = Dictionary(
+                        profile.arms.map { ($0.connectionCount, $0.throughputEWMA) },
+                        uniquingKeysWith: { first, _ in first })
+                } else {
+                    armEWMAs = [:]
+                }
+                EngineDiagnostics().recordSchedulingDecision(
+                    hostKey: admissionHostKey,
+                    chosenN: requestedConnectionCount,
+                    reason: selectionReason,
+                    armEWMAs: armEWMAs)
                 guard requestedConnectionCount > 0 else {
                     return .failure(GohError(
                         code: .invalidArgument,

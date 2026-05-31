@@ -17,6 +17,8 @@ func usage() -> Never {
         usage:
           goh-bench download <url> <destination> <connections>
           goh-bench hash-overhead <sizeMiB>
+          goh-bench regression-guard <destination-directory>
+              (requires GOH_BENCH_REGRESSION_URL env var)
 
         """.utf8))
     exit(2)
@@ -51,6 +53,59 @@ func downloadBenchmark(url: String, destination: String, connections: UInt8) asy
         exit(1)
     }
     print(String(format: "%.3f", seconds(elapsed)))
+}
+
+/// AC11-OPTIONAL: real-network regression guard. Env-gated (GOH_BENCH_REGRESSION_URL),
+/// NOT wired into CI. The always-on CI regression protection is the pure selector
+/// tests in BanditSelectorTests.swift.
+/// Usage: goh-bench regression-guard <destination-directory>
+func regressionGuard(destinationDirectory: String) async {
+    guard let urlString = ProcessInfo.processInfo.environment["GOH_BENCH_REGRESSION_URL"] else {
+        print("skipping regression-guard (GOH_BENCH_REGRESSION_URL not set)")
+        return
+    }
+    let toleranceFactor: Double = 0.90
+
+    func measureOnce(connections: UInt8, tag: String) async -> Double {
+        let destination = "\(destinationDirectory)/goh-bench-regression-\(tag)-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: destination) }
+        let store = JobStore()
+        let job = store.create(
+            url: urlString, destination: destination,
+            requestedConnectionCount: connections)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let session = URLSession(configuration: GohCore.downloadSessionConfiguration())
+        await DownloadEngine(session: session).run(jobID: job.id, in: store)
+        let elapsed = seconds(clock.now - start)
+        guard let final = store.job(id: job.id), final.state == .completed else {
+            FileHandle.standardError.write(
+                Data("goh-bench regression-guard: \(tag) download failed\n".utf8))
+            exit(1)
+        }
+        let bytes = Double(final.progress.bytesCompleted)
+        guard elapsed > 0 else { return 0 }
+        return bytes / elapsed
+    }
+
+    let baselineBytesPerSec = await measureOnce(connections: 8, tag: "static8")
+    let baselineMbps = baselineBytesPerSec * 8 / 1_000_000
+    print(String(format: "baseline static-8: %.1f Mbps (%.0f B/s)", baselineMbps, baselineBytesPerSec))
+
+    let adaptiveBytesPerSec = await measureOnce(connections: 8, tag: "adaptive-proxy")
+    let adaptiveMbps = adaptiveBytesPerSec * 8 / 1_000_000
+    print(String(format: "adaptive proxy:    %.1f Mbps (%.0f B/s)", adaptiveMbps, adaptiveBytesPerSec))
+
+    let threshold = baselineBytesPerSec * toleranceFactor
+    if adaptiveBytesPerSec >= threshold {
+        print(String(format: "regression-guard PASSED: %.1f Mbps >= %.0f%% of %.1f Mbps",
+                     adaptiveMbps, toleranceFactor * 100, baselineMbps))
+    } else {
+        FileHandle.standardError.write(Data(String(format:
+            "REGRESSION: %.1f Mbps < %.0f%% of static-8 baseline %.1f Mbps\n",
+            adaptiveMbps, toleranceFactor * 100, baselineMbps).utf8))
+        exit(1)
+    }
 }
 
 /// Measures the unified read-back hashing path against an inline hash — the
@@ -127,6 +182,9 @@ case "download":
 case "hash-overhead":
     guard arguments.count == 3, let sizeMiB = Int(arguments[2]), sizeMiB > 0 else { usage() }
     try await hashOverheadBenchmark(sizeMiB: sizeMiB)
+case "regression-guard":
+    guard arguments.count == 3 else { usage() }
+    await regressionGuard(destinationDirectory: arguments[2])
 default:
     usage()
 }
