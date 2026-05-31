@@ -51,11 +51,27 @@ session; update at the start of every PR and at the end of every session.
 - **Artifacts** (all under `docs/superpowers/`): `research/2026-05-31-in-flight-adaptive-parallelism-{ccb,acceptance-criteria,brief,approaches,design-validation}.md`
   and `specs/2026-05-31-in-flight-adaptive-parallelism-design.md`. **Not yet committed** — no branch
   cut this session (design artifacts only).
-- **NEXT ACTION:** the two requested deliverables are complete. Decide whether to (a) generate the
-  **implementation plan** (`enterprise-pipeline` Step 7 `custom-writing-plans` → Step 8 adversarial
-  plan review, 2 rounds), then implement **P1 first** via `subagent-driven-development`; or (b) hold
-  here. **No code until the directive lifts.** If continuing, cut a `design/in-flight-parallelism`
-  branch and commit the design artifacts first (branch discipline: never commit to `main`).
+- **Branch state:** `design/in-flight-parallelism` is **pushed** to origin (commit `ed48486`, all 6
+  artifacts + this STATE.md). Work from this branch — do **not** branch off `main` again.
+- **CLOSED — do NOT re-run:** the design pass is finished. Do not re-run `enterprise-pipeline`,
+  approach generation, the approach gate, or `adversarial-spec-review` — the spec is **approved**
+  (2 rounds, all 10 block categories pass) and the approach (A3, multi-edge via NWConnection) is a
+  settled user decision. Do not re-litigate the URLSession-SNI finding (see the
+  [[urlsession-no-sni-override-for-ip]] memory).
+- **NEXT ACTION — kick off the implementation plan.** Go **straight to `custom-writing-plans`**
+  (the CLAUDE.md override that replaces `writing-plans`), dispatched as a Sonnet subagent with:
+  - `SPEC_FILE_PATH` = `docs/superpowers/specs/2026-05-31-in-flight-adaptive-parallelism-design.md`
+  - `RESEARCH_BRIEF_PATH` = `docs/superpowers/research/2026-05-31-in-flight-adaptive-parallelism-brief.md`
+  - `TECH_STACK` = from `CLAUDE.md` §Stack; `PROJECT_CONVENTIONS` = from `CLAUDE.md` (Test/Branch
+    discipline, four-round, the recurring gotchas).
+  - **Segment the plan at the spec's P1–P5 phase boundaries** (they are deployment-independent;
+    P1–P4 ship the single-edge headline, P5 is the NWConnection multi-edge + security-review gate).
+  Then **`adversarial-plan-review`** (the CLAUDE.md override; max 2 rounds; fix block issues between
+  rounds). Then **USER GATE: spec+plan approval**, then `superpowers:subagent-driven-development`
+  implementing **P1 first** (pure governor + injected clock + per-chunk instrumentation + the
+  dummynet-on-macOS-26 verification spike), TDD, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, see [[dev-toolchain-developer-dir]]).
+  **Still no implementation code until the plan is approved at the gate.**
 
 ### 2026-05-31 (merge session) — Phase 2 adaptive scheduling **MERGED to `main`**; next = Phase 3 launch
 
