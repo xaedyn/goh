@@ -5,6 +5,54 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (impl session) — Phase 2 (adaptive scheduling): IMPLEMENTED, PR #77 open
+
+- **Branch:** `design/adaptive-scheduling`; PR **#77** open against `main`
+  (https://github.com/xaedyn/goh/pull/77). All 9 plan tasks + 1 hardening
+  follow-up shipped; **473 tests pass** (was 424 on `main`; +49), `swift build`
+  warning-clean under `-warnings-as-errors`. Built with
+  `superpowers:subagent-driven-development` — one task at a time, TDD, two-stage
+  review (spec compliance + Opus stack-aware code quality) after each task, plus a
+  final cross-cutting Opus review (✅ approved, zero block issues).
+- **What shipped (10 atomic commits):**
+  - **Phase 1 (pure value layer):** `hostKey(for:)` D1 normalizer
+    (`Sources/GohCore/Scheduling/HostKey.swift`); the frozen v1 Codable on-disk
+    types `HostScheduling`/`HostProfile`/`ConnObservation` + `foldingIn` EWMA fold
+    + golden round-trip fixture (`HostScheduling.swift`,
+    `Tests/.../Fixtures/host-scheduling-v1.plist`).
+  - **Phase 2 (persistence + selection):** `HostProfileStore` (atomic versioned
+    plist, 0600, 90-day TTL eviction, corrupt→sidecar, the begin/wasSolo/end
+    contended-set active-job index, `recordObservation`, the pure D5/D8
+    `shouldRecordObservation` gate, `selectN`); the pure ε-greedy `BanditSelector`.
+  - **Phase 3 (engine + wiring):** widened `completedDownloadHandler` to carry the
+    transfer-phase `Duration` + `isResume`; admission-time N resolution in
+    `CommandDispatcher` (explicit honored, else bandit); the D5/D8-gated
+    observation recording wired in `gohd/main.swift`; the engine begin/end
+    active-job bracket; `GOH_ENGINE_TRACE` scheduling-decision line; CI-enforced
+    pure selector regression tests + an optional env-gated `goh-bench
+    regression-guard`.
+- **Invariants held:** `protocolVersion` stays 3; `JobCatalog.version` stays 1;
+  `JobSummary` struct unchanged. The new plist is daemon-internal — not in the XPC
+  wire or the catalog. **DESIGN.md reconciled** this session (§Adaptive host
+  scheduling documents the frozen v1 format, per the four-round discipline).
+- **Review-caught & fixed during implementation (don't re-litigate):** the plan's
+  punycode test paired two different domains (corrected to assert the real
+  ASCII/deterministic/credential-free invariants); a `SeededRNG` xorshift64
+  zero-trap (seed 0 → infinite loop) guarded; a hardcoded test date that would age
+  past the TTL (made relative); a `Dictionary(uniqueKeysWithValues:)` that could
+  trap the daemon at admission on a corrupt duplicate-arm plist (→
+  `uniquingKeysWith:`); and the load-bearing D5 gate extracted from an inline gohd
+  closure into the unit-tested pure `shouldRecordObservation` (7 cases).
+- **NEXT ACTION:** PR #77 review. CodeRabbit triggered at feature-complete. When
+  green + approved, merge to `main`. Then the strategic arc's **Phase 3 — public
+  launch** (sign+notarize PKG via PR #36 workflow, open the brew tap, SECURITY/
+  CONTRIBUTING/CODE_OF_CONDUCT, launch post) — see the launch sequence preserved in
+  the older handoff below and the gitignored `docs/vision/VISION-2026-05-26.md`.
+- **Order-correction note for the record:** the plan listed Task 3 (HostProfileStore)
+  before Task 4 (BanditSelector), but Task 3's `selectN` references `BanditSelector`,
+  so Task 4 was implemented first (the only deviation from plan order; plan content
+  unchanged).
+
 ### 2026-05-31 (later session) — Phase 2 (adaptive scheduling): design + plan COMPLETE, ready to implement
 
 - **Branch:** `design/adaptive-scheduling`, off `main` at `48ec675`. Not yet pushed.
