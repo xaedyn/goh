@@ -68,6 +68,9 @@ public struct LockfileCodec {
         guard let manifestHash = doc.topLevel["manifestHash"]?.stringValue else {
             throw CodecError("lockfile missing required 'manifestHash'")
         }
+        guard Sha256Format.isValid(manifestHash) else {
+            throw CodecError("invalid manifestHash in lockfile: '\(manifestHash)'")
+        }
 
         var entries: [LockEntry] = []
         for raw in doc.arrayOfTables("entry") {
@@ -113,8 +116,15 @@ public struct LockfileCodec {
     ///
     /// `lockfileVersion` is always the first field.
     private static func escapeTOML(_ s: String) -> String {
+        // Escape `\` FIRST so the backslashes introduced below are not
+        // doubled. Control characters (`\n`, `\r`, `\t`) must be escaped too,
+        // or a filename/URL carrying them would break the single-line format
+        // and fail to round-trip (MinimalTOMLReader un-escapes the same set).
         s.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
     }
 
     public static func encode(_ lock: Lockfile) -> String {

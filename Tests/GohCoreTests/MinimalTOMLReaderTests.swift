@@ -96,6 +96,29 @@ struct MinimalTOMLReaderTests {
         #expect(reparsed.arrayOfTables("asset").count == doc.arrayOfTables("asset").count)
     }
 
+    @Test("rejects a duplicate top-level key loudly")
+    func rejectsDuplicateTopLevelKey() throws {
+        let toml = "version = 1\nversion = 2\n"
+        #expect(throws: MinimalTOMLReader.ParseError.self) {
+            _ = try MinimalTOMLReader.parse(toml)
+        }
+    }
+
+    @Test("rejects a duplicate key within an array-of-tables entry loudly")
+    func rejectsDuplicateKeyInTable() throws {
+        let toml = """
+            version = 1
+
+            [[asset]]
+            url = "https://example.org/a.bin"
+            url = "https://example.org/b.bin"
+            path = "a.bin"
+            """
+        #expect(throws: MinimalTOMLReader.ParseError.self) {
+            _ = try MinimalTOMLReader.parse(toml)
+        }
+    }
+
     // MARK: - T1.2 tests
 
     @Test("reader admits reserved 'auth' key (domain rejection is ManifestCodec's job, Phase 2)")

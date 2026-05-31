@@ -170,12 +170,24 @@ public struct MinimalTOMLReader {
             let value = try parseValue(rawVal, lineNumber: lineNumber)
 
             if var table = currentTable {
+                // Frozen format: a repeated key in the same scope is a hard
+                // error, not a silent last-wins overwrite.
+                guard table.fields[rawKey] == nil else {
+                    throw ParseError(
+                        "duplicate key '\(rawKey)' at line \(lineNumber)",
+                        line: lineNumber)
+                }
                 table.fields[rawKey] = value
                 currentTable = table
             } else {
                 if let allowed = allowedTopLevelKeys, !allowed.contains(rawKey) {
                     throw ParseError(
                         "unknown top-level key '\(rawKey)' at line \(lineNumber)",
+                        line: lineNumber)
+                }
+                guard topLevel[rawKey] == nil else {
+                    throw ParseError(
+                        "duplicate key '\(rawKey)' at line \(lineNumber)",
                         line: lineNumber)
                 }
                 topLevel[rawKey] = value
@@ -294,9 +306,12 @@ public struct MinimalTOMLReader {
                 switch next {
                 case "\"": result.append("\""); i += 2; continue
                 case "\\": result.append("\\"); i += 2; continue
+                case "n": result.append("\n"); i += 2; continue
+                case "r": result.append("\r"); i += 2; continue
+                case "t": result.append("\t"); i += 2; continue
                 default:
                     throw ParseError(
-                        #"unsupported escape sequence at line \#(lineNumber); only \" and \\ are supported"#,
+                        #"unsupported escape sequence at line \#(lineNumber); only \" \\ \n \r and \t are supported"#,
                         line: lineNumber)
                 }
             }

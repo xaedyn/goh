@@ -66,10 +66,25 @@ struct TrustCoreRoundTripTests {
 
     @Test("MinimalTOMLReader rejects an unknown escape with a named error")
     func readerRejectsUnknownEscape() {
-        let toml = "url = \"bad\\nescape\"\n"  // \n is not a supported escape
+        let toml = "url = \"bad\\xescape\"\n"  // \x is not a supported escape
         #expect(throws: MinimalTOMLReader.ParseError.self) {
             _ = try MinimalTOMLReader.parse(toml)
         }
+    }
+
+    @Test("LockfileCodec round-trips a url/path containing a tab and newline")
+    func lockRoundTripsControlChars() throws {
+        let value = "weights/a\tb\nc.bin"
+        let entry = LockfileCodec.LockEntry(
+            url: value, path: value,
+            sha256: Self.validLockSha(), size: 9,
+            downloadedAt: "2026-05-29T00:00:00Z")
+        let lock = LockfileCodec.Lockfile(
+            manifestHash: Self.validLockSha(), entries: [entry])
+        let decoded = try LockfileCodec.decode(LockfileCodec.encode(lock))
+        let got = try #require(decoded.entries.first)
+        #expect(got.url == value)
+        #expect(got.path == value)
     }
 
     @Test("hand-written manifest: a url with a # fragment is preserved (not comment-stripped)")

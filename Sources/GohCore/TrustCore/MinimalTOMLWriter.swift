@@ -41,7 +41,16 @@ public struct MinimalTOMLWriter {
     private static func encode(_ value: TOMLValue) -> String {
         switch value {
         case .string(let s):
-            return "\"\(s)\""
+            // Escape `\` first, then `"` and the control characters, matching
+            // LockfileCodec.escapeTOML and MinimalTOMLReader.parseQuotedString
+            // so the accepted subset round-trips byte-exactly.
+            let escaped = s
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+                .replacingOccurrences(of: "\r", with: "\\r")
+                .replacingOccurrences(of: "\t", with: "\\t")
+            return "\"\(escaped)\""
         case .integer(let i):
             return "\(i)"
         case .boolean(let b):

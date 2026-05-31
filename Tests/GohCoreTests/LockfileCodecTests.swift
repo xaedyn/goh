@@ -31,6 +31,17 @@ struct LockfileCodecTests {
         #expect(throws: LockfileCodec.CodecError.self) { try LockfileCodec.decode(try fixture("toml-lockfile-bad-missing-manifestHash")) }
     }
 
+    @Test("rejects a malformed manifestHash shape (not sha256:<64-hex>)")
+    func rejectsMalformedManifestHash() throws {
+        let toml = """
+            lockfileVersion = 1
+            manifestHash = "not-a-valid-hash"
+            """
+        #expect(throws: LockfileCodec.CodecError.self) {
+            try LockfileCodec.decode(toml)
+        }
+    }
+
     @Test("rejects reserved 'chunks' field present/non-null (§8.1)")
     func rejectsReservedChunksField() throws {
         #expect(throws: LockfileCodec.CodecError.self) { try LockfileCodec.decode(try fixture("toml-lockfile-bad-chunks-reserved")) }
