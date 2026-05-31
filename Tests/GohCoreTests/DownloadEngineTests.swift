@@ -195,6 +195,42 @@ struct DownloadEngineTests {
         #expect(final?.retryEligible == true)
     }
 
+    @Test("AC: end() is called on download failure — active-job set not leaked")
+    func ac9ActiveJobEndedOnFailure() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profileStore = HostProfileStore(
+            fileURL: directory.appending(path: "host-scheduling.plist"))
+        _ = profileStore.load()
+
+        // A failing transport guarantees run() takes a throwing exit path, so the
+        // bracket's end() must fire through run()'s defer.
+        let url = "https://example.com/file.iso"
+        MockURLProtocol.stub(url, failure: URLError(.timedOut))
+
+        let store = JobStore()
+        let job = store.create(
+            url: url, destination: directory.appending(path: "out.iso").path,
+            requestedConnectionCount: 8)
+
+        // Before it starts, no job is contended, so a probe id is solo.
+        #expect(profileStore.wasSolo(jobID: job.id))
+
+        let engine = DownloadEngine(
+            session: mockSession(),
+            hostProfileStore: profileStore)
+        await engine.run(jobID: job.id, in: store)
+        #expect(store.job(id: job.id)?.state == .failed)
+
+        // After failure, end() (in run()'s defer) must have removed the job from
+        // the active set: a fresh job on the same host starts solo, which would
+        // not hold if end() had leaked the failed job into the active set.
+        let key = "https://example.com:443"
+        profileStore.begin(jobID: 100, hostKey: key)
+        #expect(profileStore.wasSolo(jobID: 100))
+        profileStore.end(jobID: 100, hostKey: key)
+    }
+
     @Test("a dispatched add drives the engine to completion")
     func dispatchedAddDrivesEngine() async throws {
         let directory = try temporaryDirectory()

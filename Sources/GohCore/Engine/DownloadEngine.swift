@@ -66,6 +66,7 @@ public struct DownloadEngine: Sendable {
     private let sleepAssertionController: SleepAssertionController?
     private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
+    private let hostProfileStore: HostProfileStore?
 
     public init(
         session: URLSession,
@@ -74,7 +75,8 @@ public struct DownloadEngine: Sendable {
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
         completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)? = nil,
-        unexpectedStoreError: UnexpectedStoreErrorReporter? = nil
+        unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
+        hostProfileStore: HostProfileStore? = nil
     ) {
         self.session = session
         self.checkpointStore = checkpointStore
@@ -83,6 +85,7 @@ public struct DownloadEngine: Sendable {
         self.sleepAssertionController = sleepAssertionController
         self.completedDownloadHandler = completedDownloadHandler
         self.unexpectedStoreError = unexpectedStoreError
+        self.hostProfileStore = hostProfileStore
     }
 
     /// Routes a `JobStore` mutation error to the reporter, silently dropping
@@ -128,6 +131,21 @@ public struct DownloadEngine: Sendable {
         guard store.job(id: jobID) != nil else { return }
         control?.register(jobID: jobID)
         defer { control?.unregister(jobID: jobID) }
+        // Active-job bracket (D5/D7) — mirrors control?.register/unregister.
+        // begin() marks the job active and flags any concurrent siblings contended.
+        // end() is in a defer so it fires on every exit path (throw, pause, cancel,
+        // success) — cannot leak regardless of how run() terminates. The defer runs
+        // when run() EXITS, i.e. AFTER complete()'s handler has returned, so
+        // wasSolo(jobID:) at handler time still sees the whole-duration answer.
+        let jobHostKey = store.job(id: jobID).flatMap { hostKey(for: $0.url) }
+        if let key = jobHostKey {
+            hostProfileStore?.begin(jobID: jobID, hostKey: key)
+        }
+        defer {
+            if let key = jobHostKey {
+                hostProfileStore?.end(jobID: jobID, hostKey: key)
+            }
+        }
         // Claim the job atomically; only proceed if this call won the claim.
         guard (try? store.start(id: jobID)) == true else { return }
         sleepAssertionController?.downloadStarted()
