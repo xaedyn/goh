@@ -105,7 +105,7 @@ session; update at the start of every PR and at the end of every session.
   needs `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. Push the branch
   + open the PR when a phase is green (the branch is unpushed at session close).
 - **Side task done this session:** cross-repo identity audit — **DLXV (macvid)
-  made private** (it was public with `swyatt@gmail.com` + real name in all 12
+  made private** (it was public with a personal email + real name in all 12
   commits). chronoscope has 40 public `Co-Authored-By: Claude` trailers (deferred,
   lower urgency); mirelo/crown-of-the-touched/lowest_listed are private landmines
   (personal email in history) to scrub before ever flipping public. See the
