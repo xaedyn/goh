@@ -71,7 +71,7 @@ struct DownloadEngineTests {
         await DownloadEngine(
             session: mockSession(),
             sleepAssertionController: sleepAssertionController,
-            completedDownloadHandler: { completed in
+            completedDownloadHandler: { completed, _, _ in
                 completedJob.withLock { $0 = completed }
             }
         ).run(jobID: job.id, in: store)
@@ -86,6 +86,33 @@ struct DownloadEngineTests {
         #expect(completedJob.withLock { $0?.completedAt } != nil)
         #expect(sleepAssertionCreates.withLock { $0 } == 1)
         #expect(sleepAssertionReleases.withLock { $0 } == [42])
+    }
+
+    @Test("the completion handler receives a non-zero transfer duration and isResume==false for a fresh download")
+    func completionHandlerCarriesTransferDurationForFreshDownload() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<200_000).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+        let observed = Mutex<(duration: Duration, isResume: Bool)?>(nil)
+
+        await DownloadEngine(
+            session: mockSession(),
+            completedDownloadHandler: { _, duration, isResume in
+                observed.withLock { $0 = (duration, isResume) }
+            }
+        ).run(jobID: job.id, in: store)
+
+        #expect(store.job(id: job.id)?.state == .completed)
+        let captured = try #require(observed.withLock { $0 })
+        #expect(captured.duration > .zero)
+        #expect(captured.isResume == false)
     }
 
     @Test("an HTTP error status fails the job with httpStatus")

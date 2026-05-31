@@ -64,7 +64,7 @@ public struct DownloadEngine: Sendable {
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
     private let sleepAssertionController: SleepAssertionController?
-    private let completedDownloadHandler: (@Sendable (JobSummary) -> Void)?
+    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
 
     public init(
@@ -73,7 +73,7 @@ public struct DownloadEngine: Sendable {
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
-        completedDownloadHandler: (@Sendable (JobSummary) -> Void)? = nil,
+        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)? = nil,
         unexpectedStoreError: UnexpectedStoreErrorReporter? = nil
     ) {
         self.session = session
@@ -317,7 +317,9 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
-        try complete(jobID: job.id, in: store)
+        try complete(
+            jobID: job.id, in: store,
+            transferDuration: clock.now - started, isResume: true)
         trace.summary()
     }
 
@@ -461,7 +463,9 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: completed, total: total, elapsed: clock.now - started))
-        try complete(jobID: job.id, in: store)
+        try complete(
+            jobID: job.id, in: store,
+            transferDuration: clock.now - started, isResume: false)
     }
 
     // MARK: Range-parallel
@@ -537,13 +541,18 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
-        try complete(jobID: job.id, in: store)
+        try complete(
+            jobID: job.id, in: store,
+            transferDuration: clock.now - started, isResume: false)
         trace.summary()
     }
 
-    private func complete(jobID: UInt64, in store: JobStore) throws {
+    private func complete(
+        jobID: UInt64, in store: JobStore,
+        transferDuration: Duration, isResume: Bool
+    ) throws {
         let completed = try store.complete(id: jobID)
-        completedDownloadHandler?(completed)
+        completedDownloadHandler?(completed, transferDuration, isResume)
     }
 
     /// Issues a fresh ranged `GET` for `range` and feeds its body into

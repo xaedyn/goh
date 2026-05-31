@@ -116,7 +116,7 @@ do {
             importedCookies.header(forJobID: jobID)
         },
         sleepAssertionController: sleepAssertions,
-        completedDownloadHandler: { completed in
+        completedDownloadHandler: { completed, _, _ in
             do {
                 try metadataTagger.tagCompletedDownload(
                     destination: completed.destination,
