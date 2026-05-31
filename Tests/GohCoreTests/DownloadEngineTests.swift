@@ -961,6 +961,25 @@ struct DownloadEngineTests {
         #expect(reportedErrors.withLock { $0 }.isEmpty)
     }
 
+    @Test("SM3 prerequisite: fetchRanged accepts an injected clock (compile check)")
+    func injectedClockAccepted() async throws {
+        // Verifies the new clock parameter exists; behaviour tested in Task 3.
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        // 4 MiB — above minChunk, so the 206 path (fetchRanged) is exercised.
+        let total: UInt64 = 4 * 1024 * 1024
+        let payload = Data(repeating: 0xAB, count: Int(total))
+        MockURLProtocol.stub(url, body: payload)
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 2)
+
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+        #expect(store.job(id: job.id)?.state == .completed)
+    }
+
     @Test("rm during an active download does not surface jobNotFound to the reporter")
     func rmDuringActiveDownloadSwallowsJobNotFound() async throws {
         let directory = try temporaryDirectory()

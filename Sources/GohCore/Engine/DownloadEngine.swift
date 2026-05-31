@@ -497,7 +497,8 @@ public struct DownloadEngine: Sendable {
         initialResponse: HTTPURLResponse,
         firstRangeStream: AsyncThrowingStream<Data, Error>,
         cancelFirstRangeStream: @escaping @Sendable () -> Void,
-        trace: EngineDiagnostics
+        trace: EngineDiagnostics,
+        clock: ContinuousClock = ContinuousClock()   // injected; default keeps callers unchanged
     ) async throws {
         let ranges = ByteRange.split(
             total: total, requested: job.requestedConnectionCount, minChunk: Self.minChunk)
@@ -510,7 +511,6 @@ public struct DownloadEngine: Sendable {
             job: job, total: total, response: initialResponse)
 
         let progress = RangeProgress(rangeCount: ranges.count)
-        let clock = ContinuousClock()
         let started = clock.now
 
         do {
