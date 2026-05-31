@@ -21,6 +21,9 @@ public struct WorkerRateSample: Sendable {
 public enum GovernorDecision: Sendable, Equatable {
     case hold
     case addWorkers(Int)
+    /// Reserved for Phase 3 cruise/throttle-response wiring: the live worker pool
+    /// cooperatively sheds workers when the cruise controller detects excess concurrency.
+    /// `decide()` never emits this in P1 (probe-only); it is not dead code.
     case dropWorkers(Int)
     case commit(Int)
     case backOffPinLow
