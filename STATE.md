@@ -5,6 +5,46 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (merge session) — Phase 2 adaptive scheduling **MERGED to `main`**; next = Phase 3 launch
+
+- **Both PRs merged to `main` via squash** (branch protection: PRs required, self-merge OK; branches deleted on origin + local):
+  - **PR #77** — adaptive per-host range scheduling — squash commit **`32efda1`**.
+    The whole Phase 2 feature is now on `main`: a per-host ε-greedy bandit over
+    `{2,4,8,16}` persisted in the daemon-owned `host-scheduling.plist`, D5/D8-gated
+    observation recording, and a `GOH_ENGINE_TRACE` scheduling-decision line.
+    **473 tests pass**, `-warnings-as-errors` clean. CI green at merge (Build &
+    test, Package artifacts; signed-PKG skipped — needs Dev ID). CodeRabbit clean.
+    `protocolVersion` 3 / `JobCatalog.version` 1 / `JobSummary` unchanged. DESIGN.md
+    §Adaptive host scheduling documents the frozen v1 format.
+  - **PR #78** — in-flight adaptive parallelism **design seed** + ROADMAP v0.2 entry
+    — squash commit **`e048ec8`**. Docs-only; freezes nothing. The seed
+    (`docs/design-notes/2026-05-31-in-flight-adaptive-parallelism.md`) designs a
+    BBR-style governor on *connection count* for single-download optimization
+    (multi-edge IP fan-out, protocol-aware connection-vs-stream, history-seeded
+    start that unifies with the per-host bandit), plus the `URLSession`-signal
+    constraint and a benchmark-sourcing gate. The v0.2 performance headline.
+- **Squash was chosen deliberately for #77:** a personal email had leaked into an
+  intermediate branch commit (`00c79ba`); squashing kept the redacted final
+  `STATE.md` on `main` and the leaking commit out of `main`'s history. Residual:
+  GitHub may retain that commit reachable by direct SHA / in the merged-PR commits
+  view for a while (and it was transiently public). See the `cross-repo-email-audit`
+  memory; GitHub Support purge or address rotation are the only full remediations.
+- **NEXT ACTION — strategic arc Phase 3: public launch.** The one gate outside the
+  code is **Apple Developer ID credentials**. Sequence (from the gitignored
+  `docs/vision/VISION-2026-05-26.md` and the handoff at the bottom of this file):
+  1. **Sign + notarize the PKG** via PR #36's `private-release-candidate` workflow
+     (shape already verified by `Scripts/verify-private-release-workflow.sh`; what's
+     missing is the secrets).
+  2. **Open the `xaedyn/homebrew-goh` tap** and publish the PR #29/#30 formula.
+  3. **Add `SECURITY.md` / `CONTRIBUTING.md` / `CODE_OF_CONDUCT.md`** (SECURITY.md
+     first — disclosure address for a tool handling cookies + sensitive URLs).
+  4. **Polish the launch post** (`docs/vision/LAUNCH-POST-DRAFT.md`, gitignored).
+  5. **Post to HN + r/macapps + r/commandline + r/datahoarder.**
+  - **Alternative track (no credential gate):** the in-flight-parallelism slice
+    (PR #78 seed) as the v0.2 performance headline — needs its own four-round design
+    pass + *sourced* long-fat-network / multi-edge-CDN benchmarks before it can claim
+    a win (current benchmark hosts throttle and would mask it).
+
 ### 2026-05-31 (impl session) — Phase 2 (adaptive scheduling): IMPLEMENTED, PR #77 open
 
 - **Branch:** `design/adaptive-scheduling`; PR **#77** open against `main`
@@ -628,18 +668,21 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `design/adaptive-scheduling`; **PR #77 open** against `main`
-(all of Phase 2 — adaptive per-host range scheduling — IMPLEMENTED). `main` is at
-`48ec675` (PR #76). **473 tests pass** on the branch (424 baseline + 49 new),
+`main` now includes **Phase 2 — adaptive per-host range scheduling** (PR #77,
+squash `32efda1`) and the **in-flight-parallelism design seed** (PR #78, squash
+`e048ec8`). Both feature/docs branches are deleted. **473 tests pass**,
 `swift build` warning-clean. See the top "Current state" entry, dated
-*2026-05-31 (impl session)*, for the full per-phase breakdown.
+*2026-05-31 (merge session)*, for the full breakdown (incl. the email-redaction
+residual note).
 
-**THE NEXT ACTION — get PR #77 to green + merge, then start Phase 3 (public launch).**
-1. PR #77 review: CodeRabbit was run at feature-complete; triaged findings are
-   recorded on the PR / in the impl-session entry. Address any new review feedback,
-   confirm CI green, then **merge to `main`**.
-2. Then the strategic arc's **Phase 3 — public launch** (the launch sequence below,
-   still valid). The only gate outside the code is Apple Developer ID credentials.
+**THE NEXT ACTION — strategic arc Phase 3: public launch.** The one gate outside the
+code is **Apple Developer ID credentials**. The launch sequence is preserved just
+below (sign+notarize PKG via PR #36 workflow → open the `xaedyn/homebrew-goh` tap →
+add SECURITY/CONTRIBUTING/CODE_OF_CONDUCT → launch post → HN/r/macapps/r/commandline/
+r/datahoarder). **Credential-free alternative:** start the **in-flight adaptive
+parallelism** slice (its own four-round design pass off the PR #78 seed; needs
+sourced long-fat-network / multi-edge-CDN benchmarks) as the v0.2 performance
+headline.
 
 **Doc-currency note (verified 2026-05-31, impl session):** The top "Current state"
 entry and this handoff are current. `DESIGN.md` §Adaptive host scheduling now
