@@ -2,7 +2,7 @@
 title: Adaptive per-host range scheduling — design
 phase: Strategic arc Phase 2
 status: draft
-round: 1 of 4 (Draft)
+round: 2 of 4 (Review — adversarial block issues addressed)
 date: 2026-05-31
 branch: design/adaptive-scheduling
 ---
@@ -66,10 +66,28 @@ per-subdomain and `cdn1.x.com` ≠ `cdn2.x.com` in practice. URLs are raw `Strin
 today (`JobSummary.url`) with no host extraction anywhere — this design adds a
 single normalization helper (`URLComponents`-based) in `GohCore`.
 
+**Resolved sub-decisions (were Open; promoted because they are correctness/security
+preconditions of the very first key the helper produces, not tunables):**
+- **Credentials — strip unconditionally.** Userinfo (`user:pass@`) is removed
+  before keying, always. A credential must never reach the persisted key (it would
+  be written to a durable plist in cleartext). This is a hard rule, not a leaning.
+- **Nil host — skip recording, never bucket.** Host extraction can yield nil
+  (malformed URL, some IPv6/userinfo forms). The engine already rejects nil-host
+  URLs (`URL(string:)` → `unsupportedURL`, `DownloadEngine.swift:175`), so a
+  recordable (completed) download generally *has* a host — but the keying helper
+  MUST still treat nil as "no key": **skip the observation entirely.** It must
+  never synthesize a shared `""`/`"nil"` bucket, which would silently collapse
+  unrelated hosts into one arm-set and converge the bandit to a wrong `N` with no
+  error. (Selection-time nil → fall back to default 8, no profile lookup.)
+- **IPv6 literals — bracketed form in the key.** Use the canonical
+  `URLComponents`-bracketed host (`[2001:db8::1]`) so a literal address keys
+  consistently and parses back.
+- **IDN / punycode — store the ASCII (punycode) host** as emitted by
+  `URLComponents`, so the same host keys identically regardless of input encoding.
+
 **Open.**
-- IDN / punycode hosts — normalize to ASCII (punycode) or store as-is?
-- Userinfo/credentials in URL — strip before keying (yes, almost certainly).
-- Is scheme-in-key over-splitting (a host served on both 80→443 redirect)?
+- Scheme-in-key vs. an http→https redirect landing the same origin in two arm-sets
+  — accept as harmless (each scheme genuinely behaves differently); confirm.
 
 ### D2 — Where does the record live: in `catalog.plist`, or a sibling file?
 
@@ -93,10 +111,30 @@ means zero migration for existing installs — a missing file behaves exactly li
 today (default 8). Option 3 (per-host files) is rejected for v1: host count is
 small, one file is simpler; revisit only if write contention appears.
 
-**Open.**
-- Exact filename (`host-scheduling.plist`? `hosts.plist`?).
-- Corrupt-file recovery: discard + write a `.corrupt` sidecar, matching
-  `CatalogStore`/`CheckpointStore` (proposed yes).
+**Resolved.**
+- **Filename:** `host-scheduling.plist`.
+- **Corrupt-file recovery:** discard + write a `.corrupt` sidecar, matching
+  `CatalogStore`/`CheckpointStore`.
+
+**Data classification & at-rest posture (block-level — frozen on-disk format).**
+The file stores, per host: the host key (scheme+host+port, credentials stripped per
+D1), per-`N` throughput EWMAs, sample counts, and timestamps. The host key is
+**history-adjacent metadata** (a record of which servers the user has pulled from).
+- **Precedent / scope honesty.** This is *not a novel kind of data* on this machine:
+  `catalog.plist` already persists the **full URL** of every download durably,
+  including completed jobs (they remain in the catalog until `rm` —
+  `JobStore.swift:184`), and checkpoints persist URL + destination until completion.
+  The host is therefore already derivable from existing daemon state indefinitely.
+  What this file *adds* is host-keyed aggregation and a bounded retention window.
+- **No secrets at rest.** Credential-stripping (D1) guarantees no userinfo is keyed;
+  no cookies, tokens, request bodies, or destinations are stored — only the
+  origin authority and timing aggregates.
+- **Permissions:** the file is daemon-internal with **no external reader**, so it is
+  written **owner-only (0600)** — a deliberate tightening over the umask-default
+  (~0644) that `data.write()` gives the existing catalog/checkpoint files. (Hardening
+  those pre-existing files is out of scope here.)
+- **Retention:** the D9 TTL is the retention control — host entries unseen for the
+  TTL window are dropped on load, so the history self-expires.
 
 ### D3 — What does each per-host record store?
 
@@ -109,28 +147,41 @@ HostScheduling {            // file root
   hosts: [HostProfile]
 }
 HostProfile {
-  host: String              // the D1 key
-  acceptsRanges: Bool?      // last observed 206-vs-200; nil = unknown
-  arms: [ConnObservation]   // one per tried connection count
+  host: String              // the D1 key (credentials stripped)
+  arms: [ConnObservation]   // one per tried connection count; bounded to the
+                            //   D4 candidate set (≤ its cardinality)
   updatedAt: Date
 }
 ConnObservation {           // one "arm" of the bandit (D4)
   connectionCount: UInt8
-  throughputEWMA: Double    // bytes/sec, exponentially-weighted moving avg
+  throughputEWMA: Double    // bytes/sec; computed in the store as
+                            //   Double(totalBytes)/seconds, then EWMA-folded
+                            //   (NOT read from JobProgress.bytesPerSecond)
   sampleCount: UInt32
   updatedAt: Date
 }
 ```
 Rationale: the per-`N` `throughputEWMA` table is exactly what the adapt algorithm
-(D4) needs to compare counts; `sampleCount` gates exploration; `acceptsRanges`
-lets us skip a parallel attempt on hosts known to return `200`.
+(D4) needs to compare counts; `sampleCount` gates exploration.
+
+**Frozen-surface principle (block-level — the point of the four-round pass).** The
+file stores **only raw measurements** — `connectionCount`, `throughputEWMA`,
+`sampleCount`, timestamps, host key. **Every *selection* knob — candidate set, ε,
+α, `minSamples`, the D5 gates, the D9 TTL/cap — is a non-frozen daemon constant**,
+NOT persisted. This is deliberate: tuning the algorithm later must never require a
+format `version` bump. `arms` is bounded to the current candidate set's cardinality
+so the structure can't grow unbounded; an arm for a `connectionCount` no longer in
+the set is simply ignored at selection and aged out by D9.
+
+**Resolved.**
+- **`acceptsRanges` dropped.** The speculative `Range: bytes=0-` request detects
+  206-vs-200 on *every* download already (`DownloadEngine.swift:193-210`), so a
+  stored flag saves no work and only enlarges the frozen surface.
 
 **Open.**
-- Do we need `acceptsRanges` at all, given the speculative `Range: bytes=0-`
-  request already detects support on every download? (Leaning: keep it only if it
-  saves work; otherwise drop to reduce the frozen surface.)
-- Store last-observed file size / network-class with each arm to reduce noise?
-- Bound `arms` to the candidate set in D4 (so it can't grow unbounded).
+- Whether to additionally record last-observed file size / network class per arm to
+  reduce cross-condition noise (leaning NO for v1 — the D5 duration gate + EWMA
+  already reject most noise; adding it expands the frozen format).
 
 ### D4 — The probe-and-adapt algorithm
 
@@ -196,8 +247,19 @@ file size, contention, or network flaps.
   sibling downloads split the host's bandwidth and poison the per-`N` signal);
 - the network path stayed stable (no cellular auto-pause mid-download).
 
-Signal = `totalBytes / activeWallClock` for the ranged phase. Update the matching
-arm's EWMA and `sampleCount`.
+**Signal & clock — RESOLVED.** Signal = `Double(totalBytes) / seconds`, computed in
+the `HostProfileStore` and EWMA-folded into the matching arm (it is **not** read
+from `JobProgress.bytesPerSecond`, which is `UInt64` and a sampled instantaneous
+rate). For `seconds`, **v1 uses the engine's existing single download wall-clock**
+— the `started` instant at the speculative `Range: bytes=0-` GET through
+completion (`DownloadEngine.swift:172-215, 682-687`). This intentionally includes
+the 200/206-decision round-trip and slow-start ramp, but at the **≥ 10 s duration
+gate that transient is < ~1 s, i.e. < 10 % of the measured window** and identical
+across arms, so it does not bias arm-to-arm comparison. The engine therefore needs
+**no new measurement point** for v1. The more precise "discard the ramp window /
+measure only steady state" refinement is explicitly **deferred** (it would require
+the engine to surface a ranged-phase-only clock, and the duration gate already
+makes the ramp negligible).
 
 **Why duration, not bytes.** What we're measuring is the server's *steady-state*
 response to parallelism. The first few seconds of any download are TCP slow-start
@@ -214,17 +276,27 @@ downloads the connection count barely affects wall-clock anyway). A small byte
 **floor** (proposed ≥ 8 MiB) is kept only to reject a degenerate stalled tiny
 transfer that happens to exceed 10 s.
 
-**Open.**
-- Duration gate value (10 s? 8 s? 15 s?) and whether the byte floor is needed.
-- Better still: discard the first ~N seconds of ramp and measure throughput only
-  over the steady-state window (the engine already samples `bytesPerSecond`).
-  More accurate, more complex — Round 2 to decide v1 vs later.
-- Detecting "only active download to this host" requires the daemon to track
-  active jobs by host key — new in-daemon bookkeeping (not persisted). Confirm
-  this is acceptable scope.
-- Do we discard observations whose `actualConnectionCount` was capped below the
-  requested `N` by `minChunk` (small file → fewer ranges than asked)? (Leaning
-  yes — that arm wasn't really exercised.)
+**Concurrent-same-host guard — RESOLVED: in scope.** Rejecting observations taken
+while another download to the same host was active is **load-bearing** for signal
+integrity (siblings split the host's bandwidth and would poison the per-`N`
+arm). It is therefore an **in-scope component**: the `HostProfileStore` owner (D7)
+keeps a small **in-memory** `[hostKey: activeCount]` index — incremented when a job
+to that host starts, decremented on terminal transition. An observation is recorded
+only if the host's active count was exactly 1 for the whole download (a flag the
+engine path sets false if it ever observes a sibling). This index is **not
+persisted** (it is live daemon state, rebuilt from the active set on restart). The
+attribution arm is the **`actualConnectionCount` actually used**, not the requested
+count.
+
+**Resolved.**
+- **Capped arm:** discard the observation when `actualConnectionCount < requested N`
+  because `minChunk` reduced the split (small file → fewer ranges than asked) — that
+  arm wasn't really exercised at the requested parallelism. (Mostly moot given the
+  duration/size gate, but stated for correctness.)
+
+**Open (tunable values only — non-frozen daemon constants per D3):**
+- Duration gate value (10 s? 8 s? 15 s?) and whether the ≥ 8 MiB byte floor is kept.
+- The steady-state-window refinement stays deferred (see Signal & clock above).
 
 ### D6 — Interaction with the explicit `--connections` override
 
@@ -238,12 +310,31 @@ transfer that happens to exceed 10 s.
   via D4, falling back to the default **8** when no profile exists or the chosen
   arm is still cold.
 
-**Open.**
-- Confirm the dispatcher can still distinguish nil from set after
-  `CommandDispatcher` applies `defaultConnectionCount` — today it resolves nil → 8
-  early (`CommandDispatcher.swift:50-72`); adaptation needs the *unresolved* nil to
-  survive to the scheduler. This likely requires moving the default-resolution
-  point. **Load-bearing implementation detail — flag for Round 2.**
+**Resolution point — RESOLVED, and it requires NO schema change.** Today
+`CommandDispatcher` resolves `request.connectionCount ?? defaultConnectionCount`
+(then caps it) into the non-optional `JobSummary.requestedConnectionCount` at
+job-creation time (`CommandDispatcher.swift:51-72`); the engine later reads
+`job.requestedConnectionCount` (`DownloadEngine.swift:477`). The change is to
+**replace the constant fallback with a host-profile lookup at that same admission
+point**: when `connectionCount` is nil, the dispatcher asks the `HostProfileStore`
+for the bandit's chosen `N` (D4) — falling back to **8** only when there is no
+profile or the chosen arm is cold — and stores *that* concrete value in
+`requestedConnectionCount`. When `connectionCount` is set, it is honored unchanged.
+
+This is deliberately the **least-invasive** wiring and it preserves the spec's
+compatibility claims:
+- `requestedConnectionCount` stays a resolved non-optional `UInt8` → **`JobSummary`
+  and `JobCatalog.version` are unchanged (stays 1)**; the engine is unchanged.
+- **No need to persist an "adaptive vs explicit" distinction.** Observation
+  recording (D5) attributes to the `actualConnectionCount` that ran, and records for
+  *both* adapted and user-specified downloads — a user-chosen `N` is still valid
+  data for that arm. So the choice's *origin* never needs to be remembered.
+- **Accepted v1 limitation:** because `N` is resolved at admission, a job that sits
+  `queued`/`network`-paused for a long time uses the profile as it was at admission,
+  not at start. Acceptable for v1 (downloads typically start promptly); noted, not
+  fixed.
+
+**Open.** None — fully specified.
 
 ### D7 — Concurrency, write cadence, durability
 
@@ -273,11 +364,15 @@ host profile (single-connection) in v1. Adaptive resume is explicitly out of sco
 
 **Question.** Keep the file bounded and the data fresh over months.
 
-**Proposed answer.** EWMA (D4) handles recency of the *measurement*. For the
-*file*: cap total stored hosts (proposed **256**, LRU-evict by `updatedAt`), and
-drop profiles older than a TTL (proposed **90 days**) on load.
+**Proposed answer.** EWMA (D4) handles recency of the *measurement*. For the *file*,
+the **v1 mechanism is a single TTL-on-load**: drop host profiles whose `updatedAt`
+is older than the TTL (proposed **90 days**) when the store loads. This doubles as
+the retention control (D2). A hard host **cap is a deferred backstop**, not v1 — the
+dataset is small (one tiny record per distinct host actually downloaded from), and a
+second eviction policy is unwarranted until real host counts approach a limit.
 
-**Open.** Cap and TTL values; LRU vs LFU eviction.
+**Open (tunable values only — non-frozen constants per D3).** TTL value; whether a
+cap backstop is ever needed.
 
 ### D10 — Versioning / migration / protocol impact
 
@@ -293,12 +388,28 @@ stays 3; `JobCatalog.version` stays 1.** No migration for existing installs.
 
 ## Success measurement (because the bar is "measurable adaptation")
 
-Round 2+ should specify the concrete experiment, but the shape: extend the
-`Benchmarks/` suite to run the same host repeatedly with a cold profile, and show
-(a) the chosen `N` converging and (b) steady-state throughput at the converged `N`
-meeting-or-beating the static-8 baseline on the saturated workload, and *moving in
-the right direction* on the amenable one. The amenable structural gap means the
-amenable result is reported, not gated.
+**Positive signal (adaptation works).** Extend the `Benchmarks/` suite to run the
+same host repeatedly from a cold profile and show (a) the chosen `N` converging and
+(b) steady-state throughput at the converged `N` meeting-or-beating the static-8
+baseline on the saturated workload, and *moving in the right direction* on the
+amenable one. The amenable structural gap means the amenable result is reported,
+not gated.
+
+**Regression signal (adaptation went WRONG) — block-level, required.** Epsilon-greedy
+on noisy, infrequent samples can settle on a worse arm or oscillate. There must be an
+observable signal for that failure direction, not just for success:
+- **Guard test:** the benchmark asserts converged-`N` throughput is **≥ static-8
+  within a stated tolerance** on the saturated workload. A converged `N` that is
+  measurably *slower* than the old fixed behavior is a **failing test**, not a silent
+  ship. (This makes "don't regress the current behavior" an explicit, falsifiable
+  scenario rather than an assumption.)
+- **Per-download diagnostic:** extend `GOH_ENGINE_TRACE` to emit, per download, the
+  host key, the chosen `N`, whether it was adapted-or-explicit-or-cold, and the arm
+  EWMAs consulted — so a regression is diagnosable offline from a real run, not just
+  in the benchmark.
+- **Floor:** selection never drops below the cold-start default (8) purely on a
+  single thin sample; an arm must reach `minSamples` before it can *displace* 8 as
+  the exploit choice. This bounds worst-case regression from one noisy measurement.
 
 ## Test precedent to follow (from the grounding pass)
 
@@ -308,16 +419,24 @@ amenable result is reported, not gated.
 - `ByteRangeTests`: pure split logic. The bandit selection logic should be
   similarly pure + exhaustively unit-tested (deterministic given a seeded ε / fed
   observations).
-- Golden fixtures: the trust-core round-trip lesson says a *frozen on-disk format
-  needs an explicit round-trip corpus*. Add one for `HostScheduling` v1.
+- **Golden round-trip corpus — in-scope deliverable.** Per the trust-core
+  post-mortem (a frozen on-disk format needs an explicit round-trip corpus, which
+  the current catalog/checkpoint formats notably *lack*), `HostScheduling` v1 ships
+  with a committed golden-fixture corpus and a CI round-trip guard. This is the one
+  place this phase also pays down existing on-disk-format test debt.
 
-## Open cross-cutting questions for the review rounds
+## Cross-cutting status after Round 2 (adversarial review)
 
-1. **D6's default-resolution timing** is the one place this reaches into existing
-   command flow — needs a Round 2 implementation sketch.
-2. Is `acceptsRanges` (D3) worth freezing, or noise?
-3. Candidate set + ε + α + thresholds (D4/D5/D9) are all tunables — decide which
-   are *frozen in the format* vs *daemon constants we can change freely*. (Leaning:
-   the format stores only measurements; all knobs are non-frozen daemon constants.)
-4. The "only active download to this host" guard (D5) adds in-daemon host-keyed
-   active-job tracking — confirm scope.
+All four items below were resolved in this round (were Open in Round 1):
+1. **D6 default-resolution** — resolved: relocate the nil→`N` fallback to the
+   admission point as a host-profile lookup; no schema change, `JobSummary` and
+   `JobCatalog.version` unchanged.
+2. **`acceptsRanges`** — dropped (the speculative ranged GET already detects support).
+3. **Frozen vs tunable** — resolved: the format persists only raw measurements;
+   every selection knob is a non-frozen daemon constant (D3 frozen-surface principle).
+4. **Active-job-by-host guard** — resolved: in scope, as an in-memory (non-persisted)
+   `[hostKey: activeCount]` index owned by the `HostProfileStore` (D5/D7).
+
+Remaining Opens are *tunable values only* (durations, ε, α, TTL, candidate-set
+granularity) — explicitly non-frozen daemon constants to be settled empirically
+against the benchmark suite, never requiring a format `version` bump.
