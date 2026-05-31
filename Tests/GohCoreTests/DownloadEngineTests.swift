@@ -71,7 +71,7 @@ struct DownloadEngineTests {
         await DownloadEngine(
             session: mockSession(),
             sleepAssertionController: sleepAssertionController,
-            completedDownloadHandler: { completed in
+            completedDownloadHandler: { completed, _, _ in
                 completedJob.withLock { $0 = completed }
             }
         ).run(jobID: job.id, in: store)
@@ -86,6 +86,33 @@ struct DownloadEngineTests {
         #expect(completedJob.withLock { $0?.completedAt } != nil)
         #expect(sleepAssertionCreates.withLock { $0 } == 1)
         #expect(sleepAssertionReleases.withLock { $0 } == [42])
+    }
+
+    @Test("the completion handler receives a non-zero transfer duration and isResume==false for a fresh download")
+    func completionHandlerCarriesTransferDurationForFreshDownload() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<200_000).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+        let observed = Mutex<(duration: Duration, isResume: Bool)?>(nil)
+
+        await DownloadEngine(
+            session: mockSession(),
+            completedDownloadHandler: { _, duration, isResume in
+                observed.withLock { $0 = (duration, isResume) }
+            }
+        ).run(jobID: job.id, in: store)
+
+        #expect(store.job(id: job.id)?.state == .completed)
+        let captured = try #require(observed.withLock { $0 })
+        #expect(captured.duration > .zero)
+        #expect(captured.isResume == false)
     }
 
     @Test("an HTTP error status fails the job with httpStatus")
@@ -166,6 +193,42 @@ struct DownloadEngineTests {
         #expect(final?.state == .failed)
         #expect(final?.error?.code == .timedOut)
         #expect(final?.retryEligible == true)
+    }
+
+    @Test("AC: end() is called on download failure — active-job set not leaked")
+    func ac9ActiveJobEndedOnFailure() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profileStore = HostProfileStore(
+            fileURL: directory.appending(path: "host-scheduling.plist"))
+        _ = profileStore.load()
+
+        // A failing transport guarantees run() takes a throwing exit path, so the
+        // bracket's end() must fire through run()'s defer.
+        let url = "https://example.com/file.iso"
+        MockURLProtocol.stub(url, failure: URLError(.timedOut))
+
+        let store = JobStore()
+        let job = store.create(
+            url: url, destination: directory.appending(path: "out.iso").path,
+            requestedConnectionCount: 8)
+
+        // Before it starts, no job is contended, so a probe id is solo.
+        #expect(profileStore.wasSolo(jobID: job.id))
+
+        let engine = DownloadEngine(
+            session: mockSession(),
+            hostProfileStore: profileStore)
+        await engine.run(jobID: job.id, in: store)
+        #expect(store.job(id: job.id)?.state == .failed)
+
+        // After failure, end() (in run()'s defer) must have removed the job from
+        // the active set: a fresh job on the same host starts solo, which would
+        // not hold if end() had leaked the failed job into the active set.
+        let key = "https://example.com:443"
+        profileStore.begin(jobID: 100, hostKey: key)
+        #expect(profileStore.wasSolo(jobID: 100))
+        profileStore.end(jobID: 100, hostKey: key)
     }
 
     @Test("a dispatched add drives the engine to completion")

@@ -94,6 +94,16 @@ do {
     let store = JobStore(catalog: loaded.catalog, writer: writer, progress: progress)
     let checkpointStore = CheckpointStore(
         directoryURL: supportDirectory.appending(path: "checkpoints", directoryHint: .isDirectory))
+    let hostProfileStore = HostProfileStore(
+        fileURL: supportDirectory.appending(path: "host-scheduling.plist"),
+        persistFailureReporter: { operation, error in
+            warn("host-profile store persist failed (\(operation)): \(error)")
+        })
+    let hostProfileLoadResult = hostProfileStore.load()
+    if let sidecar = hostProfileLoadResult.corruptionSidecar {
+        warn("the host-scheduling file was unreadable and has been reset; "
+            + "the damaged file was kept at \(sidecar.path)")
+    }
     let reconciliation = store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore)
     if !reconciliation.requeuedJobIDs.isEmpty || !reconciliation.failedJobIDs.isEmpty {
         writer.flush()
@@ -116,7 +126,26 @@ do {
             importedCookies.header(forJobID: jobID)
         },
         sleepAssertionController: sleepAssertions,
-        completedDownloadHandler: { completed in
+        completedDownloadHandler: { completed, transferDuration, isResume in
+            // D5/D8 gates — all must hold to record a valid observation.
+            // wasSolo is checked BEFORE end() runs (end() is in a defer in
+            // run(), which fires after this handler returns) — so the
+            // whole-duration solo answer is correct here.
+            let observationKey = hostKey(for: completed.url)
+            if let key = observationKey,
+               HostProfileStore.shouldRecordObservation(
+                   isResume: isResume,
+                   transferDuration: transferDuration,
+                   bytesCompleted: completed.progress.bytesCompleted,
+                   wasSolo: hostProfileStore.wasSolo(jobID: completed.id),
+                   actualConnectionCount: completed.actualConnectionCount,
+                   requestedConnectionCount: completed.requestedConnectionCount) {
+                hostProfileStore.recordObservation(
+                    hostKey: key,
+                    connectionCount: completed.actualConnectionCount,
+                    totalBytes: completed.progress.bytesCompleted,
+                    transferDuration: transferDuration)
+            }
             do {
                 try metadataTagger.tagCompletedDownload(
                     destination: completed.destination,
@@ -128,13 +157,15 @@ do {
         },
         unexpectedStoreError: { jobID, operation, error in
             warn("job \(jobID) store.\(operation) failed unexpectedly: \(error)")
-        })
+        },
+        hostProfileStore: hostProfileStore)
     let scheduleJob = makeScheduleJob(engine: engine, store: store)
     let networkCoordinator = NetworkPauseCoordinator(
         store: store, control: downloadControl, scheduleJob: scheduleJob)
     let dispatcher = CommandDispatcher(
         store: store, control: downloadControl,
         checkpointStore: checkpointStore,
+        hostProfileStore: hostProfileStore,
         importedCookies: importedCookies,
         queuedJobAdmission: { networkCoordinator.jobBecameQueued($0) })
     let authImportHandler = SafariAuthImportHandler(importedCookies: importedCookies)

@@ -388,4 +388,77 @@ struct CommandDispatcherTests {
             #expect(error.code == .jobNotFound)
         }
     }
+
+    // AC7: nil connectionCount → profile-driven N.
+    @Test("AC: nil connectionCount uses profile-driven N at admission")
+    func ac7NilConnectionCountUsesProfile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(
+            fileURL: directory.appending(path: "host-scheduling.plist"))
+        store.recordObservation(
+            hostKey: "https://example.com:443", connectionCount: 16,
+            totalBytes: 200 * 1024 * 1024, transferDuration: .seconds(15))
+        store.recordObservation(
+            hostKey: "https://example.com:443", connectionCount: 16,
+            totalBytes: 200 * 1024 * 1024, transferDuration: .seconds(15))
+        let dispatcher = CommandDispatcher(store: JobStore(), hostProfileStore: store)
+        let request = AddRequest(url: "https://example.com/file.iso")
+        guard case .job(let summary) = dispatcher.reply(to: .add(request: request)) else {
+            Issue.record("expected .job"); return
+        }
+        #expect(BanditSelector.candidateSet.contains(summary.requestedConnectionCount))
+    }
+
+    // AC7: nil connectionCount + no profile → default 8.
+    @Test("AC: nil connectionCount with no profile falls back to 8")
+    func ac7NilConnectionCountNoProfile() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(
+            fileURL: directory.appending(path: "host-scheduling.plist"))
+        _ = store.load()
+        let dispatcher = CommandDispatcher(store: JobStore(), hostProfileStore: store)
+        let request = AddRequest(url: "https://coldhost.example.com/file.iso")
+        guard case .job(let summary) = dispatcher.reply(to: .add(request: request)) else {
+            Issue.record("expected .job"); return
+        }
+        #expect(summary.requestedConnectionCount == 8)
+    }
+
+    // AC7: explicit connectionCount is honored unchanged.
+    @Test("AC: explicit connectionCount is honored unchanged, ignoring profile")
+    func ac7ExplicitConnectionCountHonored() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profileStore = HostProfileStore(
+            fileURL: directory.appending(path: "host-scheduling.plist"))
+        // Seed a converged profile that would steer the bandit toward 16, so the
+        // assertion proves the EXPLICIT count overrides the profile — not merely
+        // that an empty store falls through. The explicit path never consults the
+        // bandit (no RNG), so this stays deterministic.
+        for _ in 0..<3 {
+            profileStore.recordObservation(
+                hostKey: "https://example.com:443", connectionCount: 16,
+                totalBytes: 200 * 1024 * 1024, transferDuration: .seconds(15))
+        }
+        let dispatcher = CommandDispatcher(store: JobStore(), hostProfileStore: profileStore)
+        let request = AddRequest(url: "https://example.com/file.iso", connectionCount: 4)
+        guard case .job(let summary) = dispatcher.reply(to: .add(request: request)) else {
+            Issue.record("expected .job"); return
+        }
+        #expect(summary.requestedConnectionCount == 4)
+    }
+
+    // AC13: JobSummary requestedConnectionCount field type is unchanged.
+    @Test("AC: JobSummary requestedConnectionCount field type is unchanged")
+    func ac13JobSummaryUnchanged() {
+        let dispatcher = CommandDispatcher(store: JobStore())
+        let outcome = dispatcher.reply(to: .add(request: AddRequest(url: "https://example.com/f")))
+        guard case .job(let summary) = outcome else {
+            Issue.record("expected .job"); return
+        }
+        let _: UInt8 = summary.requestedConnectionCount
+        #expect(summary.requestedConnectionCount == 8)
+    }
 }

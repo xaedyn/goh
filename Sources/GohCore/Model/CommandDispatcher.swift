@@ -17,6 +17,7 @@ public struct CommandDispatcher: Sendable {
     private let store: JobStore
     private let control: DownloadControl?
     private let checkpointStore: CheckpointStore?
+    private let hostProfileStore: HostProfileStore?
     private let importedCookies: ImportedCookieStore?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
     private let queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)?
@@ -31,6 +32,7 @@ public struct CommandDispatcher: Sendable {
         store: JobStore,
         control: DownloadControl? = nil,
         checkpointStore: CheckpointStore? = nil,
+        hostProfileStore: HostProfileStore? = nil,
         importedCookies: ImportedCookieStore? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil,
         queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil
@@ -38,6 +40,7 @@ public struct CommandDispatcher: Sendable {
         self.store = store
         self.control = control
         self.checkpointStore = checkpointStore
+        self.hostProfileStore = hostProfileStore
         self.importedCookies = importedCookies
         self.onJobQueued = onJobQueued
         self.queuedJobAdmission = queuedJobAdmission
@@ -48,8 +51,42 @@ public struct CommandDispatcher: Sendable {
         do {
             switch command {
             case .add(let request):
-                let requestedConnectionCount = request.connectionCount
-                    ?? Self.defaultConnectionCount
+                // D6: hoist hostKey and selectionReason so the AC12 trace (added in Task 9)
+                // can emit all four fields from this same site.
+                let admissionHostKey = hostKey(for: request.url)
+                let requestedConnectionCount: UInt8
+                let selectionReason: SelectionReason
+                if let explicit = request.connectionCount {
+                    requestedConnectionCount = explicit
+                    selectionReason = .explicit  // user-supplied count; bandit not consulted
+                } else {
+                    let chosen = hostProfileStore?.selectN(hostKey: admissionHostKey)
+                        ?? (n: Self.defaultConnectionCount, reason: .cold)
+                    requestedConnectionCount = chosen.n
+                    selectionReason = chosen.reason
+                }
+                // AC12: emit scheduling-decision trace (GOH_ENGINE_TRACE=1).
+                // Emitted here because this is the only site where all four fields are
+                // simultaneously in scope. The engine knows neither reason nor arm EWMAs.
+                let armEWMAs: [UInt8: Double]
+                if let key = admissionHostKey,
+                   let profile = hostProfileStore?.profile(hostKey: key) {
+                    // `uniquingKeysWith` (not `uniqueKeysWithValues`) so a corrupt
+                    // on-disk profile with duplicate connectionCount arms can never
+                    // trap the daemon at admission — mirrors the trap-safe `.first { }`
+                    // the selector uses. The store dedupes arms on write; this guards
+                    // a tampered/corrupt plist that slipped past the TTL filter.
+                    armEWMAs = Dictionary(
+                        profile.arms.map { ($0.connectionCount, $0.throughputEWMA) },
+                        uniquingKeysWith: { first, _ in first })
+                } else {
+                    armEWMAs = [:]
+                }
+                EngineDiagnostics().recordSchedulingDecision(
+                    hostKey: admissionHostKey,
+                    chosenN: requestedConnectionCount,
+                    reason: selectionReason,
+                    armEWMAs: armEWMAs)
                 guard requestedConnectionCount > 0 else {
                     return .failure(GohError(
                         code: .invalidArgument,

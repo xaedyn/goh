@@ -64,8 +64,9 @@ public struct DownloadEngine: Sendable {
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
     private let sleepAssertionController: SleepAssertionController?
-    private let completedDownloadHandler: (@Sendable (JobSummary) -> Void)?
+    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
+    private let hostProfileStore: HostProfileStore?
 
     public init(
         session: URLSession,
@@ -73,8 +74,9 @@ public struct DownloadEngine: Sendable {
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
-        completedDownloadHandler: (@Sendable (JobSummary) -> Void)? = nil,
-        unexpectedStoreError: UnexpectedStoreErrorReporter? = nil
+        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)? = nil,
+        unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
+        hostProfileStore: HostProfileStore? = nil
     ) {
         self.session = session
         self.checkpointStore = checkpointStore
@@ -83,6 +85,7 @@ public struct DownloadEngine: Sendable {
         self.sleepAssertionController = sleepAssertionController
         self.completedDownloadHandler = completedDownloadHandler
         self.unexpectedStoreError = unexpectedStoreError
+        self.hostProfileStore = hostProfileStore
     }
 
     /// Routes a `JobStore` mutation error to the reporter, silently dropping
@@ -130,6 +133,25 @@ public struct DownloadEngine: Sendable {
         defer { control?.unregister(jobID: jobID) }
         // Claim the job atomically; only proceed if this call won the claim.
         guard (try? store.start(id: jobID)) == true else { return }
+        // Active-job bracket (D5/D7) — placed AFTER the atomic start claim so only
+        // the winning runner touches the per-host active index; a losing duplicate
+        // run() for the same jobID bails at the claim above and never begin()/end()s
+        // (which would otherwise remove the winner's entry, since the set keys on
+        // jobID). begin() marks the job active and flags any concurrent siblings
+        // contended. end() is in a defer so it fires on every exit path (throw,
+        // pause, cancel, success) — cannot leak regardless of how run() terminates.
+        // The defer runs when run() EXITS, i.e. AFTER complete()'s handler has
+        // returned, so wasSolo(jobID:) at handler time still sees the whole-duration
+        // answer.
+        let jobHostKey = store.job(id: jobID).flatMap { hostKey(for: $0.url) }
+        if let key = jobHostKey {
+            hostProfileStore?.begin(jobID: jobID, hostKey: key)
+        }
+        defer {
+            if let key = jobHostKey {
+                hostProfileStore?.end(jobID: jobID, hostKey: key)
+            }
+        }
         sleepAssertionController?.downloadStarted()
         defer { sleepAssertionController?.downloadFinished() }
         guard let job = store.job(id: jobID) else { return }
@@ -317,7 +339,9 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
-        try complete(jobID: job.id, in: store)
+        try complete(
+            jobID: job.id, in: store,
+            transferDuration: clock.now - started, isResume: true)
         trace.summary()
     }
 
@@ -461,7 +485,9 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: completed, total: total, elapsed: clock.now - started))
-        try complete(jobID: job.id, in: store)
+        try complete(
+            jobID: job.id, in: store,
+            transferDuration: clock.now - started, isResume: false)
     }
 
     // MARK: Range-parallel
@@ -537,13 +563,18 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
-        try complete(jobID: job.id, in: store)
+        try complete(
+            jobID: job.id, in: store,
+            transferDuration: clock.now - started, isResume: false)
         trace.summary()
     }
 
-    private func complete(jobID: UInt64, in store: JobStore) throws {
+    private func complete(
+        jobID: UInt64, in store: JobStore,
+        transferDuration: Duration, isResume: Bool
+    ) throws {
         let completed = try store.complete(id: jobID)
-        completedDownloadHandler?(completed)
+        completedDownloadHandler?(completed, transferDuration, isResume)
     }
 
     /// Issues a fresh ranged `GET` for `range` and feeds its body into

@@ -224,17 +224,21 @@ either a different host or more diagnostic time is available.
 
 ## Persistence
 
-`gohd` persists two daemon-owned data sets under
+`gohd` persists three daemon-owned data sets under
 `~/Library/Application Support/dev.goh.daemon/`:
 
 - `catalog.plist` — the job catalog (`JobCatalog`), written as a binary property
   list with atomic durable replacement.
 - `checkpoints/` — the download-resume records drafted below.
+- `host-scheduling.plist` — the adaptive per-host scheduling record (§Adaptive
+  host scheduling below), a binary property list, version 1.
 
 The catalog is the user-visible job model. A checkpoint is engine-owned recovery
 state: it exists only for unfinished jobs, may be rewritten often, and is deleted
 when a job reaches `completed`, reaches non-resumable `failed`, or is removed
-without `--keep`.
+without `--keep`. The host-scheduling record is engine-owned *optimization* state:
+losing it costs nothing but a fresh learning warm-up, so it is best-effort and
+never on the critical path of a download.
 
 Downloaded file destinations are user-owned paths. When the daemon opens a
 destination, `DownloadFile` materializes the path with a **base-free, symlink-safe
@@ -268,6 +272,107 @@ hardening lives in the shared write path, it applies to **every** `goh add`, not
 just `sync`: a download whose destination or immediate parent is a symlink is now
 refused (exit `5`) where it previously followed the link. `protocolVersion` is
 unchanged (stays 3).
+
+### Adaptive host scheduling (`host-scheduling.plist`)
+
+This is the Phase 2 (strategic arc) implementation contract for adaptive per-host
+range scheduling. The daemon learns the best parallel-connection count per host
+empirically and starts repeat downloads from the count that historically performed
+best. It is **internal-only** — no new user command, no wire-protocol change
+(`protocolVersion` stays 3; `JobCatalog.version` stays 1; `JobSummary` is
+unchanged). The connection ceiling stays **16**: per-host count is governed by
+server tolerance and protocol dynamics (per-IP limits, HTTP/2 multiplexing, TLS /
+slow-start overhead, bufferbloat), not client bandwidth — filling a fat pipe is
+mirror-racing's job (v0.2), not more sockets to one origin.
+
+**Frozen on-disk format (version 1).** A binary property list of `HostScheduling`
+(`Sources/GohCore/Scheduling/HostScheduling.swift`), atomically and durably
+replaced with the same `temp → fsync → rename(2) → dir-fsync` choreography as
+`catalog.plist`, written `0600` (daemon-internal; it carries host keys but no
+external reader). The record persists **only raw measurements**:
+
+- `HostScheduling { version: Int, hosts: [HostProfile] }`
+- `HostProfile { host: String, arms: [ConnObservation], updatedAt: Date }`
+- `ConnObservation { connectionCount: UInt8, throughputEWMA: Double, sampleCount: UInt32, updatedAt: Date }`
+
+`host` is the **D1 host key** — `hostKey(for:)` normalizes a URL to
+`"{scheme}://{host}:{port}"` with userinfo **stripped unconditionally** (no
+credential ever reaches disk), the ASCII/percent-encoded host, lowercased scheme
+and host, and explicit default ports; a URL with no host (or an unknown scheme
+with no port) returns `nil` and is skipped entirely — nil-host URLs are never
+bucketed under a shared key. All *selection knobs* (the candidate set `{2,4,8,16}`,
+ε, the EWMA α, `minSamples`, the 90-day TTL, the cold-start default of 8) are
+**non-frozen daemon constants**, deliberately kept out of the persisted record so
+they can be retuned without a format change. A golden round-trip fixture guards the
+format; because binary-plist object-table layout can differ across SDKs (CI is
+stable 26.2, local 26.5), the guard asserts decoded-**value** equality plus on-SDK
+re-encode stability, not byte-for-byte equality of the committed blob.
+
+**Load behaviour.** On startup `HostProfileStore.load()` evicts any profile whose
+`updatedAt` is older than the 90-day TTL; a missing file yields an empty record; a
+corrupt file or unknown `version` recovers to empty and copies the damaged bytes to
+a `.corrupt-<unixtime>` sidecar (the daemon logs the path and continues). The
+in-memory active-job index (below) is **not** persisted — it is live state rebuilt
+each run.
+
+**Selection (admission time).** `CommandDispatcher` resolves the connection count
+when a job is admitted. An explicit `--connections N` is honoured verbatim (reason
+`explicit`); otherwise an **ε-greedy `BanditSelector`** picks from `{2,4,8,16}`:
+nil/cold profile → 8 (`cold`); any candidate arm under `minSamples` → explore that
+under-sampled arm (`explore`); otherwise with probability ε explore, else exploit
+the highest-EWMA arm (`exploit`). Exploit is unreachable until **every** candidate
+arm has ≥ `minSamples` observations — "initialise every arm before trusting
+exploit." The selector is pure and takes an injected RNG (seeded in tests,
+`SystemRandomNumberGenerator` in production).
+
+**Observation gate (completion time).** The throughput EWMA for an arm is updated
+only by a *clean* measurement. `HostProfileStore.shouldRecordObservation` records
+**iff all** hold: the download completed successfully; it was **not** a resume
+(resumes start mid-file, so their wall-clock throughput is not comparable); the
+transfer phase ran ≥ 10 s; ≥ 8 MiB were transferred; the job was **solo for its
+whole duration** on that host; and the engine actually used the requested count
+(`actualConnectionCount == requestedConnectionCount`, so a server that ignored
+`Range` and fell back to a single connection cannot pollute the arm for the
+requested N). Throughput is `bytes / transfer-phase-seconds` — the engine threads
+the **transfer-phase** `Duration` (after admission/setup, excluding queue wait) to
+the completion sink via the widened `completedDownloadHandler`.
+
+**Whole-duration-solo tracking.** A point-in-time concurrency check at completion
+is insufficient: a sibling that starts and finishes inside another download's
+window would make the survivor look solo. Instead `HostProfileStore` keeps a
+per-host active-job set and a **contended set**: `begin(jobID:hostKey:)` (called in
+`DownloadEngine.run()` right after the existing control-registration bracket) marks
+*all* currently-active jobs on that host contended whenever a second one starts;
+`end(jobID:hostKey:)` runs in a `defer` so it cannot leak on throw/pause/cancel.
+The completion handler reads `wasSolo(jobID:)` **before** the `defer`-scheduled
+`end` runs, so the answer reflects the entire download. Only a job that was never
+concurrent with a sibling is eligible to record.
+
+**Observability.** `GOH_ENGINE_TRACE=1` adds a per-admission
+`scheduling host=… chosenN=… reason=… ewmas=[…]` line (emitted from
+`CommandDispatcher`, the one site where host key, chosen N, reason, and arm EWMAs
+are all in hand). It carries the credential-stripped host key only — never a URL or
+userinfo. Off by default. CI-enforced pure selector tests prove exploit never
+regresses to a worse arm and a thin single sample cannot displace a settled arm; an
+optional, env-gated `goh-bench regression-guard` subcommand (not in CI) measures
+real-network throughput.
+
+*Honest caveat (carried from ROADMAP).* The amenable-workload gap vs `aria2c` is
+structural (HTTP/2 multiplexing over one connection vs N separate TCP connections),
+so adaptation is the goal; beating `aria2c` is not a ship gate.
+
+**Considered alternatives.**
+- *A static tunable default N* — the 3b competitive run showed no single N is right
+  for both saturated and amenable workloads (16 helps amenable, hurts saturated);
+  per-host adaptation is the structural answer.
+- *Persisting the selection knobs in the record* — would freeze ε/α/TTL into the
+  on-disk contract; keeping them as daemon constants lets them be retuned freely.
+- *Recording every completion* — resumes, contended downloads, tiny/short
+  transfers, and range-rejecting servers all produce throughput numbers that are
+  not comparable across N; the gate keeps the EWMA honest at the cost of learning
+  more slowly.
+- *A point-in-time solo check* — undercounts contention; the contended-set tracks
+  any overlap across the whole duration.
 
 ### Checkpoint / Resume Contract
 

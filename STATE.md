@@ -5,6 +5,112 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (impl session) — Phase 2 (adaptive scheduling): IMPLEMENTED, PR #77 open
+
+- **Branch:** `design/adaptive-scheduling`; PR **#77** open against `main`
+  (https://github.com/xaedyn/goh/pull/77). All 9 plan tasks + 1 hardening
+  follow-up shipped; **473 tests pass** (was 424 on `main`; +49), `swift build`
+  warning-clean under `-warnings-as-errors`. Built with
+  `superpowers:subagent-driven-development` — one task at a time, TDD, two-stage
+  review (spec compliance + Opus stack-aware code quality) after each task, plus a
+  final cross-cutting Opus review (✅ approved, zero block issues).
+- **What shipped (10 atomic commits):**
+  - **Phase 1 (pure value layer):** `hostKey(for:)` D1 normalizer
+    (`Sources/GohCore/Scheduling/HostKey.swift`); the frozen v1 Codable on-disk
+    types `HostScheduling`/`HostProfile`/`ConnObservation` + `foldingIn` EWMA fold
+    + golden round-trip fixture (`HostScheduling.swift`,
+    `Tests/.../Fixtures/host-scheduling-v1.plist`).
+  - **Phase 2 (persistence + selection):** `HostProfileStore` (atomic versioned
+    plist, 0600, 90-day TTL eviction, corrupt→sidecar, the begin/wasSolo/end
+    contended-set active-job index, `recordObservation`, the pure D5/D8
+    `shouldRecordObservation` gate, `selectN`); the pure ε-greedy `BanditSelector`.
+  - **Phase 3 (engine + wiring):** widened `completedDownloadHandler` to carry the
+    transfer-phase `Duration` + `isResume`; admission-time N resolution in
+    `CommandDispatcher` (explicit honored, else bandit); the D5/D8-gated
+    observation recording wired in `gohd/main.swift`; the engine begin/end
+    active-job bracket; `GOH_ENGINE_TRACE` scheduling-decision line; CI-enforced
+    pure selector regression tests + an optional env-gated `goh-bench
+    regression-guard`.
+- **Invariants held:** `protocolVersion` stays 3; `JobCatalog.version` stays 1;
+  `JobSummary` struct unchanged. The new plist is daemon-internal — not in the XPC
+  wire or the catalog. **DESIGN.md reconciled** this session (§Adaptive host
+  scheduling documents the frozen v1 format, per the four-round discipline).
+- **Review-caught & fixed during implementation (don't re-litigate):** the plan's
+  punycode test paired two different domains (corrected to assert the real
+  ASCII/deterministic/credential-free invariants); a `SeededRNG` xorshift64
+  zero-trap (seed 0 → infinite loop) guarded; a hardcoded test date that would age
+  past the TTL (made relative); a `Dictionary(uniqueKeysWithValues:)` that could
+  trap the daemon at admission on a corrupt duplicate-arm plist (→
+  `uniquingKeysWith:`); and the load-bearing D5 gate extracted from an inline gohd
+  closure into the unit-tested pure `shouldRecordObservation` (7 cases).
+- **NEXT ACTION:** PR #77 review. CodeRabbit triggered at feature-complete. When
+  green + approved, merge to `main`. Then the strategic arc's **Phase 3 — public
+  launch** (sign+notarize PKG via PR #36 workflow, open the brew tap, SECURITY/
+  CONTRIBUTING/CODE_OF_CONDUCT, launch post) — see the launch sequence preserved in
+  the older handoff below and the gitignored `docs/vision/VISION-2026-05-26.md`.
+- **Order-correction note for the record:** the plan listed Task 3 (HostProfileStore)
+  before Task 4 (BanditSelector), but Task 3's `selectN` references `BanditSelector`,
+  so Task 4 was implemented first (the only deviation from plan order; plan content
+  unchanged).
+
+### 2026-05-31 (later session) — Phase 2 (adaptive scheduling): design + plan COMPLETE, ready to implement
+
+- **Branch:** `design/adaptive-scheduling`, off `main` at `48ec675`. Not yet pushed.
+- **What this is:** Phase 2 of the strategic arc — **adaptive per-host range
+  scheduling**. The daemon learns the best parallel-connection count per host
+  empirically (epsilon-greedy bandit over `{2,4,8,16}`) and persists it in a new
+  daemon-owned `host-scheduling.plist` (versioned, atomic, 0600, mirrors
+  `CheckpointStore`). Scope pinned this session: **adaptive scheduling only**
+  (HTTP/3 deferred), **internal-only** (no new user command), bar = **measurable
+  adaptation** (beating aria2c is a goal, not a ship gate — the amenable gap is
+  structural). `protocolVersion` stays 3; `JobCatalog.version` stays 1 (no schema
+  change — N is resolved at admission in `CommandDispatcher`, the engine's only
+  touch is widening `completedDownloadHandler` to carry the transfer-phase
+  `Duration`).
+- **Connection ceiling decision:** keep **16**. Per-host count is governed by
+  server tolerance + protocol dynamics (per-IP abuse limits, HTTP/2 multiplexing
+  conflict, slow-start/TLS overhead, bufferbloat), NOT client bandwidth. Filling a
+  fat pipe is mirror-racing's job (v0.2), not more sockets to one origin.
+- **Where the work lives:**
+  - Design spec (FROZEN on-disk format): `docs/superpowers/specs/2026-05-31-adaptive-scheduling-design.md`
+    — 10 decisions (D1–D10); survived **2 adversarial spec-review rounds** (Opus).
+  - Plan: `docs/plans/2026-05-31-adaptive-scheduling-plan.md` — **9 tasks, 3 phases**,
+    TDD throughout; survived **2 adversarial plan-review rounds** (Opus).
+  - Phase artifacts: `docs/superpowers/progress/2026-05-31-adaptive-scheduling-phase{1,2,3}.md`
+- **The 3 phases (deployment-independent, implement in order):**
+  1. **Pure value layer** — `HostKey` normalizer (strip credentials, nil→skip,
+     IPv6 bracketed, punycode) + `HostScheduling`/`HostProfile`/`ConnObservation`
+     Codable on-disk types + golden round-trip corpus & CI guard.
+  2. **Persistence + selection** — `HostProfileStore` (atomic versioned plist,
+     0600, TTL-on-load eviction, corrupt→sidecar, in-memory `begin/wasSolo/end`
+     contended-set index) + epsilon-greedy `BanditSelector` (pure, seeded).
+  3. **Engine + wiring** — widen `completedDownloadHandler` to carry transfer-phase
+     `Duration`; admission-time N resolution in `CommandDispatcher`; D5-gated
+     observation recording (success + ≥10s + ≥8MiB + actual==requested + solo +
+     stable path; resume excluded per D8); regression guard (CI selector tests +
+     optional env-gated `goh-bench regression-guard`); `GOH_ENGINE_TRACE` decision line.
+- **Review caught (don't re-litigate):** the spec review fixed a nil-host bucket
+  collapse, credential-at-rest, the missing regression detector, the D6 resolution
+  timing, and the throughput clock provenance (the engine's `started` clock is
+  phase-local and must be threaded to the sink — the "no engine change" claim was
+  wrong). The plan review caught a **silent total-failure bug**: an inverted
+  `activeCount` gate (the `run()` defer decrement fires AFTER the completion
+  handler) — replaced with a per-job `contended`-flag faithful to D5's
+  "solo for the whole duration"; plus a non-buildable AC11 benchmark, now split
+  into CI-enforced selector tests + an optional manual harness.
+- **NEXT ACTION (fresh session):** implement the plan with
+  `superpowers:subagent-driven-development`, **Phase 1 first**, one phase at a time
+  with real `swift test` runs. Do NOT re-run design or plan review — both are
+  closed at the 2-round cap with all block issues resolved. Local `swift test`
+  needs `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. Push the branch
+  + open the PR when a phase is green (the branch is unpushed at session close).
+- **Side task done this session:** cross-repo identity audit — **DLXV (macvid)
+  made private** (it was public with a personal email + real name in all 12
+  commits). chronoscope has 40 public `Co-Authored-By: Claude` trailers (deferred,
+  lower urgency); mirelo/crown-of-the-touched/lowest_listed are private landmines
+  (personal email in history) to scrub before ever flipping public. See the
+  `cross-repo-email-audit` memory.
+
 ### 2026-05-31 — Trust core: **MERGED to `main`** (PR #75), all 6 phases shipped
 
 - **Status:** PR #75 **merged** to `main` 2026-05-31 as merge commit `fdb55e8`
@@ -522,45 +628,32 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/state-after-session-2026-05-26`.
+Current branch: `design/adaptive-scheduling`; **PR #77 open** against `main`
+(all of Phase 2 — adaptive per-host range scheduling — IMPLEMENTED). `main` is at
+`48ec675` (PR #76). **473 tests pass** on the branch (424 baseline + 49 new),
+`swift build` warning-clean. See the top "Current state" entry, dated
+*2026-05-31 (impl session)*, for the full per-phase breakdown.
 
-This branch refreshes state after a long session that closed out a
-code-review sweep (PRs #58–#66), a positioning + PII cleanup
-(PRs #67–#69), and a browser-driven GitHub account + repo settings
-hardening pass. `main` is at `b09616a`. 314 tests pass; CI is green;
-the menu bar handoff has been live-verified against Ghostty.
+**THE NEXT ACTION — get PR #77 to green + merge, then start Phase 3 (public launch).**
+1. PR #77 review: CodeRabbit was run at feature-complete; triaged findings are
+   recorded on the PR / in the impl-session entry. Address any new review feedback,
+   confirm CI green, then **merge to `main`**.
+2. Then the strategic arc's **Phase 3 — public launch** (the launch sequence below,
+   still valid). The only gate outside the code is Apple Developer ID credentials.
 
-**Identity exploration completed in a follow-up session (2026-05-28).**
-Brand direction was committed after multi-round image-generation
-exploration, several typographic iteration rounds, and
-register-comparison sheets. The committed spec, working HTML reference,
-prompt templates, design directive, and decision rationale all live
-in `docs/vision/` (gitignored). Production handoff work queued in the
-spec: production typeface verification, vector mark drawing, icon
-asset set export, and a font license decision before the identity is
-applied to public surfaces (`goh-menu`, README, brew tap, launch post).
+**Doc-currency note (verified 2026-05-31, impl session):** The top "Current state"
+entry and this handoff are current. `DESIGN.md` §Adaptive host scheduling now
+documents the frozen v1 `host-scheduling.plist` format (reconciled this session per
+the four-round discipline). The planning artifacts under `docs/plans/` and
+`docs/superpowers/{specs,progress}/` are **frozen point-in-time records** of the
+closed design/plan — they intentionally describe the plan *as planned*, so minor
+divergences from the shipped code (e.g. the handler-arity revision, trace-emission
+site, "byte-for-byte" vs decoded-value-equality wording) are expected; DESIGN.md +
+this STATE.md + the code are authoritative. `ROADMAP.md` still frames Phase 2 as
+"design pass first" (it tracks scope, not status — status lives here in STATE.md).
 
-**Highest-leverage pickup, before anything else in this repo:** run the
-local audit prompt against other projects under this account. The
-`git config user.email` regression caught here (a personal email landed
-in a public commit before the post-#69 mitigations were in place) is
-likely to recur in other repos. Each occurrence is a separate exposed
-email if those repos ever ship publicly. ~10–20 minutes per repo,
-asymmetric upside. The audit prompt covers identity leaks, credentials,
-PII paths, projected-but-not-shipped feature claims, competitor name
-drops, marketing puffery, telemetry, and code-level injection paths.
-
-**Next pickup (updated 2026-05-29): Phase 1 of the strategic arc — the
-trust core.** Direction changed to *legit before ship*: the first public
-release bundles the differentiator + the speed win, so the launch described
-below is now **Phase 3**, not the immediate next step. See the phased arc in
-`ROADMAP.md` §Strategic arc. The immediate next action is a **four-round
-design pass** on `gohfile.toml` + `goh sync` + `goh verify` + `goh which` —
-the on-disk manifest/lockfile is a frozen contract, so design comes before
-code. Phase 2 (adaptive per-host range scheduling) follows, then the launch.
-
-The launch sequence below remains valid as **Phase 3**, after Phases 1–2.
-**Cut public v0.1.** Bet 1 from the gitignored strategy memo at
+**Earlier session's launch sequence — still valid as Phase 3, AFTER Phase 2
+implementation ships.** From the gitignored strategy memo at
 `docs/vision/VISION-2026-05-26.md`:
 
 1. **Sign and notarize the PKG** by running PR #36's

@@ -129,6 +129,33 @@ final class EngineDiagnostics: Sendable {
         emit("range \(index) protocol=\(name ?? "<unknown>")")
     }
 
+    /// Emits a scheduling-decision trace line to stderr when `GOH_ENGINE_TRACE=1`.
+    ///
+    /// Called from `CommandDispatcher` at admission time — the point where all four
+    /// fields (hostKey, chosenN, reason, arm EWMAs) are simultaneously in hand.
+    /// NOT called from `DownloadEngine`, which has none of the bandit fields.
+    func recordSchedulingDecision(
+        hostKey: String?,
+        chosenN: UInt8,
+        reason: SelectionReason,
+        armEWMAs: [UInt8: Double]
+    ) {
+        guard enabled else { return }
+        let ewmaStr = armEWMAs
+            .sorted { $0.key < $1.key }
+            .map { "N\($0.key)=\(String(format: "%.0f", $0.value))B/s" }
+            .joined(separator: " ")
+        let host = hostKey ?? "(nil)"
+        let reasonStr: String
+        switch reason {
+        case .cold:     reasonStr = "cold"
+        case .exploit:  reasonStr = "exploit"
+        case .explore:  reasonStr = "explore"
+        case .explicit: reasonStr = "explicit"
+        }
+        emit("scheduling host=\(host) chosenN=\(chosenN) reason=\(reasonStr) ewmas=[\(ewmaStr)]")
+    }
+
     /// Emits the download-level summary line — the peak concurrent range count
     /// reached over the lifetime of the download.
     func summary() {
