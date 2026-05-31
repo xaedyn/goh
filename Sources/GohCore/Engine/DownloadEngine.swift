@@ -131,12 +131,18 @@ public struct DownloadEngine: Sendable {
         guard store.job(id: jobID) != nil else { return }
         control?.register(jobID: jobID)
         defer { control?.unregister(jobID: jobID) }
-        // Active-job bracket (D5/D7) — mirrors control?.register/unregister.
-        // begin() marks the job active and flags any concurrent siblings contended.
-        // end() is in a defer so it fires on every exit path (throw, pause, cancel,
-        // success) — cannot leak regardless of how run() terminates. The defer runs
-        // when run() EXITS, i.e. AFTER complete()'s handler has returned, so
-        // wasSolo(jobID:) at handler time still sees the whole-duration answer.
+        // Claim the job atomically; only proceed if this call won the claim.
+        guard (try? store.start(id: jobID)) == true else { return }
+        // Active-job bracket (D5/D7) — placed AFTER the atomic start claim so only
+        // the winning runner touches the per-host active index; a losing duplicate
+        // run() for the same jobID bails at the claim above and never begin()/end()s
+        // (which would otherwise remove the winner's entry, since the set keys on
+        // jobID). begin() marks the job active and flags any concurrent siblings
+        // contended. end() is in a defer so it fires on every exit path (throw,
+        // pause, cancel, success) — cannot leak regardless of how run() terminates.
+        // The defer runs when run() EXITS, i.e. AFTER complete()'s handler has
+        // returned, so wasSolo(jobID:) at handler time still sees the whole-duration
+        // answer.
         let jobHostKey = store.job(id: jobID).flatMap { hostKey(for: $0.url) }
         if let key = jobHostKey {
             hostProfileStore?.begin(jobID: jobID, hostKey: key)
@@ -146,8 +152,6 @@ public struct DownloadEngine: Sendable {
                 hostProfileStore?.end(jobID: jobID, hostKey: key)
             }
         }
-        // Claim the job atomically; only proceed if this call won the claim.
-        guard (try? store.start(id: jobID)) == true else { return }
         sleepAssertionController?.downloadStarted()
         defer { sleepAssertionController?.downloadFinished() }
         guard let job = store.job(id: jobID) else { return }
