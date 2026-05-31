@@ -433,6 +433,15 @@ struct CommandDispatcherTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let profileStore = HostProfileStore(
             fileURL: directory.appending(path: "host-scheduling.plist"))
+        // Seed a converged profile that would steer the bandit toward 16, so the
+        // assertion proves the EXPLICIT count overrides the profile — not merely
+        // that an empty store falls through. The explicit path never consults the
+        // bandit (no RNG), so this stays deterministic.
+        for _ in 0..<3 {
+            profileStore.recordObservation(
+                hostKey: "https://example.com:443", connectionCount: 16,
+                totalBytes: 200 * 1024 * 1024, transferDuration: .seconds(15))
+        }
         let dispatcher = CommandDispatcher(store: JobStore(), hostProfileStore: profileStore)
         let request = AddRequest(url: "https://example.com/file.iso", connectionCount: 4)
         guard case .job(let summary) = dispatcher.reply(to: .add(request: request)) else {
