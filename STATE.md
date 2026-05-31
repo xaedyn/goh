@@ -5,6 +5,42 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P1 COMPLETE** (governor + clock + dummynet confirmed); next = P2
+
+- **P1 of 5 shipped on `design/in-flight-parallelism`** via `subagent-driven-development` (TDD per task,
+  two-stage review). **483 tests pass** (was ~481), warning-clean under `-warnings-as-errors`,
+  strict-concurrency-clean. **No behaviour change** — the governor is a pure value type, unit-tested
+  only; nothing is wired to the engine yet. Six atomic commits + artifact:
+  - `bf0aca6` — inject `ContinuousClock` into `fetchRanged` (deterministic testability; defaulted param,
+    callers unchanged).
+  - `b451823` — per-chunk rate accumulator at the `consumeRange` `flush()` chokepoint (**P1 placeholder**,
+    `_ = rateSamples`; not yet consumed).
+  - `6875bd9` + `6c75420` — pure `ParallelismGovernor` (three-phase: probe / knee / cruise+re-probe,
+    gain-only RTT fallback) + **strengthened SM3 tests**. Review caught that the first-cut SM3 tests
+    passed via a degenerate `allWorkersInSteadyState`-false early-return; they were rewritten to genuinely
+    drive the probe-up, RTT-bufferbloat, and gain-only-knee branches.
+  - `3f57db2` — `GovernorOutcome` daemon-internal struct (`{effectiveN: UInt8?, stabilized: Bool}` +
+    `.governorOff`); **never on the wire**.
+  - `e3cfe9d` — P1 progress artifact.
+- **dummynet spike CONFIRMED (spec §12.1 top `[UNVERIFIED]` risk — now closed):** `dnctl`+`pfctl` work on
+  **macOS 26.5 / arm64** (live `dnctl pipe 1 config bw 50Mbit/s delay 150 plr 0.005` → `DUMMYNET_OK`).
+  **P4's hermetic benchmark gate uses `dnctl`+`pfctl` directly; the Linux-VM `tc netem` fallback is not
+  needed.** See [[dummynet-macos26-confirmed]].
+- **Open items carried to P2/P3** (full list in the P1 artifact): the rate-sample tuple is a placeholder
+  (P3 must compute per-flush deltas + per-worker EWMA, not cumulative bytes/total-elapsed);
+  `.dropWorkers`/`Phase.pinned` are forward-API reserved for P3 wiring; `Config.default` values are
+  first-cut, tuned against the dummynet harness in P4; the RNG is stored-for-later (revisit in P3).
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape,
+  `host-scheduling.plist` v1, `DownloadCheckpoint` v1 — all unchanged.
+- **NEXT ACTION — P2 (Tasks 6–10):** the highest-risk phase. Replace the static `ByteRange.split` +
+  `TaskGroup` with a dynamic `ChunkQueue` + **interval-set frontier `ChunkAssembler`** (the SHA-256
+  in-order invariant + `[0,total)` end-condition + additive-merge `complete(interval:)` — round-2 plan
+  review's compile-break fix migrated `verifyHash`/`fetchSingle`/`consumeRange` callers off the deleted
+  `advance`) + the **single control-loop-inside-the-`TaskGroup`** live worker pool with worker-owned
+  `defer` budget release (Block-2 fix). Behaviour-equivalent at fixed N until P3 drives it. Continue with
+  `subagent-driven-development`, one task at a time, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
 ### 2026-05-31 (planning session) — In-flight adaptive parallelism: implementation plan **WRITTEN + 2-round adversarial review PASSED + USER-APPROVED at the gate**; P1 implementation starting
 
 - **Plan written** via `custom-writing-plans` (Sonnet): `docs/plans/2026-05-31-in-flight-adaptive-parallelism-plan.md`
