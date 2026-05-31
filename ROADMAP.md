@@ -188,6 +188,20 @@ bandwidth budgets; hashes beyond SHA-256.
   the structural path past `aria2c`'s manual `--max-connection-per-server`.
   Has its own design pass; the persisted per-host record is a load-bearing
   on-disk format.
+- **In-flight adaptive parallelism.** The per-host bandit above optimizes *repeat*
+  traffic and needs several downloads per host to converge — it does nothing for a
+  *first/only* download or for conditions that change mid-transfer. The complementary
+  move is a controller that adjusts the connection count *live, during a single
+  download*: a BBR-style governor operating on connection count (delivery-rate +
+  min-RTT-inflation + the per-connection-scaling regime), with multi-edge IP
+  fan-out, protocol-aware connection-vs-stream policy, and the converged count fed
+  back to seed the per-host bandit. This is the path that closes the structural
+  amenable gap for the long tail of one-and-done downloads, and the bigger v0.2
+  performance headline. Constraint: `URLSession` exposes only delivery-rate and
+  coarse timing (not per-packet cwnd/RTT), so v1 runs BBR-style on delivery rate;
+  packet-level signal would need `NWConnection`. Has its own four-round design pass
+  and must be proven on sourced long-fat-network / multi-edge-CDN benchmarks. See
+  the design seed: `docs/design-notes/2026-05-31-in-flight-adaptive-parallelism.md`.
 - **HTTP/3.** A 3b trial via `URLRequest.assumesHTTP3Capable = true` regressed
   saturated against `dl.google.com` (run-to-run variance signature of
   server-side h3 throttling against this network path); reverted, documented
