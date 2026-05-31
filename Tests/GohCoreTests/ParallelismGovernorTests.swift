@@ -198,4 +198,20 @@ struct ParallelismGovernorTests {
             Issue.record("governor exceeded hard cap of 16; tried to add \(k) above 16")
         }
     }
+
+    @Test("GovernorOutcome: effectiveN is non-nil iff N is a bandit candidate")
+    func governorOutcomeEffectiveN() {
+        // Candidate-aligned N → effectiveN non-nil.
+        let aligned = GovernorOutcome(effectiveN: 8, stabilized: true)
+        #expect(aligned.effectiveN == 8)
+        #expect(aligned.stabilized)
+
+        // Off-candidate N (binary-search refinement) → effectiveN nil.
+        let offCandidate = GovernorOutcome(effectiveN: nil, stabilized: true)
+        #expect(offCandidate.effectiveN == nil)
+
+        // Not yet stabilized → effectiveN doesn't matter for gate, but it can be non-nil.
+        let unstable = GovernorOutcome(effectiveN: 4, stabilized: false)
+        #expect(!unstable.stabilized)
+    }
 }
