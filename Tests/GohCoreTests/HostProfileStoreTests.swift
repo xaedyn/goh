@@ -199,4 +199,29 @@ struct HostProfileStoreTests {
         #expect(abs(arm.throughputEWMA - 10_485_760) < 1)
         #expect(arm.sampleCount == 1)
     }
+
+    // AC5 (through store): nil host key → (8, .cold).
+    @Test("AC: nil host key via selectN returns (8, cold)")
+    func ac5NilHostKeyViaStore() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(
+            fileURL: directory.appending(path: "host-scheduling.plist"))
+        let (n, reason) = store.selectN(hostKey: nil)
+        #expect(n == 8)
+        #expect(reason == .cold)
+    }
+
+    // AC5 (through store): unknown host → (8, .cold).
+    @Test("AC: unknown host key via selectN returns (8, cold)")
+    func ac5UnknownHostViaStore() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(
+            fileURL: directory.appending(path: "host-scheduling.plist"))
+        _ = store.load()
+        let (n, reason) = store.selectN(hostKey: "https://unknown.example.com:443")
+        #expect(n == 8)
+        #expect(reason == .cold)
+    }
 }
