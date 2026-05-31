@@ -580,45 +580,38 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `docs/state-after-session-2026-05-26`.
+Current branch: `design/adaptive-scheduling` (pushed to origin, **no PR yet** —
+implementation hasn't started). `main` is at `48ec675` (PR #76). 424 tests pass on
+`main`; CI green.
 
-This branch refreshes state after a long session that closed out a
-code-review sweep (PRs #58–#66), a positioning + PII cleanup
-(PRs #67–#69), and a browser-driven GitHub account + repo settings
-hardening pass. `main` is at `b09616a`. 314 tests pass; CI is green;
-the menu bar handoff has been live-verified against Ghostty.
+**THE NEXT ACTION — implement Phase 2 (adaptive per-host range scheduling),
+Phase 1 first.** The design spec and the 9-task/3-phase implementation plan are
+both DONE and each survived 2 adversarial review rounds (see the top "Current
+state" entry, dated *2026-05-31 (later session)*, for the full breakdown). Do this:
 
-**Identity exploration completed in a follow-up session (2026-05-28).**
-Brand direction was committed after multi-round image-generation
-exploration, several typographic iteration rounds, and
-register-comparison sheets. The committed spec, working HTML reference,
-prompt templates, design directive, and decision rationale all live
-in `docs/vision/` (gitignored). Production handoff work queued in the
-spec: production typeface verification, vector mark drawing, icon
-asset set export, and a font license decision before the identity is
-applied to public surfaces (`goh-menu`, README, brew tap, launch post).
+1. Run the session-ritual reads, summarize, get confirmation.
+2. Implement with `superpowers:subagent-driven-development`, **plan Phase 1 first**
+   (`docs/plans/2026-05-31-adaptive-scheduling-plan.md` — the pure value layer:
+   `HostKey` normalizer + the `HostScheduling` Codable on-disk types + golden
+   round-trip corpus). One task at a time, TDD, real `swift test` per task with
+   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
+3. **Do NOT re-run design or plan review** — both closed at the 2-round cap with
+   all block issues resolved. Planning is closed.
+4. Push + open the PR once a phase is green. Then Phase 2, then Phase 3 (the only
+   existing-code touch is widening `completedDownloadHandler` to carry a `Duration`
+   in Phase 3 — watch `-warnings-as-errors` at its call sites; it's flagged in the plan).
 
-**Highest-leverage pickup, before anything else in this repo:** run the
-local audit prompt against other projects under this account. The
-`git config user.email` regression caught here (a personal email landed
-in a public commit before the post-#69 mitigations were in place) is
-likely to recur in other repos. Each occurrence is a separate exposed
-email if those repos ever ship publicly. ~10–20 minutes per repo,
-asymmetric upside. The audit prompt covers identity leaks, credentials,
-PII paths, projected-but-not-shipped feature claims, competitor name
-drops, marketing puffery, telemetry, and code-level injection paths.
+**Doc-currency note (verified 2026-05-31):** STATE.md top entry + this handoff are
+current. The adaptive-scheduling on-disk format is NOT yet in `DESIGN.md` — by
+design: per the four-round discipline, DESIGN.md is reconciled *during
+implementation* (as trust-core did per-phase), and the frozen contract lives in
+`docs/superpowers/specs/2026-05-31-adaptive-scheduling-design.md` until then.
+`ROADMAP.md` still frames Phase 2 as "design pass first" (it tracks scope, not
+status — status lives here in STATE.md). The `cross-repo-email-audit` memory
+records this session's audit (DLXV made private; private-repo landmines noted).
 
-**Next pickup (updated 2026-05-29): Phase 1 of the strategic arc — the
-trust core.** Direction changed to *legit before ship*: the first public
-release bundles the differentiator + the speed win, so the launch described
-below is now **Phase 3**, not the immediate next step. See the phased arc in
-`ROADMAP.md` §Strategic arc. The immediate next action is a **four-round
-design pass** on `gohfile.toml` + `goh sync` + `goh verify` + `goh which` —
-the on-disk manifest/lockfile is a frozen contract, so design comes before
-code. Phase 2 (adaptive per-host range scheduling) follows, then the launch.
-
-The launch sequence below remains valid as **Phase 3**, after Phases 1–2.
-**Cut public v0.1.** Bet 1 from the gitignored strategy memo at
+**Earlier session's launch sequence — still valid as Phase 3, AFTER Phase 2
+implementation ships.** From the gitignored strategy memo at
 `docs/vision/VISION-2026-05-26.md`:
 
 1. **Sign and notarize the PKG** by running PR #36's
