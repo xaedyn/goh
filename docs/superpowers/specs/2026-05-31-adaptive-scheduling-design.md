@@ -160,6 +160,12 @@ doesn't re-explore. Fixed schedule (1) wastes downloads re-measuring settled hos
   uniform-random arms?
 - Cold start: first-ever download of a host uses the default **8** (an arm in the
   set) — confirm.
+- **Ceiling on fat pipes.** The set tops out at 16 because `--connections` is
+  frozen-capped at `maximumConnectionCount = 16` (DESIGN §3.1). On 1 Gbps+ links
+  the true optimum for a well-tuned server may exceed 16, so adaptation can't
+  reach it. Raising the cap touches a frozen contract → explicit review-round
+  decision. Either keep 16 as the v1 ceiling (adaptation optimizes *within*
+  today's bounds) or raise the cap as part of this phase.
 
 ### D5 — What throughput signal feeds the bandit, and how is noise rejected?
 
@@ -168,8 +174,8 @@ file size, contention, or network flaps.
 
 **Proposed answer.** Record an observation **only when all hold**:
 - the download **completed successfully** (not failed/cancelled/paused);
-- total size ≥ a threshold (proposed **16 MiB**, so parallelism actually engages —
-  below `minChunk × few` it's all setup noise);
+- the transfer ran **long enough to reach steady state** — a **duration gate, not
+  a byte gate** (proposed **≥ 10 s** of active transfer). Rationale below;
 - it was **the only active download to that host** for its duration (otherwise
   sibling downloads split the host's bandwidth and poison the per-`N` signal);
 - the network path stayed stable (no cellular auto-pause mid-download).
@@ -177,8 +183,26 @@ file size, contention, or network flaps.
 Signal = `totalBytes / activeWallClock` for the ranged phase. Update the matching
 arm's EWMA and `sampleCount`.
 
+**Why duration, not bytes.** What we're measuring is the server's *steady-state*
+response to parallelism. The first few seconds of any download are TCP slow-start
+across `N` connections plus `N` TLS handshakes — a ramp transient that says
+nothing about the right `N`. A measurement is only trustworthy when steady-state
+transfer **dominates** that ramp, i.e. the download ran for many seconds. A fixed
+byte threshold fails this test as bandwidth rises: 16 MiB finishes in ~0.13 s at
+1 Gbps (all ramp, no signal), and any byte number we pick today shrinks in
+relevance every year. A **duration** gate is bandwidth-proof by construction —
+at 200 Mbps a 10 s transfer is ~250 MB, at 1 Gbps ~1.25 GB, at a future 10 Gbps
+~12.5 GB — it always selects exactly "downloads where sustained parallelism
+actually mattered," and silently ignores the rest (correctly, since for sub-ramp
+downloads the connection count barely affects wall-clock anyway). A small byte
+**floor** (proposed ≥ 8 MiB) is kept only to reject a degenerate stalled tiny
+transfer that happens to exceed 10 s.
+
 **Open.**
-- Threshold value (16 MiB? 32 MiB?).
+- Duration gate value (10 s? 8 s? 15 s?) and whether the byte floor is needed.
+- Better still: discard the first ~N seconds of ramp and measure throughput only
+  over the steady-state window (the engine already samples `bytesPerSecond`).
+  More accurate, more complex — Round 2 to decide v1 vs later.
 - Detecting "only active download to this host" requires the daemon to track
   active jobs by host key — new in-daemon bookkeeping (not persisted). Confirm
   this is acceptable scope.
