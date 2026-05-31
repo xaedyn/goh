@@ -61,9 +61,11 @@ session; update at the start of every PR and at the end of every session.
   no-provenance; 5 path-escape; 6 lock missing/corrupt/stale/unknown-version; 7
   lock-busy; 8 download-failed; 9 verify-missing; 10 strict-untracked; 64
   usage/bad-manifest (incl. `auth` reserved); 1 only generic daemon/transport.
-- **NEXT ACTION:** push `design/trust-core` and open the PR (CodeRabbit + Socket
-  on PR per global prefs). After merge, Phase 2 of the strategic arc (adaptive
-  per-host range scheduling) is next.
+- **NEXT ACTION:** **Phase 2 of the strategic arc — adaptive per-host range
+  scheduling.** It freezes a per-host on-disk record, so per the ROADMAP design
+  gate it starts with a **four-round design pass, not code**. Before starting:
+  `git checkout main && git pull` (local was on a feature branch at session
+  close), and delete the merged `design/trust-core` branch (local + origin).
 - **Process notes:** Phase 3's running-code gate worked as designed — the spec's
   literal "O_NOFOLLOW every component" was caught as unshippable on macOS by the
   full suite (broke ~85 tests), corrected to the base-free boundary, confirmed by
