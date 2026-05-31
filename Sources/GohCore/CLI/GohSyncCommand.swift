@@ -61,13 +61,21 @@ public enum GohSyncCommand {
         let resolvedBase = resolveBase(
             cliBase: base, manifestBase: manifest.base, manifestDir: manifestDir)
 
-        // ── Step 3: advisory flock on gohfile.lock in the manifest dir ───────
+        // ── Step 3: advisory flock on the stable sidecar lock ────────────────
+        // The advisory lock is held on `gohfile.lock.lock`, a sidecar that is
+        // NEVER renamed/replaced — unlike `gohfile.lock` itself, which
+        // `writeLockAtomically` swaps via rename(2). Holding the flock on the
+        // data file would be broken: the rename installs a new inode, so a
+        // concurrent sync/verify would open that new inode and acquire its own
+        // independent lock. The sidecar inode is stable for the whole run, so
+        // sync's LOCK_EX and verify's LOCK_SH truly contend (spec §9, exit 7).
         let lockPath = manifestDir.appendingPathComponent("gohfile.lock").path
-        let lockFD = open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        let sidecarPath = manifestDir.appendingPathComponent(TrustLockSidecar.name).path
+        let lockFD = open(sidecarPath, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
         guard lockFD >= 0 else {
             return GohCommandLineResult(
                 exitCode: 64,
-                standardError: "goh sync: cannot open lock file at \(lockPath)\n")
+                standardError: "goh sync: cannot open lock file at \(sidecarPath)\n")
         }
         defer {
             flock(lockFD, LOCK_UN)
@@ -330,11 +338,14 @@ public enum GohSyncCommand {
             // CLI --base: cwd-relative, expand a leading ~.
             raw = expandTilde(cliBase)
         } else if let manifestBase {
-            // Manifest base: relative to the manifest's directory.
-            if manifestBase.hasPrefix("/") {
-                raw = manifestBase
+            // Manifest base (spec §7.4): expand only a leading `~`/`~/` (never
+            // `$VAR`). An expanded or already-absolute result is used as-is; a
+            // still-relative result stays relative to the manifest's directory.
+            let expanded = expandTilde(manifestBase)
+            if expanded.hasPrefix("/") {
+                raw = expanded
             } else {
-                raw = manifestDir.appendingPathComponent(manifestBase).path
+                raw = manifestDir.appendingPathComponent(expanded).path
             }
         } else {
             raw = manifestDir.path

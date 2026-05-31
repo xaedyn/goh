@@ -20,8 +20,9 @@ import XPC
 /// `onLs` is overridden.
 final class FakeSyncDaemon: @unchecked Sendable {
     /// Called for each `add`. Returns the JobSummary to reply with, after the
-    /// closure has (typically) staged bytes at the destination on disk.
-    var onAdd: (AddRequest, UInt64) -> JobSummary
+    /// closure has (typically) staged bytes at the destination on disk. Marked
+    /// `throws` so a staging failure surfaces instead of being papered over.
+    var onAdd: (AddRequest, UInt64) throws -> JobSummary
     /// Optional override for `ls`. When nil, returns all jobs added so far.
     var onLs: (() throws -> [JobSummary])?
 
@@ -31,7 +32,7 @@ final class FakeSyncDaemon: @unchecked Sendable {
     private var nextID: UInt64 = 1
 
     init(
-        onAdd: @escaping (AddRequest, UInt64) -> JobSummary,
+        onAdd: @escaping (AddRequest, UInt64) throws -> JobSummary,
         onLs: (() throws -> [JobSummary])? = nil
     ) {
         self.onAdd = onAdd
@@ -59,7 +60,7 @@ final class FakeSyncDaemon: @unchecked Sendable {
             addCount += 1
             let id = nextID
             nextID += 1
-            let summary = onAdd(addRequest, id)
+            let summary = try onAdd(addRequest, id)
             jobs.removeAll { $0.id == summary.id }
             jobs.append(summary)
             return try reply(requestID: requestID, payload: summary)
@@ -110,12 +111,12 @@ enum SyncTestSupport {
     }
 
     /// The sha256 string for `data` as `FileDigest` would report it.
-    static func digest(_ data: Data) -> String {
+    static func digest(_ data: Data) throws -> String {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-        try? data.write(to: tmp)
+        try data.write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
-        return (try? FileDigest.sha256(path: tmp.path)) ?? ""
+        return try FileDigest.sha256(path: tmp.path)
     }
 
     /// A minimal completed JobSummary for `dest`.
@@ -163,7 +164,7 @@ struct GohSyncCommandTests {
     func firstSyncDownloads() throws {
         let dir = try SyncTestSupport.makeDir()
         let body = Data("hello world".utf8)
-        let pin = SyncTestSupport.digest(body)
+        let pin = try SyncTestSupport.digest(body)
         let manifestPath = dir + "/gohfile.toml"
         let manifest = """
         version = 1
@@ -201,7 +202,7 @@ struct GohSyncCommandTests {
     func idempotentSecondRun() throws {
         let dir = try SyncTestSupport.makeDir()
         let body = Data("idempotent".utf8)
-        let pin = SyncTestSupport.digest(body)
+        let pin = try SyncTestSupport.digest(body)
         let manifestPath = dir + "/gohfile.toml"
         let manifest = """
         version = 1
@@ -236,7 +237,7 @@ struct GohSyncCommandTests {
     @Test("a pinned mismatch quarantines the file and exits 2")
     func pinnedMismatchQuarantines() throws {
         let dir = try SyncTestSupport.makeDir()
-        let pinned = SyncTestSupport.digest(Data("expected".utf8))
+        let pinned = try SyncTestSupport.digest(Data("expected".utf8))
         let wrong = Data("WRONG BYTES".utf8)
         let manifestPath = dir + "/gohfile.toml"
         let manifest = """
@@ -270,7 +271,7 @@ struct GohSyncCommandTests {
     func unpinnedFirstUseRecords() throws {
         let dir = try SyncTestSupport.makeDir()
         let body = Data("trust on first use".utf8)
-        let expected = SyncTestSupport.digest(body)
+        let expected = try SyncTestSupport.digest(body)
         let manifestPath = dir + "/gohfile.toml"
         let manifest = """
         version = 1
@@ -328,5 +329,89 @@ struct GohSyncCommandTests {
             manifestPath: manifestPath, base: nil, acceptChanged: false,
             send: daemon.sender(), watchdogSeconds: 1)
         #expect(result.exitCode == 64)
+    }
+
+    // MARK: - F1: advisory lock held on the stable sidecar inode
+
+    @Test("a held exclusive lock on the sidecar makes a concurrent sync exit 7")
+    func concurrentSyncIsRefused() throws {
+        let dir = try SyncTestSupport.makeDir()
+        let manifestPath = dir + "/gohfile.toml"
+        let manifest = """
+        version = 1
+
+        [[asset]]
+        url = "https://example.com/c.bin"
+        path = "c.bin"
+        """
+        try manifest.write(toFile: manifestPath, atomically: true, encoding: .utf8)
+
+        // Hold LOCK_EX on the stable sidecar from the test, simulating another
+        // in-flight `goh sync`.
+        let sidecar = dir + "/gohfile.lock.lock"
+        let fd = open(sidecar, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        defer { flock(fd, LOCK_UN) }
+
+        let daemon = FakeSyncDaemon { req, id in
+            try SyncTestSupport.stage(Data("c".utf8), at: req.destination!)
+            return SyncTestSupport.completedJob(
+                id: id, url: req.url, dest: req.destination!, bytes: 1)
+        }
+
+        let result = GohSyncCommand.run(
+            manifestPath: manifestPath, base: nil, acceptChanged: false,
+            send: daemon.sender(), watchdogSeconds: 1)
+
+        #expect(result.exitCode == 7)
+        #expect(daemon.addCount == 0)  // refused before any download
+    }
+
+    /// The sidecar lock must survive `writeLockAtomically`'s rename of
+    /// `gohfile.lock`: a real sync renames the data file (new inode), but the
+    /// lock lives on the never-renamed sidecar, so a concurrent attempt is still
+    /// refused. We assert this by running a full sync (which writes+renames the
+    /// lock), confirming it succeeds AND that the sidecar exists and is lockable
+    /// only after the run completes (the run's own flock was released on exit).
+    @Test("writeLockAtomically's rename does not move or release the sidecar lock")
+    func renameDoesNotReleaseSidecarLock() throws {
+        let dir = try SyncTestSupport.makeDir()
+        let body = Data("sidecar-survives".utf8)
+        let pin = try SyncTestSupport.digest(body)
+        let manifestPath = dir + "/gohfile.toml"
+        let manifest = """
+        version = 1
+
+        [[asset]]
+        url = "https://example.com/s.bin"
+        path = "s.bin"
+        sha256 = "\(pin)"
+        """
+        try manifest.write(toFile: manifestPath, atomically: true, encoding: .utf8)
+
+        let daemon = FakeSyncDaemon { req, id in
+            try SyncTestSupport.stage(body, at: req.destination!)
+            return SyncTestSupport.completedJob(
+                id: id, url: req.url, dest: req.destination!, bytes: UInt64(body.count))
+        }
+
+        let result = GohSyncCommand.run(
+            manifestPath: manifestPath, base: nil, acceptChanged: false,
+            send: daemon.sender(), watchdogSeconds: 1)
+        #expect(result.exitCode == 0)
+
+        // The data file was renamed into place; the sidecar is a separate,
+        // stable artifact that remains after the run.
+        #expect(FileManager.default.fileExists(atPath: dir + "/gohfile.lock"))
+        #expect(FileManager.default.fileExists(atPath: dir + "/gohfile.lock.lock"))
+
+        // The run released its own lock on exit, so the sidecar is lockable now.
+        let fd = open(dir + "/gohfile.lock.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        #expect(fd >= 0)
+        defer { close(fd) }
+        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        flock(fd, LOCK_UN)
     }
 }

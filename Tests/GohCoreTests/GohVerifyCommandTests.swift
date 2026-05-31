@@ -314,15 +314,18 @@ struct GohVerifyCommandTests {
 
     // MARK: - Concurrent lock acquisition → exit 7
 
-    @Test("concurrent exclusive lock held → exit 7")
+    @Test("concurrent exclusive lock held on the sidecar → exit 7")
     func concurrentLockHeld() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let (lockURL, _, _) = try writeValidLock(in: dir)
 
-        // Hold an exclusive lock on the file from the test
-        let fd = open(lockURL.path, O_RDONLY)
+        // Hold an exclusive lock on the STABLE sidecar (gohfile.lock.lock) — the
+        // same inode verify now contends on. Locking gohfile.lock directly would
+        // no longer block verify, because verify locks the sidecar.
+        let sidecar = dir.appendingPathComponent("gohfile.lock.lock").path
+        let fd = open(sidecar, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
         #expect(fd >= 0, "open must succeed for this test to be meaningful")
         defer { close(fd) }
 

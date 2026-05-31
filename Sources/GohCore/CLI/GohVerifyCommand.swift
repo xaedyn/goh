@@ -56,9 +56,16 @@ public enum GohVerifyCommand {
                 standardOutput: "corrupt lockfile\n")
         }
 
-        // ── Step 2: Acquire a shared advisory lock (LOCK_SH | LOCK_NB) ───────
+        // ── Step 2: Acquire a shared advisory lock on the stable sidecar ─────
+        // The lock is held on `gohfile.lock.lock`, NOT on `gohfile.lock`:
+        // `goh sync` replaces the data file's inode via rename(2), so locking it
+        // directly would not contend with a concurrent sync. Verify takes
+        // LOCK_SH on the sidecar; sync takes LOCK_EX on the same stable inode,
+        // so the exit-7 mutual exclusion actually holds cross-command.
 
-        let fd = open(lockPath, O_RDONLY)
+        let lockDir = lockURL.deletingLastPathComponent()
+        let sidecarPath = lockDir.appendingPathComponent(TrustLockSidecar.name).path
+        let fd = open(sidecarPath, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
         guard fd >= 0 else {
             return GohCommandLineResult(
                 exitCode: 6,
@@ -76,7 +83,6 @@ public enum GohVerifyCommand {
 
         // ── Step 3: Check manifestHash against a co-located gohfile.toml ─────
 
-        let lockDir = lockURL.deletingLastPathComponent()
         let tomlURL = lockDir.appendingPathComponent("gohfile.toml")
         if let tomlText = try? String(contentsOf: tomlURL, encoding: .utf8) {
             if let manifest = try? ManifestCodec.parse(tomlText) {
@@ -101,16 +107,26 @@ public enum GohVerifyCommand {
         var hasFailed = false
         var lockedPaths: Set<String> = []
 
+        // The confinement root for every entry path: the lock directory,
+        // standardized lexically (the same basis the files are opened on).
+        let lockDirBound = lockDir.standardizedFileURL.path
+
         for entry in lockfile.entries {
-            // Defensive: reject absolute paths or parent-escaping traversal.
-            guard !entry.path.hasPrefix("/"), !entry.path.contains("../") else {
+            // §9.3a: resolve relative to the lock's directory, not cwd.
+            let fileURL = lockDir.appendingPathComponent(entry.path)
+
+            // Defensive confinement: a lockfile entry must resolve to a path
+            // inside the lock directory. Reject absolute paths and any `..`
+            // traversal (bare `..`, `subdir/..`, `../escape`) by standardizing
+            // the join and confirming it stays under the lock dir (mirrors the
+            // baseReal prefix check GohWhichCommand.lookupInLock uses at HEAD).
+            let standardized = fileURL.standardizedFileURL.path
+            guard standardized.hasPrefix(lockDirBound + "/") else {
                 lines.append("FAILED \(entry.path) (unsafe path in lockfile entry)\n")
                 hasFailed = true
                 continue
             }
 
-            // §9.3a: resolve relative to the lock's directory, not cwd.
-            let fileURL = lockDir.appendingPathComponent(entry.path)
             let filePath = fileURL.path
 
             // Track for untracked enumeration (normalize the path).
@@ -142,9 +158,13 @@ public enum GohVerifyCommand {
         // ── Step 5: --strict-untracked enumeration ─────────────────────────────
 
         var hasUntracked = false
-        if strictUntracked || !hasMissing && !hasFailed {
+        if strictUntracked {
+            // Untracked enumeration is a --strict-untracked-only concern: a
+            // plain `goh verify` never emits `untracked …` lines (spec §9.4).
             // Walk the lock directory and flag regular files not in the lock.
-            let skipNames: Set<String> = ["gohfile.lock", "gohfile.toml"]
+            let skipNames: Set<String> = [
+                "gohfile.lock", "gohfile.toml", TrustLockSidecar.name,
+            ]
             if let enumerator = FileManager.default.enumerator(
                 at: lockDir,
                 includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
@@ -173,9 +193,7 @@ public enum GohVerifyCommand {
                             displayPath = stdPath
                         }
                         lines.append("untracked \(displayPath)\n")
-                        if strictUntracked {
-                            hasUntracked = true
-                        }
+                        hasUntracked = true
                     }
                 }
             }
