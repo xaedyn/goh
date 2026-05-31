@@ -96,3 +96,105 @@ struct HostKeyTests {
         #expect(!unwrapped.contains("κ"))              // no raw Unicode host bytes
     }
 }
+
+@Suite("HostScheduling on-disk types")
+struct HostSchedulingTypesTests {
+
+    private func sampleScheduling() -> HostScheduling {
+        HostScheduling(
+            version: HostScheduling.currentVersion,
+            hosts: [
+                HostProfile(
+                    host: "https://dl.example.com:443",
+                    arms: [
+                        ConnObservation(
+                            connectionCount: 8,
+                            throughputEWMA: 10_000_000,
+                            sampleCount: 3,
+                            updatedAt: Date(timeIntervalSince1970: 1_748_700_000)),
+                        ConnObservation(
+                            connectionCount: 16,
+                            throughputEWMA: 15_000_000,
+                            sampleCount: 2,
+                            updatedAt: Date(timeIntervalSince1970: 1_748_700_100)),
+                    ],
+                    updatedAt: Date(timeIntervalSince1970: 1_748_700_100)),
+                HostProfile(
+                    host: "http://cdn.example.com:80",
+                    arms: [
+                        ConnObservation(
+                            connectionCount: 4,
+                            throughputEWMA: 5_000_000,
+                            sampleCount: 1,
+                            updatedAt: Date(timeIntervalSince1970: 1_748_700_200)),
+                    ],
+                    updatedAt: Date(timeIntervalSince1970: 1_748_700_200)),
+            ])
+    }
+
+    // AC2: Codable round-trip.
+    @Test("AC: HostScheduling Codable round-trips losslessly")
+    func ac2CodableRoundTrip() throws {
+        let original = sampleScheduling()
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let data = try encoder.encode(original)
+        let decoded = try PropertyListDecoder().decode(HostScheduling.self, from: data)
+        #expect(decoded == original)
+    }
+
+    // AC2: Golden fixture round-trip.
+    // PRIMARY guard: decoded-value equality (SDK-stable). ROUND-TRIP STABILITY guard:
+    // re-encode the just-decoded value and decode again, comparing to the first decode.
+    @Test("AC: golden fixture decodes to known value; round-trip encode/decode is stable")
+    func ac2GoldenFixtureRoundTrip() throws {
+        let fixtureURL = Bundle.module.url(
+            forResource: "host-scheduling-v1", withExtension: "plist",
+            subdirectory: "Fixtures")
+        let fixtureData = try Data(contentsOf: #require(fixtureURL))
+
+        let decoded = try PropertyListDecoder().decode(HostScheduling.self, from: fixtureData)
+
+        #expect(decoded.version == 1)
+        #expect(decoded.hosts.count == 2)
+        #expect(decoded.hosts[0].host == "https://dl.example.com:443")
+        #expect(decoded.hosts[0].arms.count == 2)
+        #expect(decoded.hosts[0].arms[0].connectionCount == 8)
+        #expect(abs(decoded.hosts[0].arms[0].throughputEWMA - 10_000_000) < 1)
+        #expect(decoded.hosts[0].arms[0].sampleCount == 3)
+        #expect(decoded.hosts[0].arms[1].connectionCount == 16)
+        #expect(decoded.hosts[1].host == "http://cdn.example.com:80")
+        #expect(decoded.hosts[1].arms.count == 1)
+        #expect(decoded.hosts[1].arms[0].connectionCount == 4)
+
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let reencoded = try encoder.encode(decoded)
+        let redecoded = try PropertyListDecoder().decode(HostScheduling.self, from: reencoded)
+        #expect(redecoded == decoded)
+    }
+
+    @Test("AC: EWMA fold updates throughput and increments sampleCount")
+    func ac2EWMAFold() {
+        let arm = ConnObservation(
+            connectionCount: 8, throughputEWMA: 10_000_000, sampleCount: 3,
+            updatedAt: Date(timeIntervalSince1970: 1_000_000))
+        let updated = arm.foldingIn(throughput: 20_000_000, alpha: 0.3)
+        // new = 0.3 * 20_000_000 + 0.7 * 10_000_000 = 13_000_000
+        #expect(abs(updated.throughputEWMA - 13_000_000) < 1)
+        #expect(updated.sampleCount == 4)
+        #expect(updated.connectionCount == 8)
+    }
+
+    @Test("AC: EWMA fold on a zero-sample arm seeds the EWMA directly")
+    func ac2EWMAFoldSeedsWhenZeroSamples() {
+        let arm = ConnObservation(
+            connectionCount: 8, throughputEWMA: 0, sampleCount: 0,
+            updatedAt: Date(timeIntervalSince1970: 1_000_000))
+        let seeded = arm.foldingIn(throughput: 5_000_000, alpha: 0.3)
+        // sampleCount == 0 → seed directly, ignoring alpha and the old (0) EWMA.
+        #expect(abs(seeded.throughputEWMA - 5_000_000) < 1)
+        #expect(seeded.sampleCount == 1)
+        #expect(seeded.connectionCount == 8)
+    }
+}
