@@ -202,6 +202,35 @@ public final class HostProfileStore: Sendable {
         }
     }
 
+    // MARK: — Observation gate (D5, D8)
+
+    /// D5/D8 gate — whether a completed download qualifies as a clean per-host
+    /// throughput observation. Pure and side-effect-free so it can be unit-tested
+    /// in isolation; the daemon's completion handler calls this to decide whether
+    /// to call `recordObservation`.
+    ///
+    /// Records IFF: not a resume (D8); transfer phase ran at least `minTransferDuration`;
+    /// at least `minBytes` were transferred; the download was solo for its whole
+    /// duration (`wasSolo`); and the engine actually used the requested connection
+    /// count (a server that ignored Range and fell back to 1 connection must not
+    /// pollute the arm for the requested N).
+    public static func shouldRecordObservation(
+        isResume: Bool,
+        transferDuration: Duration,
+        bytesCompleted: UInt64,
+        wasSolo: Bool,
+        actualConnectionCount: UInt8,
+        requestedConnectionCount: UInt8,
+        minTransferDuration: Duration = .seconds(10),
+        minBytes: UInt64 = 8 * 1024 * 1024
+    ) -> Bool {
+        guard !isResume else { return false }
+        return transferDuration >= minTransferDuration
+            && bytesCompleted >= minBytes
+            && wasSolo
+            && actualConnectionCount == requestedConnectionCount
+    }
+
     // MARK: — Selection (D4, D6)
 
     /// Returns the bandit's chosen N and the reason.

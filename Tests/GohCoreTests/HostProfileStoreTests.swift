@@ -224,4 +224,61 @@ struct HostProfileStoreTests {
         #expect(n == 8)
         #expect(reason == .cold)
     }
+
+    // Hardening: the D5/D8 gate predicate, unit-tested in isolation.
+    @Test("D5 gate: a clean solo download qualifies")
+    func d5GatePositive() {
+        #expect(HostProfileStore.shouldRecordObservation(
+            isResume: false, transferDuration: .seconds(10),
+            bytesCompleted: 8 * 1024 * 1024, wasSolo: true,
+            actualConnectionCount: 8, requestedConnectionCount: 8))
+    }
+
+    @Test("D5 gate: a resume never qualifies (D8)")
+    func d5GateResumeRejected() {
+        #expect(!HostProfileStore.shouldRecordObservation(
+            isResume: true, transferDuration: .seconds(60),
+            bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
+            actualConnectionCount: 8, requestedConnectionCount: 8))
+    }
+
+    @Test("D5 gate: too short a transfer is rejected")
+    func d5GateTooShort() {
+        #expect(!HostProfileStore.shouldRecordObservation(
+            isResume: false, transferDuration: .seconds(9),
+            bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
+            actualConnectionCount: 8, requestedConnectionCount: 8))
+    }
+
+    @Test("D5 gate: too few bytes is rejected")
+    func d5GateTooFewBytes() {
+        #expect(!HostProfileStore.shouldRecordObservation(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 8 * 1024 * 1024 - 1, wasSolo: true,
+            actualConnectionCount: 8, requestedConnectionCount: 8))
+    }
+
+    @Test("D5 gate: a contended (non-solo) download is rejected")
+    func d5GateContendedRejected() {
+        #expect(!HostProfileStore.shouldRecordObservation(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 100 * 1024 * 1024, wasSolo: false,
+            actualConnectionCount: 8, requestedConnectionCount: 8))
+    }
+
+    @Test("D5 gate: actual != requested connection count is rejected")
+    func d5GateConnectionMismatchRejected() {
+        #expect(!HostProfileStore.shouldRecordObservation(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
+            actualConnectionCount: 1, requestedConnectionCount: 8))
+    }
+
+    @Test("D5 gate: boundary — exactly 10s and exactly 8 MiB qualifies")
+    func d5GateBoundary() {
+        #expect(HostProfileStore.shouldRecordObservation(
+            isResume: false, transferDuration: .seconds(10),
+            bytesCompleted: 8 * 1024 * 1024, wasSolo: true,
+            actualConnectionCount: 16, requestedConnectionCount: 16))
+    }
 }

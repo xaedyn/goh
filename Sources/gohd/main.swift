@@ -127,27 +127,24 @@ do {
         },
         sleepAssertionController: sleepAssertions,
         completedDownloadHandler: { completed, transferDuration, isResume in
-            // D8: skip observation for the resume path.
-            if !isResume {
-                // D5 gates — all must hold to record a valid observation.
-                // wasSolo is checked BEFORE end() runs (end() is in a defer in
-                // run(), which fires after this handler returns) — so the
-                // whole-duration solo answer is correct here.
-                let minDuration = Duration.seconds(10)
-                let minBytes: UInt64 = 8 * 1024 * 1024
-                let urlKey = hostKey(for: completed.url)
-                if let key = urlKey,
-                   transferDuration >= minDuration,
-                   completed.progress.bytesCompleted >= minBytes,
-                   hostProfileStore.wasSolo(jobID: completed.id),
-                   completed.actualConnectionCount == completed.requestedConnectionCount
-                {
-                    hostProfileStore.recordObservation(
-                        hostKey: key,
-                        connectionCount: completed.actualConnectionCount,
-                        totalBytes: completed.progress.bytesCompleted,
-                        transferDuration: transferDuration)
-                }
+            // D5/D8 gates — all must hold to record a valid observation.
+            // wasSolo is checked BEFORE end() runs (end() is in a defer in
+            // run(), which fires after this handler returns) — so the
+            // whole-duration solo answer is correct here.
+            let observationKey = hostKey(for: completed.url)
+            if let key = observationKey,
+               HostProfileStore.shouldRecordObservation(
+                   isResume: isResume,
+                   transferDuration: transferDuration,
+                   bytesCompleted: completed.progress.bytesCompleted,
+                   wasSolo: hostProfileStore.wasSolo(jobID: completed.id),
+                   actualConnectionCount: completed.actualConnectionCount,
+                   requestedConnectionCount: completed.requestedConnectionCount) {
+                hostProfileStore.recordObservation(
+                    hostKey: key,
+                    connectionCount: completed.actualConnectionCount,
+                    totalBytes: completed.progress.bytesCompleted,
+                    transferDuration: transferDuration)
             }
             do {
                 try metadataTagger.tagCompletedDownload(
