@@ -17,6 +17,12 @@ public enum ErrorCode: String, Codable, Sendable, CaseIterable {
     case protocolVersionMismatch
     case cancelled
     case invalidArgument
+    /// A path component in the download destination was a symlink (or a
+    /// non-directory), so the daemon refused to follow it (`DESIGN.md`
+    /// §Persistence). A deterministic confinement failure: a retry cannot
+    /// succeed. Appended after the frozen sixteen — wire-safe because the
+    /// `String` raw value is the case name, so existing codes are unchanged.
+    case symlinkComponentRefused
 }
 
 /// A structured command failure (`DESIGN.md` §2.4). Travels the §1.2 error

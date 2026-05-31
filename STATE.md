@@ -5,6 +5,121 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-30 — Trust core: IMPLEMENTED (all 6 phases), **pushed + PR #75 open**, CI green
+
+- **Branch:** `design/trust-core`, off `main`, **pushed to origin; PR #75 open against
+  `main`** (https://github.com/xaedyn/goh/pull/75). CI green (Build & test, Package
+  artifacts); signed-PKG gate skipped (needs Developer ID). CodeRabbit reviewed and
+  its findings are addressed (see the CodeRabbit pass below).
+  Built with `superpowers:subagent-driven-development` — one phase at a time, TDD,
+  a two-stage (spec + quality) review gate after each phase, plus a final
+  cross-cutting review. **Test count 314 → 424, all green, `-warnings-as-errors`
+  clean. `protocolVersion` stayed 3; catalog schema unchanged — purely additive,
+  no migration.**
+- **What shipped:** `gohfile.toml` (manifest) + `gohfile.lock` (lockfile) frozen
+  on-disk formats, and `goh sync` / `goh verify` / `goh which`.
+- **The 6 phases as built:**
+  1. **TOML reader+writer** — `Sources/GohCore/TrustCore/MinimalTOMLReader.swift`
+     (+`MinimalTOMLWriter.swift`): hand-rolled subset parser (§9.5), 14 golden
+     fixtures, named errors for every out-of-subset construct. Review hardened the
+     underscore-int + bare-string diagnostics and added message-content assertions.
+  2. **Codecs + digest** — `ManifestCodec` (§7), `LockfileCodec` (§8, encode/decode),
+     `FileDigest` (at-rest streaming SHA-256), shared `Sha256Format` validator.
+  3. **Daemon write-path hardening** — `DownloadFile` now materializes paths via a
+     base-free `openat` descent (`mkdirat` for missing dirs; `O_NOFOLLOW` on the
+     final + immediate-parent + every created component; `O_CLOEXEC` throughout);
+     new `ErrorCode.symlinkComponentRefused`. **Running-code gate passed:** 8
+     symlink-swap/TOCTOU tests written first, seen fail, then pass. macOS forces
+     following pre-existing prefix symlinks (`/var`→`/private/var`); an independent
+     security review ruled the residual base-free-undecidable and the CLI realpath
+     layer's + accepted-v0.1-residual's job — NO-OP on further daemon tightening.
+     DESIGN.md §Persistence + §2.4 reconciled.
+  4. **`goh which`** — `CLI/GohWhichCommand.swift`: lock lookup (entries resolved
+     under the lock dir, symlink-resolved compare for `/var`, confined to the lock
+     tree) then `getxattr` Spotlight provenance; exit 4 when neither. Default lock
+     = cwd `./gohfile.lock`.
+  5. **`goh verify`** — `CLI/GohVerifyCommand.swift`: read-only re-hash vs lock;
+     `OK`/`FAILED`(2)/`MISSING`(9); `flock(LOCK_SH)` busy→7; stale manifestHash→6;
+     unknown lockfileVersion→6 (NOT 1); `--strict-untracked`→10; precedence 9>2>10.
+  6. **`goh sync`** — `CLI/GohSyncCommand.swift` + `TrustCore/SyncPathConfinement.swift`:
+     lexical+realpath CLI confinement (rules 1–2, exit 5); loop `add` + poll `ls`
+     by job id with an injectable no-progress watchdog; CLI-side re-hash only
+     (never trusts a daemon hash); pinned acceptance with `.corrupt-<unix>`
+     quarantine (exit 2); TOFU first-use + AC5 change event (exit 3 /
+     `--accept-changed`; `verify=false` suppresses the drift event); atomic lock
+     write (`.tmp`→fsync→`rename`→fsync dir); precedence 5>2>3>8. Also wired
+     `which`/`verify`/`sync` into the real CLI parse/run/usage.
+- **Final cross-cutting review** caught a frozen-format round-trip bug: the TOML
+  codecs didn't escape `"`/`\` in url/path strings. Fixed — `LockfileCodec.encode`
+  escapes, `MinimalTOMLReader` un-escapes `\"`/`\\` and preserves `#` inside quotes
+  while still stripping a real trailing comment. A `TrustCoreRoundTripTests` corpus
+  (`"`, `\`, `#`, `=`, `?`, spaces, unicode) is now a CI guard for both formats.
+- **Exit-code contract (frozen §9.4):** 0; 2 integrity; 3 TOFU-change; 4
+  no-provenance; 5 path-escape; 6 lock missing/corrupt/stale/unknown-version; 7
+  lock-busy; 8 download-failed; 9 verify-missing; 10 strict-untracked; 64
+  usage/bad-manifest (incl. `auth` reserved); 1 only generic daemon/transport.
+- **NEXT ACTION:** push `design/trust-core` and open the PR (CodeRabbit + Socket
+  on PR per global prefs). After merge, Phase 2 of the strategic arc (adaptive
+  per-host range scheduling) is next.
+- **Process notes:** Phase 3's running-code gate worked as designed — the spec's
+  literal "O_NOFOLLOW every component" was caught as unshippable on macOS by the
+  full suite (broke ~85 tests), corrected to the base-free boundary, confirmed by
+  an independent security review. The hand-rolled TOML parser's missing string
+  escaping was caught only by the final cross-cutting round-trip review, not the
+  per-phase reviews — a reminder that frozen wire/disk formats need an explicit
+  adversarial round-trip corpus, which now exists.
+
+### 2026-05-30 — Trust core (Phase 1 of strategic arc): design + plan COMPLETE, ready to implement
+
+- **Branch:** `design/trust-core`, off `main`, **pushed to origin**. Two commits:
+  - `4976483` — approved design spec + research artifacts.
+  - `fcf47ac` — the 6-phase implementation plan + spec exit-code reconciliation.
+- **What this is:** the `gohfile.toml` + `gohfile.lock` manifest/lockfile and the
+  `goh sync` / `goh verify` / `goh which` commands — the "trust core," Phase 1 of
+  the ROADMAP strategic arc (reproducible, integrity-verified asset management).
+  Approach 1: **lockfile-as-product, CLI-local, no XPC protocolVersion change**
+  (stays 3), re-hash on demand. Trust-on-first-use by default, strict when pinned.
+- **Where the work lives:**
+  - Spec (FROZEN formats): `docs/superpowers/specs/2026-05-29-trust-core-design.md`
+    — status `approved`; survived 4 adversarial spec-review rounds.
+  - Plan: `docs/plans/2026-05-29-trust-core-plan.md` — 6 phases, TDD throughout;
+    survived 2 adversarial plan-review rounds + targeted fixes.
+  - Phase artifacts: `docs/superpowers/progress/2026-05-29-trust-core-phase{1..6}.md`
+  - Research: `docs/superpowers/research/2026-05-29-trust-core-*.md`
+- **The 6 phases (deployment-independent, implement in order):**
+  1. Hand-rolled TOML reader+writer (+ golden fixtures) — depends on nothing.
+  2. Manifest + Lockfile codecs + `FileDigest` (at-rest SHA-256 wrapper).
+  3. **Daemon `DownloadFile` path-confinement hardening** (`O_NOFOLLOW` + base-free
+     `openat` descent). ⚠️ Carries a **running-code verification gate**: its
+     symlink-swap TOCTOU correctness is established by PASSING TESTS under TDD, not
+     prose — write the symlink-swap tests first, see them fail, implement, see them
+     pass, then a mandatory review of the COMPILED+TESTED code before merge. The
+     residual same-machine symlink-race is an ACCEPTED v0.1 limitation (consistent
+     with the SMAppService threat-model deferral); lexical confinement (Phase 6
+     `SyncPathConfinement`) is the load-bearing defense against the real
+     hostile-manifest attack.
+  4. `goh which` (CLI-local; lock reader + new `getxattr` provenance reader).
+  5. `goh verify` (CLI-local; re-hash vs lock; missing=9, strict-untracked=10).
+  6. `goh sync` (CLI-local loop over `add`; ls-poll completion detection +
+     watchdog; CLI lexical+realpath pre-flight; pinned/TOFU/AC5; atomic lock write).
+- **Exit-code contract (reconciled with DESIGN.md):** 0 success; **64** usage/
+  bad-input (incl. bad manifest input + `auth` reserved-field); **1** generic
+  daemon/transport; 2 integrity; 3 TOFU-change; 4 no-provenance; 5 path-escape;
+  6 lock missing/corrupt/stale + unknown lockfileVersion; 7 lock-acquire; 8
+  download-failed; 9 verify missing-file; 10 verify strict-untracked.
+- **NEXT ACTION (fresh session):** implement the plan with
+  `superpowers:subagent-driven-development`, **Phase 1 first** (the TOML reader),
+  one phase at a time with real `swift test` runs (NOT a big parallel fan-out).
+  Do NOT re-run plan review — planning is closed; Phase 3's openat precision is
+  deliberately deferred to TDD per its running-code gate. Local `swift test` needs
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (see memory).
+- **Process note for next time:** the path-confinement mechanism ate ~6 review
+  rounds because adversarial reviewers escalated an out-of-scope (per goh's own
+  threat model) TOCTOU concern to a blocker; low-level POSIX syscall choreography
+  is verified far better by running tests than by prose review. Lesson banked.
+
+---
+
 ### 2026-05-29 — platform floor corrected; wordmark redesign parked
 
 - **Branch:** `docs/macos-floor-26.0`, off `main`. Corrects the supported-OS
