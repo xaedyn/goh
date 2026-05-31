@@ -628,35 +628,29 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-Current branch: `design/adaptive-scheduling` (pushed to origin, **no PR yet** —
-implementation hasn't started). `main` is at `48ec675` (PR #76). 424 tests pass on
-`main`; CI green.
+Current branch: `design/adaptive-scheduling`; **PR #77 open** against `main`
+(all of Phase 2 — adaptive per-host range scheduling — IMPLEMENTED). `main` is at
+`48ec675` (PR #76). **473 tests pass** on the branch (424 baseline + 49 new),
+`swift build` warning-clean. See the top "Current state" entry, dated
+*2026-05-31 (impl session)*, for the full per-phase breakdown.
 
-**THE NEXT ACTION — implement Phase 2 (adaptive per-host range scheduling),
-Phase 1 first.** The design spec and the 9-task/3-phase implementation plan are
-both DONE and each survived 2 adversarial review rounds (see the top "Current
-state" entry, dated *2026-05-31 (later session)*, for the full breakdown). Do this:
+**THE NEXT ACTION — get PR #77 to green + merge, then start Phase 3 (public launch).**
+1. PR #77 review: CodeRabbit was run at feature-complete; triaged findings are
+   recorded on the PR / in the impl-session entry. Address any new review feedback,
+   confirm CI green, then **merge to `main`**.
+2. Then the strategic arc's **Phase 3 — public launch** (the launch sequence below,
+   still valid). The only gate outside the code is Apple Developer ID credentials.
 
-1. Run the session-ritual reads, summarize, get confirmation.
-2. Implement with `superpowers:subagent-driven-development`, **plan Phase 1 first**
-   (`docs/plans/2026-05-31-adaptive-scheduling-plan.md` — the pure value layer:
-   `HostKey` normalizer + the `HostScheduling` Codable on-disk types + golden
-   round-trip corpus). One task at a time, TDD, real `swift test` per task with
-   `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
-3. **Do NOT re-run design or plan review** — both closed at the 2-round cap with
-   all block issues resolved. Planning is closed.
-4. Push + open the PR once a phase is green. Then Phase 2, then Phase 3 (the only
-   existing-code touch is widening `completedDownloadHandler` to carry a `Duration`
-   in Phase 3 — watch `-warnings-as-errors` at its call sites; it's flagged in the plan).
-
-**Doc-currency note (verified 2026-05-31):** STATE.md top entry + this handoff are
-current. The adaptive-scheduling on-disk format is NOT yet in `DESIGN.md` — by
-design: per the four-round discipline, DESIGN.md is reconciled *during
-implementation* (as trust-core did per-phase), and the frozen contract lives in
-`docs/superpowers/specs/2026-05-31-adaptive-scheduling-design.md` until then.
-`ROADMAP.md` still frames Phase 2 as "design pass first" (it tracks scope, not
-status — status lives here in STATE.md). The `cross-repo-email-audit` memory
-records this session's audit (DLXV made private; private-repo landmines noted).
+**Doc-currency note (verified 2026-05-31, impl session):** The top "Current state"
+entry and this handoff are current. `DESIGN.md` §Adaptive host scheduling now
+documents the frozen v1 `host-scheduling.plist` format (reconciled this session per
+the four-round discipline). The planning artifacts under `docs/plans/` and
+`docs/superpowers/{specs,progress}/` are **frozen point-in-time records** of the
+closed design/plan — they intentionally describe the plan *as planned*, so minor
+divergences from the shipped code (e.g. the handler-arity revision, trace-emission
+site, "byte-for-byte" vs decoded-value-equality wording) are expected; DESIGN.md +
+this STATE.md + the code are authoritative. `ROADMAP.md` still frames Phase 2 as
+"design pass first" (it tracks scope, not status — status lives here in STATE.md).
 
 **Earlier session's launch sequence — still valid as Phase 3, AFTER Phase 2
 implementation ships.** From the gitignored strategy memo at
