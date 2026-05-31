@@ -252,12 +252,17 @@ extension GohCommandLine {
                 .appendingPathComponent("gohfile.lock")
                 .path
             var strictUntracked = false
+            var sawPositional = false
             for arg in rest {
                 if arg == "--strict-untracked" {
                     strictUntracked = true
                 } else if arg.hasPrefix("-") {
                     throw ParseError(message: "unknown verify option \(arg)")
                 } else {
+                    guard !sawPositional else {
+                        throw ParseError(message: "verify accepts at most one lockfile path")
+                    }
+                    sawPositional = true
                     lockPath = arg
                 }
             }
