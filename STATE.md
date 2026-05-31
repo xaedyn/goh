@@ -5,6 +5,43 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (planning session) — In-flight adaptive parallelism: implementation plan **WRITTEN + 2-round adversarial review PASSED + USER-APPROVED at the gate**; P1 implementation starting
+
+- **Plan written** via `custom-writing-plans` (Sonnet): `docs/plans/2026-05-31-in-flight-adaptive-parallelism-plan.md`
+  — **25 TDD tasks segmented at the spec's P1–P5 boundaries** (P1: 5 / P2: 4 / P3: 7 / P4: 3 / P5: 6),
+  every task with failing-test-first Swift Testing stubs, exact `DEVELOPER_DIR`-prefixed `swift test`
+  commands, complete copy-pasteable Swift, and SM1–SM6/AC1–AC5 mapped to owning tasks. Five phase
+  artifacts seeded under `docs/superpowers/progress/2026-05-31-in-flight-adaptive-parallelism-phase{1..5}.md`.
+- **Reviewed** via `adversarial-plan-review` (Opus), the **2-round cap reached**:
+  - **Round 1 — 6 BLOCKs, all fixed:** (1) explicit `--connections` never disabled the governor (silent
+    override of a user pin); (2) `actualConnectionCount` wasn't actually peak-max; (3) dual-writer clobber
+    between the legacy `advance` shim and the new interval-set `complete(interval:)`; (4) under-specified
+    per-host budget / `TaskGroup` single-adder ownership; (5) vacuous SM4 tests (`#expect(true)` / wrong
+    assertion); (6) wrong `goh-bench` path (`Sources/` vs `Benchmarks/`).
+  - **Round 2 — 3 BLOCKs, all fixed:** all were *second-order defects the round-1 fixes introduced* —
+    (1) three legacy `ChunkAssembler` callers (`verifyHash`/`fetchSingle`/`consumeRange`) left unmigrated
+    → compile break; (2) per-host budget **slot leak** on a worker-throw path; (3) the governor-off test
+    under-asserted. Fixed with caller migration to `complete(interval:)` + `init(file:totalBytes:)`,
+    worker-owned `defer` slot-release via a `fillToTarget` helper, and a strengthened test asserting peak
+    N stays pinned. **No unresolved BLOCKs.** Remaining advisories: side-table not cleared on `rm`
+    (harmless/bounded), kill-switch is a compile-time constant (spec permits env *or* constant).
+  - **3rd review NOT authorized** (2-round cap); user accepted the mechanical round-2 fixes as the gate
+    decision (the per-task `swift test` + review gates in subagent-driven-development are the real check).
+- **USER GATE PASSED:** plan approved; proceed to implementation, **P1 first**.
+- **Key design invariants the plan preserves** (verify they hold at every task): `protocolVersion` 3,
+  `JobCatalog.version` 1, `JobSummary` wire shape, `host-scheduling.plist` v1 — **all unchanged**. The
+  explicit-N governor-off channel is an *ephemeral daemon-internal* `Mutex<[UInt64:UInt8]>` jobID→N
+  table in `gohd` (NOT a `JobSummary` wire field). `GovernorOutcome` is daemon-internal; off-candidate
+  convergence records nothing (no EWMA bias). The pure `ParallelismGovernor` takes injected clock + RNG.
+- **NEXT ACTION — implement P1** via `superpowers:subagent-driven-development`, one task at a time, TDD,
+  real `swift test` (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`), two-stage review gate
+  after each task. P1 = injected `ContinuousClock` into `fetchRanged`/`consumeRange` + per-chunk rate
+  sampling at the `flush()` chokepoint + the pure `ParallelismGovernor` (geometric probe / knee / cruise,
+  SM3 deterministic) + the `GovernorOutcome` struct + the **dummynet-on-macOS-26 verification spike**
+  (fallback: Linux-VM `tc netem`) — one of the two MUST be confirmed in P1 so SM1/SM3 get a hermetic
+  deterministic gate. No behaviour change ships in P1. Do **not** re-run design, spec review, or plan
+  review — all closed.
+
 ### 2026-05-31 (design session) — In-flight adaptive parallelism: four-round design **APPROVED** + benchmark plan; **no code yet**
 
 - **Slice started:** in-flight adaptive parallelism (the v0.2 performance headline), driven through
