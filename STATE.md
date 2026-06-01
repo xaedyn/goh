@@ -5,6 +5,33 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P4 code done (Tasks 17–18)**; only Task 19 (the manual benchmark run) remains before the headline ships
+
+- **P4 Tasks 17 + 18 shipped on `design/in-flight-parallelism`** (the autonomous code parts). **508 tests
+  pass**, warning-clean. Task 19 (running the benchmarks) is the **you-in-the-loop** step — see below.
+  - `24d4cb6` + `d45934d` — **Task 17:** global per-host `ConnectionBudget` (spec §8) gated into the control
+    loop (budget request before each spawn, worker-`defer` release, leak-proof). **Opus-reviewed ✅.** It's a
+    **soft cap with a liveness floor**: a download that would seed zero workers (siblings hold the budget)
+    force-admits exactly one un-budgeted connection so it always progresses — peak per-host bounded at
+    `16 + (D−1)`. Default-nil in the engine (no behavior change for existing tests); gohd creates one shared
+    16-budget. DESIGN.md §Adaptive host scheduling documents the soft-cap.
+  - `fe08c5a` — **Task 18:** `goh-bench lfn` subcommand (governed vs `--static-n`, median + IQR seconds,
+    JSON out) + `docs/bench/lfn-runbook.md` (SM5a/SM2 commands + quarantine policy). The static control arm
+    uses the explicit-connection-count channel to disable the governor. Builds; not run (real network).
+- **NEXT ACTION — Task 19 (manual, you-in-the-loop): run the benchmarks + tune + write the P4 artifact.**
+  This is the only thing between here and shipping the single-edge headline. Per `docs/bench/lfn-runbook.md`:
+  (1) **SM5a** — `swift run goh-bench lfn --url https://sin-speed.hetzner.com/1GB.bin --runs 5 --output
+  governed.json` vs `--static-n 8 --output static8.json`; accept = governed median < static8 median,
+  non-overlapping IQR. (2) **SM2** — saturated target via dummynet ([[dummynet-macos26-confirmed]], needs
+  sudo via `!`) or a throttling CDN; accept = governed median ≤ 1.05× static8 (≤5% regression = rollback
+  trigger). (3) Confirm **SM1** probe→cruise via `GOH_ENGINE_TRACE=1 ... | grep '^governor '`. (4) If the
+  win is marginal or SM2 regresses, **tune `Config.default` + `chunkSize`** against the medians and re-run.
+  (5) Write `docs/superpowers/progress/2026-05-31-in-flight-adaptive-parallelism-phase4.md` with the numbers.
+  **Then P1–P4 is the proven single-edge headline → one PR.** P5 (NWConnection multi-edge) is a separate
+  later PR behind its feasibility spike + dedicated security review.
+- **Do NOT PR yet:** the governor is default-on but UNPROVEN on real networks until Task 19 passes SM5a/SM2;
+  the PR's CI can't run the LFN benchmarks. Merge a *proven* feature.
+
 ### 2026-05-31 (impl session) — In-flight adaptive parallelism **P3 COMPLETE** (governor functional + fed back to bandit); next = P4 (benchmarks + per-host budget)
 
 - **P3 of 5 shipped on `design/in-flight-parallelism`.** **503 tests pass**, warning-clean,
