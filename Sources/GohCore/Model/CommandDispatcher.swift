@@ -19,6 +19,11 @@ public struct CommandDispatcher: Sendable {
     private let checkpointStore: CheckpointStore?
     private let hostProfileStore: HostProfileStore?
     private let importedCookies: ImportedCookieStore?
+    /// Daemon-internal explicit-`--connections` channel (NOT on the wire). When a
+    /// job is admitted with a user-supplied connection count, the dispatcher
+    /// records `job.id → cappedConnectionCount` here so the scheduler can run that
+    /// job with the governor OFF (statically pinned N). nil in test/headless use.
+    private let explicitConnectionCounts: ExplicitConnectionCounts?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
     private let queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)?
 
@@ -34,6 +39,7 @@ public struct CommandDispatcher: Sendable {
         checkpointStore: CheckpointStore? = nil,
         hostProfileStore: HostProfileStore? = nil,
         importedCookies: ImportedCookieStore? = nil,
+        explicitConnectionCounts: ExplicitConnectionCounts? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil,
         queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil
     ) {
@@ -42,6 +48,7 @@ public struct CommandDispatcher: Sendable {
         self.checkpointStore = checkpointStore
         self.hostProfileStore = hostProfileStore
         self.importedCookies = importedCookies
+        self.explicitConnectionCounts = explicitConnectionCounts
         self.onJobQueued = onJobQueued
         self.queuedJobAdmission = queuedJobAdmission
     }
@@ -127,6 +134,14 @@ public struct CommandDispatcher: Sendable {
                    let url = URL(string: request.url)
                 {
                     importedCookies?.snapshotHeader(forJobID: job.id, url: url)
+                }
+                // Daemon-internal explicit-N channel: a user-supplied --connections
+                // pins N and turns the governor off for this job. Resume/cold/bandit
+                // paths never write here, so those jobs get explicitN == nil and the
+                // governor may run. Set AFTER create (need job.id) and BEFORE
+                // admission (which schedules the run that consumes this entry).
+                if selectionReason == .explicit {
+                    explicitConnectionCounts?.set(jobID: job.id, count: cappedConnectionCount)
                 }
                 return .job(admitQueuedJob(job))
 

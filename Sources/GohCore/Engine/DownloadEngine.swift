@@ -19,6 +19,32 @@ private final class ByteCounter: Sendable {
     }
 }
 
+/// A `Sendable` reference-type collector for per-flush worker rate samples. The
+/// worker tasks append to it from their flush chokepoint; the control loop drains
+/// it at each reap and feeds the governor. A reference type (not a bare `Mutex`,
+/// which is noncopyable and cannot be captured by the sending task closures or
+/// passed as an `Optional` parameter), mirroring `ByteCounter`.
+private final class RateSampleSink: Sendable {
+    private let samples: Mutex<[WorkerRateSample]>
+
+    init() { samples = Mutex([]) }
+
+    /// Appends one sample (called from a worker's flush).
+    func append(_ sample: WorkerRateSample) {
+        samples.withLock { $0.append(sample) }
+    }
+
+    /// Atomically returns and clears all buffered samples (called from the
+    /// control loop at each reap).
+    func drain() -> [WorkerRateSample] {
+        samples.withLock { buffered -> [WorkerRateSample] in
+            let s = buffered
+            buffered.removeAll(keepingCapacity: true)
+            return s
+        }
+    }
+}
+
 /// Runs an HTTP download (`DESIGN.md` §Transport).
 ///
 /// The engine claims a queued job, sends a *speculative* ranged GET
@@ -50,6 +76,11 @@ public struct DownloadEngine: Sendable {
     /// No range is split below this; smaller files download over one connection.
     private static let minChunk: UInt64 = 1 << 20
 
+    /// Daemon kill-switch for the in-flight parallelism governor (spec §10).
+    /// When `false`, `fetchRanged` falls back to a static N (the requested
+    /// connection count) and never runs the governor. Defaults to `true`.
+    static let governorEnabled = true
+
     /// Reports a `JobStore` mutation failure other than the expected
     /// `.jobNotFound` (which the engine ignores because it means the job was
     /// removed under it). The reporter receives the `jobID`, the operation
@@ -71,7 +102,7 @@ public struct DownloadEngine: Sendable {
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
     private let sleepAssertionController: SleepAssertionController?
-    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)?
+    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
     private let hostProfileStore: HostProfileStore?
 
@@ -82,7 +113,7 @@ public struct DownloadEngine: Sendable {
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
-        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)? = nil,
+        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)? = nil,
         unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
         hostProfileStore: HostProfileStore? = nil
     ) {
@@ -136,7 +167,10 @@ public struct DownloadEngine: Sendable {
 
     /// Downloads the job with `jobID`, driving it to a terminal state. Never
     /// throws — every failure is recorded on the job as a ``GohError``.
-    public func run(jobID: UInt64, in store: JobStore) async {
+    public func run(
+        jobID: UInt64, in store: JobStore,
+        explicitConnectionCount: UInt8? = nil
+    ) async {
         guard store.job(id: jobID) != nil else { return }
         control?.register(jobID: jobID)
         defer { control?.unregister(jobID: jobID) }
@@ -172,7 +206,9 @@ public struct DownloadEngine: Sendable {
                     job: job, checkpoint: checkpoint, checkpointStore: checkpointStore,
                     store: store, trace: EngineDiagnostics())
             } else {
-                try await download(job: job, store: store, trace: EngineDiagnostics())
+                try await download(
+                    job: job, store: store, trace: EngineDiagnostics(),
+                    explicitConnectionCount: explicitConnectionCount)
             }
             try? checkpointStore?.delete(jobID: jobID)
         } catch let stop as DownloadControlStop {
@@ -201,7 +237,8 @@ public struct DownloadEngine: Sendable {
     }
 
     private func download(
-        job: JobSummary, store: JobStore, trace: EngineDiagnostics
+        job: JobSummary, store: JobStore, trace: EngineDiagnostics,
+        explicitConnectionCount: UInt8? = nil
     ) async throws {
         guard let url = URL(string: job.url) else {
             throw GohError(code: .unsupportedURL, message: "could not parse URL: \(job.url)")
@@ -233,7 +270,8 @@ public struct DownloadEngine: Sendable {
             let total = contentRange.total
             try await fetchRanged(
                 job: job, store: store, url: url, total: total, initialResponse: response,
-                firstRangeStream: stream, cancelFirstRangeStream: cancelStream, trace: trace)
+                firstRangeStream: stream, cancelFirstRangeStream: cancelStream, trace: trace,
+                explicitConnectionCount: explicitConnectionCount)
         case 200..<300:
             try await fetchSingle(
                 job: job, store: store,
@@ -508,6 +546,7 @@ public struct DownloadEngine: Sendable {
         firstRangeStream: AsyncThrowingStream<Data, Error>,
         cancelFirstRangeStream: @escaping @Sendable () -> Void,
         trace: EngineDiagnostics,
+        explicitConnectionCount: UInt8? = nil,
         clock: ContinuousClock = ContinuousClock()   // injected; default keeps callers unchanged
     ) async throws {
         let file = try DownloadFile(path: job.destination, expectedSize: total)
@@ -538,7 +577,18 @@ public struct DownloadEngine: Sendable {
             offset += len
         }
         let queue = ChunkQueue(intervals: chunks)
-        let targetN = Int(job.requestedConnectionCount)   // STATIC in P2/11A; Task 12 makes it governor-driven
+
+        // Governor runs only when no explicit --connections was given AND the
+        // daemon kill-switch is on. An explicit count pins targetN (no probing).
+        let governorEnabled = explicitConnectionCount == nil && Self.governorEnabled
+        // Clamp the seed/pin target to [1, 16]. The slot set is 0..<16, so
+        // targetN must never exceed 16 (closes the 11A advisory).
+        var targetN = min(max(Int(explicitConnectionCount ?? job.requestedConnectionCount), 1), 16)
+        // The governor is a value type mutated ONLY in the synchronous control
+        // loop below (record/decide). Workers never touch it. The sample sink is
+        // the sole worker→control-loop channel (a Mutex).
+        var governor = ParallelismGovernor(config: .default, rng: SystemRandomNumberGenerator())
+        let sampleSink: RateSampleSink? = governorEnabled ? RateSampleSink() : nil
 
         do {
             // The group element is the connection SLOT the worker held, returned
@@ -560,7 +610,10 @@ public struct DownloadEngine: Sendable {
                 // via downloadRange) and returns its slot id. Workers never call
                 // addTask and never touch the slot set.
                 func spawn(_ chunk: ByteInterval) {
-                    let slot = availableSlots.min()!
+                    // Crash-proof slot allocation: if somehow no slot is free,
+                    // don't spawn — hold (targetN is clamped ≤ 16, so this should
+                    // never trip, but a force-unwrap here would be a hard crash).
+                    guard let slot = availableSlots.min() else { return }
                     availableSlots.remove(slot)
                     let range = ByteRange(start: chunk.start, length: chunk.length)
                     if chunk.start == 0 {
@@ -571,7 +624,8 @@ public struct DownloadEngine: Sendable {
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
                                 clock: clock, started: started, trace: trace,
-                                stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
+                                stream: firstRangeStream, cancelStream: cancelFirstRangeStream,
+                                sampleSink: sampleSink)
                             return slot
                         }
                     } else {
@@ -581,7 +635,8 @@ public struct DownloadEngine: Sendable {
                                 assembler: assembler, bytesWritten: bytesWritten,
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
-                                clock: clock, started: started, trace: trace)
+                                clock: clock, started: started, trace: trace,
+                                sampleSink: sampleSink)
                             return slot
                         }
                     }
@@ -613,9 +668,35 @@ public struct DownloadEngine: Sendable {
                     }
                     liveWorkers -= 1
                     if let s = freedSlot { availableSlots.insert(s) }
-                    // Re-admit the next chunk(s) onto freed slots (no-op at fixed
-                    // N once the queue drains).
+
+                    // Governor step (governor-on only). Drain the per-flush rate
+                    // samples the workers deposited, feed them to the governor,
+                    // then ask for a decision and apply it to targetN. Mutating
+                    // `governor` here is safe — this is the sole synchronous
+                    // mutator; workers only append to the Mutex-guarded sink.
+                    if governorEnabled, let sampleSink {
+                        let drained = sampleSink.drain()
+                        for s in drained { governor.record(sample: s) }
+                        switch governor.decide(
+                            liveWorkers: liveWorkers, remainingBytes: queue.remainingBytes)
+                        {
+                        case .hold: break
+                        case .addWorkers(let k): targetN = min(targetN + k, 16)
+                        case .dropWorkers(let k): targetN = max(targetN - k, 1)
+                        case .commit(let n): targetN = min(max(n, 1), 16)
+                        case .backOffPinLow: targetN = 1
+                        }
+                    }
+
+                    // Re-admit chunk(s) up to the (possibly governor-updated)
+                    // target onto freed slots. When targetN dropped, this simply
+                    // doesn't re-admit — running workers finish their current
+                    // chunk and aren't replaced (cooperative drop, no cancel).
                     fillToTarget(targetN)
+                    // The governor may have grown N — re-record the peak. The
+                    // store method is peak-max, so repeated calls keep the
+                    // high-water mark.
+                    _ = try store.setActualConnectionCount(id: job.id, UInt8(peakWorkers))
                 }
             }
         } catch {
@@ -636,18 +717,21 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
+        let governorOutcome = governorEnabled ? governor.outcome : .governorOff
         try complete(
             jobID: job.id, in: store,
-            transferDuration: clock.now - started, isResume: false)
+            transferDuration: clock.now - started, isResume: false,
+            governorOutcome: governorOutcome)
         trace.summary()
     }
 
     private func complete(
         jobID: UInt64, in store: JobStore,
-        transferDuration: Duration, isResume: Bool
+        transferDuration: Duration, isResume: Bool,
+        governorOutcome: GovernorOutcome = .governorOff
     ) throws {
         let completed = try store.complete(id: jobID)
-        completedDownloadHandler?(completed, transferDuration, isResume)
+        completedDownloadHandler?(completed, transferDuration, isResume, governorOutcome)
     }
 
     /// Issues a fresh ranged `GET` for `range` and feeds its body into
@@ -659,7 +743,8 @@ public struct DownloadEngine: Sendable {
         checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
-        trace: EngineDiagnostics
+        trace: EngineDiagnostics,
+        sampleSink: RateSampleSink?
     ) async throws {
         var request = request(for: url, job: job)
         let last = range.start + range.length - 1
@@ -680,7 +765,8 @@ public struct DownloadEngine: Sendable {
             checkpointRecorder: checkpointRecorder,
             job: job, store: store, total: total,
             clock: clock, started: started, trace: trace,
-            stream: stream, cancelStream: cancelStream)
+            stream: stream, cancelStream: cancelStream,
+            sampleSink: sampleSink)
     }
 
     /// Consumes `range`'s bytes from `stream` into `file`. Stops reading once
@@ -696,15 +782,20 @@ public struct DownloadEngine: Sendable {
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics,
         stream: AsyncThrowingStream<Data, Error>,
-        cancelStream: @escaping @Sendable () -> Void
+        cancelStream: @escaping @Sendable () -> Void,
+        sampleSink: RateSampleSink?
     ) async throws {
         defer { cancelStream() }
         trace.rangeStarted(index, bytes: range.length)
         var buffer = Data()
         buffer.reserveCapacity(Self.bufferSize)
         var written: UInt64 = 0
-        // P1: per-chunk rate accumulator (consumed by the governor in P3).
-        var rateSamples: [(bytes: UInt64, elapsed: Duration)] = []
+        // Per-flush rate sampling for the governor (P3). We track the last flush's
+        // cumulative bytes/elapsed and emit the delta-derived bytes-per-second
+        // tagged with this worker's connection SLOT (`index`) — the stable
+        // per-connection identity the governor's steady-state detector keys on.
+        var lastBytes: UInt64 = 0
+        var lastElapsed = clock.now - started
 
         func flush() throws {
             guard !buffer.isEmpty else { return }
@@ -731,7 +822,17 @@ public struct DownloadEngine: Sendable {
                     Self.progress(completed: overall, total: total,
                                   elapsed: clock.now - started))
             }
-            rateSamples.append((bytes: written, elapsed: clock.now - started))
+            if let sampleSink {
+                let nowElapsed = clock.now - started
+                let dBytes = written - lastBytes
+                let dSeconds = Double((nowElapsed - lastElapsed).components.seconds)
+                    + Double((nowElapsed - lastElapsed).components.attoseconds) / 1e18
+                let bps = dSeconds > 0 ? Double(dBytes) / dSeconds : 0
+                sampleSink.append(WorkerRateSample(
+                    workerIndex: index, bytesPerSecond: bps, rttRatio: nil))
+                lastBytes = written
+                lastElapsed = nowElapsed
+            }
             try control?.stopIfRequested(jobID: job.id)
         }
 
@@ -763,8 +864,6 @@ public struct DownloadEngine: Sendable {
                 message: "range \(index) ended after \(written) of \(range.length) expected bytes")
         }
         trace.rangeFinished(index, bytes: written)
-        // P1 scaffolding: rateSamples is intentionally not consumed until P3.
-        _ = rateSamples
     }
 
     private func makeCheckpointRecorder(

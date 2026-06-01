@@ -71,7 +71,7 @@ struct DownloadEngineTests {
         await DownloadEngine(
             session: mockSession(),
             sleepAssertionController: sleepAssertionController,
-            completedDownloadHandler: { completed, _, _ in
+            completedDownloadHandler: { completed, _, _, _ in
                 completedJob.withLock { $0 = completed }
             }
         ).run(jobID: job.id, in: store)
@@ -104,7 +104,7 @@ struct DownloadEngineTests {
 
         await DownloadEngine(
             session: mockSession(),
-            completedDownloadHandler: { _, duration, isResume in
+            completedDownloadHandler: { _, duration, isResume, _ in
                 observed.withLock { $0 = (duration, isResume) }
             }
         ).run(jobID: job.id, in: store)
@@ -1093,5 +1093,45 @@ struct DownloadEngineTests {
         #expect(data == payload)
         // 8 chunks, 4 workers → peak concurrent workers is 4.
         #expect(store.job(id: job.id)?.actualConnectionCount == 4)
+    }
+
+    @Test("P3: completedDownloadHandler receives a GovernorOutcome (arity)")
+    func completedHandlerReceivesGovernorOutcome() async throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let total: UInt64 = 4 * 1024 * 1024
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data(repeating: 0x11, count: Int(total))
+        MockURLProtocol.stub(url, body: payload)
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 2)
+        let captured = Mutex<GovernorOutcome?>(nil)
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 20,
+            completedDownloadHandler: { _, _, _, outcome in captured.withLock { $0 = outcome } }
+        ).run(jobID: job.id, in: store)
+        #expect(store.job(id: job.id)?.state == .completed)
+        #expect(captured.withLock { $0 } != nil)
+    }
+
+    @Test("P3: explicit --connections pins N; governor off; peak==pinned; outcome is .governorOff")
+    func explicitNGovernorOff() async throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let total: UInt64 = 8 * 1024 * 1024
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data(repeating: 0x33, count: Int(total))
+        MockURLProtocol.stub(url, body: payload)
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 4)
+        let captured = Mutex<GovernorOutcome?>(nil)
+        // Small chunkSize → 8 chunks so 4 workers actually run concurrently (peak 4).
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 20,
+            completedDownloadHandler: { _, _, _, outcome in captured.withLock { $0 = outcome } }
+        ).run(jobID: job.id, in: store, explicitConnectionCount: 4)
+        #expect(store.job(id: job.id)?.state == .completed)
+        let outcome = captured.withLock { $0 }!
+        #expect(outcome.effectiveN == nil)            // governor off → no bandit observation
+        #expect(!outcome.stabilized)
+        #expect(store.job(id: job.id)?.actualConnectionCount == 4)  // pinned peak; governor never probed
     }
 }

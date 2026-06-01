@@ -131,6 +131,19 @@ public struct ParallelismGovernor: Sendable {
         throttleDetected = true
     }
 
+    /// The governor's converged outcome for the bandit feed. `effectiveN` is
+    /// non-nil ONLY when the representative steady-state operating N is a bandit
+    /// candidate {2, 4, 8, 16} AND cruise was reached.
+    public var outcome: GovernorOutcome {
+        switch phase {
+        case .cruise(let opN):
+            let eff: UInt8? = [2, 4, 8, 16].contains(opN) ? UInt8(opN) : nil
+            return GovernorOutcome(effectiveN: eff, stabilized: true)
+        case .probe, .pinned:
+            return GovernorOutcome(effectiveN: nil, stabilized: false)
+        }
+    }
+
     public mutating func decide(liveWorkers: Int, remainingBytes: UInt64) -> GovernorDecision {
         if remainingBytes < config.tinyFileThreshold {
             return .commit(1)
