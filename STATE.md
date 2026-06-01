@@ -19,7 +19,13 @@ session; update at the start of every PR and at the end of every session.
     JSON out) + `docs/bench/lfn-runbook.md` (SM5a/SM2 commands + quarantine policy). The static control arm
     uses the explicit-connection-count channel to disable the governor. Builds; not run (real network).
 - **NEXT ACTION — Task 19 (manual, you-in-the-loop): run the benchmarks + tune + write the P4 artifact.**
-  This is the only thing between here and shipping the single-edge headline. Per `docs/bench/lfn-runbook.md`:
+  This is the only thing between here and shipping the single-edge headline. **The fill-in worksheet is
+  `docs/bench/lfn-results-worksheet.md`** (copy-paste commands + result slots + a RESULTS SUMMARY block the
+  next session reads first; embeds a `Range`-honoring server for the local SM2 test). Rationale is in
+  `docs/bench/lfn-runbook.md`. When the user says "results are in the worksheet," read its summary block and
+  either write the P4 artifact + prep the P1–P4 PR, or iterate on tuning if a gate failed. Two gotchas the
+  smoke test caught: `GOH_ENGINE_TRACE` needs the built binary (not `swift run`), and the governor only
+  engages on a `Range`-honoring server (`python3 -m http.server` returns 200 → single-connection). Steps:
   (1) **SM5a** — `swift run goh-bench lfn --url https://sin-speed.hetzner.com/1GB.bin --runs 5 --output
   governed.json` vs `--static-n 8 --output static8.json`; accept = governed median < static8 median,
   non-overlapping IQR. (2) **SM2** — saturated target via dummynet ([[dummynet-macos26-confirmed]], needs
