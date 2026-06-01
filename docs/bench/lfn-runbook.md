@@ -61,13 +61,22 @@ knee detection (likely `kneeGainThreshold`/`rttBufferbloatFactor`/`reproBeCadenc
 
 ## SM1 — regime-aware convergence (trace confirmation)
 
-Run either arm with `GOH_ENGINE_TRACE=1` and confirm the governor lines show probe→cruise and the converged
-N (saturated ⇒ converged N ≤ 4; LFN ⇒ converged N > 8):
+Confirm the governor lines show probe→cruise and the converged N (saturated/fast ⇒ converged N ≤ 4;
+LFN ⇒ converged N > 8). **Important:** `swift run` does NOT reliably propagate `GOH_ENGINE_TRACE` to the
+trace output — **build first, then run the binary directly:**
 
 ```
-GOH_ENGINE_TRACE=1 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  swift run goh-bench lfn --url <target> --runs 1 2>&1 | grep '^governor '
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build
+BIN="$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --show-bin-path)/goh-bench"
+GOH_ENGINE_TRACE=1 "$BIN" lfn --url <target> --runs 1 2>&1 | grep 'governor '
 ```
+
+Expect lines like `[goh-trace …] governor phase=probe decision=commit(8) N=8 host=…`. Smoke-tested on a
+fast loopback (64 MiB, 8×8 MiB chunks): the governor correctly emitted
+`governor phase=probe decision=commit(1) N=1` — it converges **low on a fast/saturated link** (parallelism
+can't help) and is expected to probe **up** on a real long-fat path. **A `Range`-honoring server is
+required** for the governor's ranged path to engage at all — `python3 -m http.server` returns `200`
+(no `Range`) and forces single-connection (governor bypassed); use nginx or a real LFN target.
 
 ## Quarantine policy (Advisory A3)
 
