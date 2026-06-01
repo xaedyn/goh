@@ -138,14 +138,14 @@ func hashOverheadBenchmark(sizeMiB: Int) async throws {
     let unifiedPath = directory.appending(path: "goh-bench-unified-\(UUID().uuidString)").path
     let unifiedStart = clock.now
     let unifiedFile = try DownloadFile(path: unifiedPath, expectedSize: total)
-    let assembler = ChunkAssembler(
-        file: unifiedFile, ranges: [ByteRange(start: 0, length: total)])
+    let assembler = ChunkAssembler(file: unifiedFile, totalBytes: total)
     async let assembled = assembler.hashToCompletion()
     var unifiedOffset: UInt64 = 0
     for _ in 0..<sizeMiB {
-        try unifiedFile.write(chunk, at: unifiedOffset)
+        let writeStart = unifiedOffset
+        try unifiedFile.write(chunk, at: writeStart)
         unifiedOffset += UInt64(chunkSize)
-        assembler.advance(range: 0, writtenBytes: unifiedOffset)
+        assembler.complete(interval: ByteInterval(start: writeStart, length: UInt64(chunkSize)))
     }
     assembler.finish()
     let result = await assembled

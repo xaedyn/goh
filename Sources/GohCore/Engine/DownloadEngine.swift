@@ -410,9 +410,9 @@ public struct DownloadEngine: Sendable {
     }
 
     private func verifyHash(file: DownloadFile, total: UInt64) async throws {
-        let assembler = ChunkAssembler(file: file, ranges: [ByteRange(start: 0, length: total)])
+        let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
-        assembler.advance(range: 0, writtenBytes: total)
+        assembler.complete(interval: ByteInterval(start: 0, length: total))
         assembler.finish()
         if case .failed(let error) = await assembled {
             throw error
@@ -438,8 +438,7 @@ public struct DownloadEngine: Sendable {
         let total: UInt64? = initialResponse.expectedContentLength >= 0
             ? UInt64(initialResponse.expectedContentLength) : nil
         let file = try DownloadFile(path: job.destination, expectedSize: total)
-        let assembler = ChunkAssembler(
-            file: file, ranges: [ByteRange(start: 0, length: total ?? UInt64.max)])
+        let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
 
         let clock = ContinuousClock()
@@ -450,10 +449,12 @@ public struct DownloadEngine: Sendable {
 
         func flush() throws {
             guard !buffer.isEmpty else { return }
-            try file.write(buffer, at: completed)
-            completed += UInt64(buffer.count)
+            let writeStart = completed
+            let writeLength = UInt64(buffer.count)
+            try file.write(buffer, at: writeStart)
+            completed += writeLength
             buffer.removeAll(keepingCapacity: true)
-            assembler.advance(range: 0, writtenBytes: completed)
+            assembler.complete(interval: ByteInterval(start: writeStart, length: writeLength))
             try control?.stopIfRequested(jobID: job.id)
         }
 
@@ -505,7 +506,7 @@ public struct DownloadEngine: Sendable {
         _ = try store.setActualConnectionCount(id: job.id, UInt8(ranges.count))
 
         let file = try DownloadFile(path: job.destination, expectedSize: total)
-        let assembler = ChunkAssembler(file: file, ranges: ranges)
+        let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
         let checkpointRecorder = makeCheckpointRecorder(
             job: job, total: total, response: initialResponse)
@@ -648,7 +649,7 @@ public struct DownloadEngine: Sendable {
             written += pieceLength
             buffer.removeAll(keepingCapacity: true)
             trace.timed(index, .report) {
-                assembler.advance(range: index, writtenBytes: written)
+                assembler.complete(interval: ByteInterval(start: pieceStart, length: pieceLength))
                 let overall = progress.report(index: index, written: written)
                 recordProgress(
                     store: store, jobID: job.id,
