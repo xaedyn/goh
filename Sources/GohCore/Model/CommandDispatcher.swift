@@ -89,10 +89,23 @@ public struct CommandDispatcher: Sendable {
                 } else {
                     armEWMAs = [:]
                 }
+                // SM4: annotate exploit+no-explicit-N+governor-on as warmStart in the trace.
+                // warmStart is ONLY emitted in this precise triple — exploit alone is not enough
+                // (an explicit --connections exploit would be misleading; a governor-off exploit
+                // has no live governor to warm-start from). selectN never returns .warmStart;
+                // it is a trace-only annotation set here in the dispatcher.
+                let traceReason: SelectionReason
+                if selectionReason == .exploit,
+                   request.connectionCount == nil,
+                   DownloadEngine.governorEnabled {
+                    traceReason = .warmStart   // exploit arm + governor will run live → warm-start from converged N
+                } else {
+                    traceReason = selectionReason
+                }
                 EngineDiagnostics().recordSchedulingDecision(
                     hostKey: admissionHostKey,
                     chosenN: requestedConnectionCount,
-                    reason: selectionReason,
+                    reason: traceReason,
                     armEWMAs: armEWMAs)
                 guard requestedConnectionCount > 0 else {
                     return .failure(GohError(

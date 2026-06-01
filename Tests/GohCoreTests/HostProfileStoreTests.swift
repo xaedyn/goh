@@ -316,4 +316,36 @@ struct HostProfileStoreTests {
             governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
         #expect(HostProfileStore.shouldRecordObservation(req))
     }
+
+    @Test("SM4: governor-recorded arm warm-starts N₀ — exploit picks the best arm")
+    func sm4WarmStartFromGovernorArm() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(fileURL: directory.appending(path: "host-scheduling.plist"))
+        _ = store.load()
+        let key = "https://fast.example.com:443"
+        let candidates: [(UInt8, Double)] = [(2, 20_000_000), (4, 40_000_000), (8, 80_000_000), (16, 60_000_000)]
+        for (n, throughput) in candidates {
+            for _ in 0..<3 {   // ≥ minSamples
+                store.recordObservation(hostKey: key, connectionCount: n,
+                    totalBytes: UInt64(throughput * 30), transferDuration: .seconds(30))
+            }
+        }
+        let (chosenN, reason) = store.selectN(hostKey: key)
+        #expect(chosenN == 8, "SM4: exploit should pick N=8 (best EWMA); got \(chosenN)")
+        #expect(reason == .exploit, "selectN returns .exploit; warmStart is the trace annotation, not a selectN return")
+    }
+
+    @Test("SM4: warmStart trace predicate — exploit + no explicit N + governor on ⇒ warmStart; else not")
+    func sm4WarmStartPredicate() {
+        func traceReason(_ selectionReason: SelectionReason, hasExplicitN: Bool, governorOn: Bool) -> SelectionReason {
+            if selectionReason == .exploit, !hasExplicitN, governorOn { return .warmStart }
+            return selectionReason
+        }
+        #expect(traceReason(.exploit, hasExplicitN: false, governorOn: true) == .warmStart)
+        #expect(traceReason(.exploit, hasExplicitN: true,  governorOn: true) == .exploit)   // explicit N
+        #expect(traceReason(.exploit, hasExplicitN: false, governorOn: false) == .exploit)  // kill-switch
+        #expect(traceReason(.explore, hasExplicitN: false, governorOn: true) == .explore)   // not exploit
+        #expect(traceReason(.cold,    hasExplicitN: false, governorOn: true) == .cold)
+    }
 }
