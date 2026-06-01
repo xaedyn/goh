@@ -5,6 +5,43 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P3 IN PROGRESS** (Tasks 10–11 done; architectural gap found → Task 11A added); next = Task 11A
+
+- **P3 started on `design/in-flight-parallelism`.** Tasks 10 + 11 shipped (497 tests pass, warning-clean):
+  - `af6e728` — **Task 10:** `SelectionReason.warmStart` + `ObservationRequest` parameter struct; the
+    observation gate now keys off the governor outcome (`effectiveN != nil && stabilized`) instead of the
+    old `actualConnectionCount == requestedConnectionCount`. `recordObservationIfEligible` added. All 7
+    gate tests + the `gohd` call site migrated. **`d5GateConnectionMismatchRejected` → `d5GateOffCandidate
+    Rejected`** (the actual==requested condition no longer exists).
+  - `bcb0ece` — **Task 11:** `JobStore.setActualConnectionCount` is now peak-max
+    (`max(existing, min(count,16))`, cap 16 not requestedN). DESIGN.md note added.
+- **⚠️ WIP CAVEAT (don't merge mid-P3):** after Task 10, `gohd/main.swift` builds the `ObservationRequest`
+  with `governorOutcome: .governorOff` (a `// TODO(P3 Task 12)` placeholder), so the daemon currently
+  records **NO** bandit observations until Task 12 passes the real `GovernorOutcome` through a 4-arg
+  `completedDownloadHandler`. This is an intentional intermediate state on the WIP branch; the end state
+  (Task 12) restores observation recording with the governor's converged N.
+- **ARCHITECTURAL GAP FOUND + RESOLVED (user gate "build it right", 2026-05-31):** the plan's P3 wired the
+  governor onto P2's "N big pieces" queue — but the governor can only *add* a worker if there is spare
+  unclaimed work, and N pieces are all claimed up front, so the governor would be **inert**. The spec §6.1
+  mandates **fixed-size chunks** (a daemon constant, independent of N) that workers pull one at a time —
+  that is what enables live add/drop. P2 used N-pieces for behaviour-equivalence; P3 must switch. Added
+  **Task 11A** to the plan (`docs/plans/...-plan.md`, before Task 12): fixed-size chunk pool + byte-based
+  progress (replacing the per-piece-index `RangeProgress`) + connection-slot indexing (`0..<targetN`,
+  reused; the governor's `WorkerRateSample.workerIndex` must be a stable slot, not the chunk index).
+  Behaviour-equivalent at fixed N (identical bytes/SHA-256). This is the prerequisite that unblocks the
+  governor. **The user chose "build it right" over "wire structurally only" or "re-plan with full review."**
+- **NEXT ACTION — Task 11A (the heavy, sensitive rework; do with an Opus implementer + Opus concurrency +
+  data-integrity review).** Design is written in the plan's Task 11A section. Key points: `chunkSize`
+  daemon constant (≈8 MiB) made **injectable** on `DownloadEngine` (default 8 MiB) so tests can pass a
+  small value (e.g. 1 MiB) to exercise multi-chunk parallelism; the `withThrowingTaskGroup` element type
+  becomes the **slot id** (`Int`) so reaps free the slot; `consumeRange`/`downloadRange` swap
+  `progress: RangeProgress` → a `Mutex<UInt64>` byte counter and take the slot as their trace index; the
+  first chunk `[0, chunkSize)` reuses `firstRangeStream`; expect to fix tests that asserted a specific
+  piece/connection count (pass a small chunkSize or adjust). THEN Task 12 (wire the governor — now
+  functional), 13 (warm-start trace), 14 (DESIGN.md), 15 (governor trace), 16 (kill-switch + artifact).
+  Continue with `subagent-driven-development`, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
 ### 2026-05-31 (impl session) — In-flight adaptive parallelism **P2 COMPLETE** (dynamic chunk pool + interval-set assembler); next = P3
 
 - **P2 of 5 shipped on `design/in-flight-parallelism`** via `subagent-driven-development` (TDD, two-stage

@@ -2199,6 +2199,53 @@ ceiling (16), not the admission-time `requestedConnectionCount`, which the gover
 
 ---
 
+### Task 11A: Fixed-Size Chunk Pool + Byte-Based Progress + Connection Slots (PREREQUISITE — added during P3 execution)
+
+**Why this was added (decision record):** The original plan's P3 wired the governor onto P2's
+"N big pieces" queue (`ByteRange.split` → N range-sized chunks). But the governor can only *add* a
+worker if there is **spare unclaimed work** to hand it — and with N pieces all claimed up front, an
+`addWorkers` decision has nothing to act on, making the governor functionally inert (it could observe
+but never change N). The spec §6.1 mandates **fixed-size byte-interval chunks (chunk size a daemon
+constant, independent of N)** that workers pull one at a time — that is what makes live add/drop
+possible. P2 used the N-piece model deliberately for behaviour-equivalence; P3 must switch to the
+fixed-size-chunk model for the governor to function. The user chose **"build it right"** at the P3
+gate (2026-05-31). This task is the prerequisite; it is behaviour-equivalent at fixed N (identical
+output bytes / SHA-256) and unblocks the real Task 12 governor wiring.
+
+**Files:** Modify `Sources/GohCore/Engine/DownloadEngine.swift` · Modify `Tests/GohCoreTests/DownloadEngineTests.swift`
+
+**Design:**
+- **`static let chunkSize: UInt64`** daemon constant (e.g. `8 << 20`, ≥ `bufferSize`, independent of N).
+  Seed the `ChunkQueue` with `[0,total)` cut into `ceil(total/chunkSize)` fixed-size intervals (last
+  takes the remainder) — many more than N, so the queue always has spare work for an added worker.
+- **Connection-slot indexing.** The control loop assigns each spawned worker a slot id in `0..<currentN`
+  (lowest free slot; freed on reap). The worker carries its slot id (for trace + the governor's
+  `WorkerRateSample.workerIndex`, which must be a stable connection slot in `0..<liveWorkers`, NOT the
+  unbounded chunk index — otherwise the governor's `allWorkersInSteadyState(liveWorkers:)` reads stale
+  histories). Slots are reused as workers reap and respawn.
+- **Byte-based progress.** Replace `RangeProgress(rangeCount:)`/`report(index:)` (per-piece-index, breaks
+  with many chunks) with a `Mutex<UInt64>` bytes-written counter incremented by `pieceLength` at each
+  flush; progress % = counter/total. Monotonic, N-agnostic.
+- **Worker model (unchanged control-loop shape from Task 8).** The control loop's `fillToTarget(targetN)`
+  pulls a chunk, assigns a slot, spawns a worker for that one chunk; the worker downloads it (the FIRST
+  chunk `[0, chunkSize)` reuses the speculative `firstRangeStream`, truncated at chunkSize; all other
+  chunks open a fresh ranged GET via `downloadRange`), writes, `assembler.complete(interval:)`, records
+  the checkpoint piece, bumps the byte counter, (P3-Task-12) pushes a rate sample, frees its slot,
+  returns. The control loop reaps and re-fills, keeping `targetN` workers cycling through chunks. At
+  fixed `targetN` this is behaviour-equivalent to today (same file, same hash) — just many small chunks.
+- **Invariants:** `assembler.complete(interval:)` (additive-merge) and `DownloadCheckpointRecorder.
+  recordCompletedPiece` are called identically per flush; checkpoint/resume format unchanged;
+  `setActualConnectionCount(peakWorkers)` unchanged (== targetN at fixed N); no wire/format change.
+- **Tests:** the full engine suite (ranged/resume/single-conn/rm-during/sibling-cancel) must stay green
+  with the new chunking; add a test that a multi-chunk download (e.g. total > chunkSize with N=4)
+  produces byte-identical output and completes. Fix any test that asserted a specific *piece count* (the
+  count changes; file correctness does not).
+
+This task carries an Opus concurrency + data-integrity review before Task 12 (it touches the data path,
+progress, and slot concurrency).
+
+---
+
 ### Task 12: Wire Governor to Control Loop + Explicit-N Governor-Off Channel (BLOCK 1)
 
 **Files:** Modify `Sources/GohCore/Engine/DownloadEngine.swift` · Modify `Sources/GohCore/Model/JobStore.swift` · Modify `Tests/GohCoreTests/DownloadEngineTests.swift`
