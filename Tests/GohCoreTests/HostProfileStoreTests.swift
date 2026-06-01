@@ -228,57 +228,92 @@ struct HostProfileStoreTests {
     // Hardening: the D5/D8 gate predicate, unit-tested in isolation.
     @Test("D5 gate: a clean solo download qualifies")
     func d5GatePositive() {
-        #expect(HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(10),
             bytesCompleted: 8 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: a resume never qualifies (D8)")
     func d5GateResumeRejected() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: true, transferDuration: .seconds(60),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: too short a transfer is rejected")
     func d5GateTooShort() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(9),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: too few bytes is rejected")
     func d5GateTooFewBytes() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(30),
             bytesCompleted: 8 * 1024 * 1024 - 1, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: a contended (non-solo) download is rejected")
     func d5GateContendedRejected() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(30),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: false,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
-    @Test("D5 gate: actual != requested connection count is rejected")
-    func d5GateConnectionMismatchRejected() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+    @Test("D5 gate: off-candidate governor outcome is rejected")
+    func d5GateOffCandidateRejected() {
+        // effectiveN nil = governor converged off-candidate; must not pollute the arm.
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(30),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 1, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: nil, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: boundary — exactly 10s and exactly 8 MiB qualifies")
     func d5GateBoundary() {
-        #expect(HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(10),
             bytesCompleted: 8 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 16, requestedConnectionCount: 16))
+            governorOutcome: GovernorOutcome(effectiveN: 16, stabilized: true))
+        #expect(HostProfileStore.shouldRecordObservation(req))
+    }
+
+    @Test("ObservationRequest: effectiveN nil → gate rejects")
+    func observationGateRejectsNilEffectiveN() {
+        let req = ObservationRequest(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 16 * 1024 * 1024, wasSolo: true,
+            governorOutcome: GovernorOutcome(effectiveN: nil, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
+    }
+
+    @Test("ObservationRequest: stabilized=false → gate rejects")
+    func observationGateRejectsUnstabilized() {
+        let req = ObservationRequest(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 16 * 1024 * 1024, wasSolo: true,
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: false))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
+    }
+
+    @Test("ObservationRequest: candidate-aligned stable → gate passes")
+    func observationGatePassesCandidateAligned() {
+        let req = ObservationRequest(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 16 * 1024 * 1024, wasSolo: true,
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(HostProfileStore.shouldRecordObservation(req))
     }
 }

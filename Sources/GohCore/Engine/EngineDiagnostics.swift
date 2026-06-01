@@ -148,10 +148,11 @@ final class EngineDiagnostics: Sendable {
         let host = hostKey ?? "(nil)"
         let reasonStr: String
         switch reason {
-        case .cold:     reasonStr = "cold"
-        case .exploit:  reasonStr = "exploit"
-        case .explore:  reasonStr = "explore"
-        case .explicit: reasonStr = "explicit"
+        case .cold:      reasonStr = "cold"
+        case .exploit:   reasonStr = "exploit"
+        case .explore:   reasonStr = "explore"
+        case .explicit:  reasonStr = "explicit"
+        case .warmStart: reasonStr = "warm-start"
         }
         emit("scheduling host=\(host) chosenN=\(chosenN) reason=\(reasonStr) ewmas=[\(ewmaStr)]")
     }

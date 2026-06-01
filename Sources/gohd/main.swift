@@ -132,17 +132,19 @@ do {
             // run(), which fires after this handler returns) — so the
             // whole-duration solo answer is correct here.
             let observationKey = hostKey(for: completed.url)
-            if let key = observationKey,
-               HostProfileStore.shouldRecordObservation(
-                   isResume: isResume,
-                   transferDuration: transferDuration,
-                   bytesCompleted: completed.progress.bytesCompleted,
-                   wasSolo: hostProfileStore.wasSolo(jobID: completed.id),
-                   actualConnectionCount: completed.actualConnectionCount,
-                   requestedConnectionCount: completed.requestedConnectionCount) {
-                hostProfileStore.recordObservation(
+            if let key = observationKey {
+                // TODO(P3 Task 12): pass the real GovernorOutcome from the 4-arg handler.
+                // Using .governorOff (effectiveN nil) as a placeholder so the gate always
+                // rejects until Task 12 wires the real outcome.
+                let req = ObservationRequest(
+                    isResume: isResume,
+                    transferDuration: transferDuration,
+                    bytesCompleted: completed.progress.bytesCompleted,
+                    wasSolo: hostProfileStore.wasSolo(jobID: completed.id),
+                    governorOutcome: .governorOff)
+                hostProfileStore.recordObservationIfEligible(
+                    req,
                     hostKey: key,
-                    connectionCount: completed.actualConnectionCount,
                     totalBytes: completed.progress.bytesCompleted,
                     transferDuration: transferDuration)
             }

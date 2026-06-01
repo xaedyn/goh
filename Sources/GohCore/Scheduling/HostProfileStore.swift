@@ -2,6 +2,35 @@ import Darwin
 import Foundation
 import Synchronization
 
+/// Parameter struct for the observation gate. Carries the governor's outcome so the gate keys off
+/// candidate-aligned convergence instead of the old actual==requested check. Daemon-internal; not on the wire.
+public struct ObservationRequest: Sendable {
+    public var isResume: Bool
+    public var transferDuration: Duration
+    public var bytesCompleted: UInt64
+    public var wasSolo: Bool
+    public var governorOutcome: GovernorOutcome
+    public var minTransferDuration: Duration
+    public var minBytes: UInt64
+    public init(
+        isResume: Bool,
+        transferDuration: Duration,
+        bytesCompleted: UInt64,
+        wasSolo: Bool,
+        governorOutcome: GovernorOutcome,
+        minTransferDuration: Duration = .seconds(10),
+        minBytes: UInt64 = 8 * 1024 * 1024
+    ) {
+        self.isResume = isResume
+        self.transferDuration = transferDuration
+        self.bytesCompleted = bytesCompleted
+        self.wasSolo = wasSolo
+        self.governorOutcome = governorOutcome
+        self.minTransferDuration = minTransferDuration
+        self.minBytes = minBytes
+    }
+}
+
 /// A failure writing the host-scheduling file to disk.
 public enum HostProfileStoreError: Error {
     case fsyncOpenFailed(path: String, errno: Int32)
@@ -211,24 +240,36 @@ public final class HostProfileStore: Sendable {
     ///
     /// Records IFF: not a resume (D8); transfer phase ran at least `minTransferDuration`;
     /// at least `minBytes` were transferred; the download was solo for its whole
-    /// duration (`wasSolo`); and the engine actually used the requested connection
-    /// count (a server that ignored Range and fell back to 1 connection must not
-    /// pollute the arm for the requested N).
-    public static func shouldRecordObservation(
-        isResume: Bool,
-        transferDuration: Duration,
-        bytesCompleted: UInt64,
-        wasSolo: Bool,
-        actualConnectionCount: UInt8,
-        requestedConnectionCount: UInt8,
-        minTransferDuration: Duration = .seconds(10),
-        minBytes: UInt64 = 8 * 1024 * 1024
-    ) -> Bool {
-        guard !isResume else { return false }
-        return transferDuration >= minTransferDuration
-            && bytesCompleted >= minBytes
-            && wasSolo
-            && actualConnectionCount == requestedConnectionCount
+    /// duration (`wasSolo`); the governor converged to a candidate-aligned N
+    /// (`effectiveN != nil`); and the governor reached stable cruise (`stabilized`).
+    /// The last two conditions replace the old `actualConnectionCount == requestedConnectionCount`
+    /// check: they key off the governor's converged outcome rather than raw connection counts.
+    public static func shouldRecordObservation(_ request: ObservationRequest) -> Bool {
+        guard !request.isResume else { return false }
+        guard request.transferDuration >= request.minTransferDuration else { return false }
+        guard request.bytesCompleted >= request.minBytes else { return false }
+        guard request.wasSolo else { return false }
+        guard request.governorOutcome.effectiveN != nil else { return false }
+        guard request.governorOutcome.stabilized else { return false }
+        return true
+    }
+
+    /// Convenience: checks the gate and, if it passes, folds the observation into
+    /// the matching arm's EWMA and persists the updated state.
+    public func recordObservationIfEligible(
+        _ request: ObservationRequest,
+        hostKey: String,
+        totalBytes: UInt64,
+        transferDuration: Duration
+    ) {
+        guard Self.shouldRecordObservation(request),
+              let effectiveN = request.governorOutcome.effectiveN
+        else { return }
+        recordObservation(
+            hostKey: hostKey,
+            connectionCount: effectiveN,
+            totalBytes: totalBytes,
+            transferDuration: transferDuration)
     }
 
     // MARK: — Selection (D4, D6)
