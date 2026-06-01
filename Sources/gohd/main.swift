@@ -120,6 +120,10 @@ do {
     }
 
     let downloadControl = DownloadControl()
+    // Daemon-global per-host connection budget (spec §8). One shared instance
+    // spans all concurrent downloads — that's the point: the 16-connection cap
+    // is per-host across ALL jobs, not per-job.
+    let connectionBudget = ConnectionBudget(maxPerHost: 16)
     // Daemon-internal explicit-`--connections` channel (NOT on the wire). The
     // dispatcher records a job's user-supplied N here at admission; makeScheduleJob
     // consumes it to run that job's governor in "off" mode (static pinned N).
@@ -172,7 +176,8 @@ do {
         unexpectedStoreError: { jobID, operation, error in
             warn("job \(jobID) store.\(operation) failed unexpectedly: \(error)")
         },
-        hostProfileStore: hostProfileStore)
+        hostProfileStore: hostProfileStore,
+        connectionBudget: connectionBudget)
     let scheduleJob = makeScheduleJob(
         engine: engine, store: store,
         explicitConnectionCounts: explicitConnectionCounts)

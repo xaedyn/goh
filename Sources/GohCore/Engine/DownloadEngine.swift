@@ -105,6 +105,7 @@ public struct DownloadEngine: Sendable {
     private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
     private let hostProfileStore: HostProfileStore?
+    private let connectionBudget: ConnectionBudget?
 
     public init(
         session: URLSession,
@@ -115,7 +116,8 @@ public struct DownloadEngine: Sendable {
         sleepAssertionController: SleepAssertionController? = nil,
         completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)? = nil,
         unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
-        hostProfileStore: HostProfileStore? = nil
+        hostProfileStore: HostProfileStore? = nil,
+        connectionBudget: ConnectionBudget? = nil
     ) {
         self.chunkSize = chunkSize
         self.session = session
@@ -126,6 +128,7 @@ public struct DownloadEngine: Sendable {
         self.completedDownloadHandler = completedDownloadHandler
         self.unexpectedStoreError = unexpectedStoreError
         self.hostProfileStore = hostProfileStore
+        self.connectionBudget = connectionBudget
     }
 
     /// Routes a `JobStore` mutation error to the reporter, silently dropping
@@ -590,6 +593,12 @@ public struct DownloadEngine: Sendable {
         var governor = ParallelismGovernor(config: .default, rng: SystemRandomNumberGenerator())
         let sampleSink: RateSampleSink? = governorEnabled ? RateSampleSink() : nil
 
+        // Per-host connection budget gate (spec §8). Computed once; nil when the
+        // host key is unparseable — in that case the gate is skipped entirely.
+        // `connectionBudget` itself may be nil (no enforcement; existing tests
+        // pass no budget and are completely unaffected).
+        let budgetHostKey: String? = connectionBudget != nil ? hostKey(for: job.url) : nil
+
         do {
             // The group element is the connection SLOT the worker held, returned
             // on completion so the control loop can free it. Slots are a stable
@@ -609,15 +618,36 @@ public struct DownloadEngine: Sendable {
                 // speculative firstRangeStream; others open a fresh ranged GET
                 // via downloadRange) and returns its slot id. Workers never call
                 // addTask and never touch the slot set.
+                //
+                // `spawn` is only called after the budget slot has already been
+                // granted by `fillToTarget` — the worker's defer unconditionally
+                // releases 1 slot on exit (normal return, throw, or cancel).
+                // Capture `budgetHostKey` by value so the closure is independent
+                // of any outer mutation.
                 func spawn(_ chunk: ByteInterval) {
                     // Crash-proof slot allocation: if somehow no slot is free,
                     // don't spawn — hold (targetN is clamped ≤ 16, so this should
                     // never trip, but a force-unwrap here would be a hard crash).
-                    guard let slot = availableSlots.min() else { return }
+                    guard let slot = availableSlots.min() else {
+                        // Budget was pre-granted but spawn can't proceed; release it.
+                        if let budget = connectionBudget, let hk = budgetHostKey {
+                            budget.release(slots: 1, hostKey: hk)
+                        }
+                        return
+                    }
                     availableSlots.remove(slot)
                     let range = ByteRange(start: chunk.start, length: chunk.length)
+                    // Capture budget and key by value for the worker's defer so
+                    // the release is leak-proof on normal return, throw, and cancel.
+                    let capturedBudget = connectionBudget
+                    let capturedBudgetHostKey = budgetHostKey
                     if chunk.start == 0 {
                         group.addTask {
+                            defer {
+                                if let budget = capturedBudget, let hk = capturedBudgetHostKey {
+                                    budget.release(slots: 1, hostKey: hk)
+                                }
+                            }
                             try await consumeRange(
                                 index: slot, range: range, file: file,
                                 assembler: assembler, bytesWritten: bytesWritten,
@@ -630,6 +660,11 @@ public struct DownloadEngine: Sendable {
                         }
                     } else {
                         group.addTask {
+                            defer {
+                                if let budget = capturedBudget, let hk = capturedBudgetHostKey {
+                                    budget.release(slots: 1, hostKey: hk)
+                                }
+                            }
                             try await downloadRange(
                                 index: slot, range: range, url: url, file: file,
                                 assembler: assembler, bytesWritten: bytesWritten,
@@ -644,16 +679,94 @@ public struct DownloadEngine: Sendable {
                     peakWorkers = max(peakWorkers, liveWorkers)
                 }
 
-                // Admit workers up to the target while the queue has work. Called
-                // from the seed phase and after each reap (Task 12 will pass a
-                // governor-updated target here).
-                func fillToTarget(_ target: Int) {
+                // Admit workers up to the target while the queue has work and the
+                // per-host budget allows. Budget is requested here, before spawn,
+                // so the worker's defer owns the paired release — no double-release
+                // is possible (the control loop never releases; only workers do).
+                // On budget denial the chunk is returned to the front of the queue
+                // and the fill breaks (hold-N), waiting for the next reap to try
+                // again. Returns whether at least one worker was admitted.
+                @discardableResult
+                func fillToTarget(_ target: Int) -> Bool {
+                    var admitted = false
                     while liveWorkers < target, let chunk = queue.pull() {
+                        if let budget = connectionBudget, let hk = budgetHostKey {
+                            guard budget.request(slots: 1, hostKey: hk) else {
+                                // Budget full — return the chunk and stop filling.
+                                queue.returnToFront(chunk)
+                                break
+                            }
+                        }
                         spawn(chunk)
+                        admitted = true
                     }
+                    return admitted
+                }
+
+                // Seed fill. If budget denial blocked ALL workers (liveWorkers == 0
+                // after the fill) yet there's still work queued, force-admit one
+                // worker unconditionally — this guarantees the download always makes
+                // progress even when the global budget is fully consumed by sibling
+                // downloads. Without this safeguard the outer `while liveWorkers > 0`
+                // loop would exit immediately, leaving chunks in the queue.
+                func forceOneIfStalled() {
+                    guard liveWorkers == 0, let chunk = queue.pull() else { return }
+                    // Force: request budget (will be denied if full) but spawn anyway.
+                    // The budget is requested first so the worker's defer can release
+                    // it; if denied, the budget is not incremented so no phantom
+                    // release happens. We DON'T increment the budget here when denied
+                    // — we just skip the request and spawn without a budget slot.
+                    // The worker's defer only releases when budget+key were captured
+                    // as non-nil, so it's safe to capture nil when forcing.
+                    if let budget = connectionBudget, let hk = budgetHostKey {
+                        // Try a normal request first (may succeed if another download
+                        // released between the fill attempt and now).
+                        if !budget.request(slots: 1, hostKey: hk) {
+                            // Denied; spawn without incrementing the budget counter
+                            // so the forced worker will NOT release on exit.
+                            let slot: Int
+                            guard let s = availableSlots.min() else { return }
+                            slot = s
+                            availableSlots.remove(slot)
+                            let range = ByteRange(start: chunk.start, length: chunk.length)
+                            if chunk.start == 0 {
+                                group.addTask {
+                                    // No defer release — this is the un-budgeted forced slot.
+                                    try await consumeRange(
+                                        index: slot, range: range, file: file,
+                                        assembler: assembler, bytesWritten: bytesWritten,
+                                        checkpointRecorder: checkpointRecorder,
+                                        job: job, store: store, total: total,
+                                        clock: clock, started: started, trace: trace,
+                                        stream: firstRangeStream, cancelStream: cancelFirstRangeStream,
+                                        sampleSink: sampleSink)
+                                    return slot
+                                }
+                            } else {
+                                group.addTask {
+                                    // No defer release — this is the un-budgeted forced slot.
+                                    try await downloadRange(
+                                        index: slot, range: range, url: url, file: file,
+                                        assembler: assembler, bytesWritten: bytesWritten,
+                                        checkpointRecorder: checkpointRecorder,
+                                        job: job, store: store, total: total,
+                                        clock: clock, started: started, trace: trace,
+                                        sampleSink: sampleSink)
+                                    return slot
+                                }
+                            }
+                            liveWorkers += 1
+                            peakWorkers = max(peakWorkers, liveWorkers)
+                            return
+                        }
+                    }
+                    // Budget either nil (no enforcement), key nil (no enforcement),
+                    // or request succeeded — normal spawn path.
+                    spawn(chunk)
                 }
 
                 fillToTarget(targetN)
+                forceOneIfStalled()
                 // Record peak concurrent workers (== min(targetN, chunkCount) at
                 // fixed N) for goh top / ls.
                 _ = try store.setActualConnectionCount(id: job.id, UInt8(peakWorkers))
@@ -697,6 +810,14 @@ public struct DownloadEngine: Sendable {
                     // doesn't re-admit — running workers finish their current
                     // chunk and aren't replaced (cooperative drop, no cancel).
                     fillToTarget(targetN)
+                    // No need to call forceOneIfStalled here: liveWorkers was > 0
+                    // when we entered this iteration (the while condition), so
+                    // after decrement it may be 0. But if it's 0 and budget denied
+                    // the fill, the while condition fails and we exit. However we
+                    // JUST reaped a worker whose defer released a budget slot, so
+                    // another download's released slot also means budget may now be
+                    // free. Re-check: if liveWorkers == 0 after fill, force one.
+                    forceOneIfStalled()
                     // The governor may have grown N — re-record the peak. The
                     // store method is peak-max, so repeated calls keep the
                     // high-water mark.
