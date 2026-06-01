@@ -128,6 +128,18 @@ struct ChunkAssemblerTests {
         #expect(await result == .digest(sha256Hex(whole)))
     }
 
+    @Test("interval-set: zero-length (Content-Length: 0) digests the empty SHA-256")
+    func intervalSetEmptyFile() async throws {
+        let url = try temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let file = try DownloadFile(path: url.path, expectedSize: 0)
+        let assembler = ChunkAssembler(file: file, totalBytes: 0)
+        async let result = assembler.hashToCompletion()
+        // No complete() — empty body. finish() ends it.
+        assembler.finish()
+        #expect(await result == .digest(sha256Hex(Data())))
+    }
+
     @Test("interval-set: end condition needs the gap filled")
     func intervalSetEndCondition() async throws {
         let url = try temporaryFile()

@@ -127,9 +127,10 @@ public final class ChunkAssembler: Sendable {
             if finishedNow && hashedUpTo == finalFrontier {
                 if let total = totalBytes {
                     let coalesced = completedIntervals.withLock { $0 }
-                    let isComplete = coalesced.count == 1
-                        && coalesced[0].start == 0
-                        && coalesced[0].length == total
+                    let isComplete = (total == 0 && coalesced.isEmpty)
+                        || (coalesced.count == 1
+                            && coalesced[0].start == 0
+                            && coalesced[0].length == total)
                     if !isComplete {
                         return .failed(GohError(
                             code: .connectionFailed,
