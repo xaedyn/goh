@@ -380,6 +380,18 @@ host whose limit has lifted, whereas re-probing is cheap and self-correcting.
 Persisting throttle state to `host-scheduling.plist` for a true session scope is a
 future option that needs no format change (it fits the existing arm metadata).
 
+**Global per-host connection budget (soft cap).** A daemon-global `ConnectionBudget`
+(in-memory, like the solo/contended index) caps concurrent connections **per host key across
+all simultaneous downloads** at 16 — so two governed downloads to one origin cannot together
+open >16 sockets and trip anti-leech. The control loop requests one slot before spawning each
+worker and releases it in the worker's `defer` (leak-proof on throw/cancel); a denied request
+holds N and retries after the next reap. It is a **soft cap with a liveness floor**: a download
+that would otherwise seed **zero** workers (its whole budget held by siblings) force-admits
+exactly **one** un-budgeted connection so it always makes progress. Peak per-host connections
+are therefore bounded at `16 + (D − 1)` for `D` concurrent downloads to that host — a bounded,
+non-compounding overshoot chosen deliberately over starving a download to death. Daemon-internal;
+no wire/format change.
+
 **Observability.** `GOH_ENGINE_TRACE=1` adds a per-admission
 `scheduling host=… chosenN=… reason=… ewmas=[…]` line (emitted from
 `CommandDispatcher`, the one site where host key, chosen N, reason, and arm EWMAs
