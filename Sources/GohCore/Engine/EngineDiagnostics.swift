@@ -157,6 +157,12 @@ final class EngineDiagnostics: Sendable {
         emit("scheduling host=\(host) chosenN=\(chosenN) reason=\(reasonStr) ewmas=[\(ewmaStr)]")
     }
 
+    /// Emits a governor-decision trace line when `GOH_ENGINE_TRACE=1` (SM1: probe→cruise observable).
+    func recordGovernorDecision(phase: String, decision: String, currentN: Int, hostKey: String?) {
+        guard enabled else { return }
+        emit("governor phase=\(phase) decision=\(decision) N=\(currentN) host=\(hostKey ?? "(nil)")")
+    }
+
     /// Emits the download-level summary line — the peak concurrent range count
     /// reached over the lifetime of the download.
     func summary() {

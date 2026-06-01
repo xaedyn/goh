@@ -104,6 +104,15 @@ public struct ParallelismGovernor: Sendable {
         _ = rng
     }
 
+    /// A short label for the current phase, for the GOH_ENGINE_TRACE governor line.
+    public var phaseLabel: String {
+        switch phase {
+        case .probe: return "probe"
+        case .cruise: return "cruise"
+        case .pinned: return "pinned"
+        }
+    }
+
     public mutating func record(sample: WorkerRateSample) {
         let prev = workerRates[sample.workerIndex] ?? sample.bytesPerSecond
         let smoothed = config.rateAlpha * sample.bytesPerSecond + (1 - config.rateAlpha) * prev

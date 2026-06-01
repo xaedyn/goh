@@ -677,15 +677,19 @@ public struct DownloadEngine: Sendable {
                     if governorEnabled, let sampleSink {
                         let drained = sampleSink.drain()
                         for s in drained { governor.record(sample: s) }
-                        switch governor.decide(
+                        let decision = governor.decide(
                             liveWorkers: liveWorkers, remainingBytes: queue.remainingBytes)
-                        {
-                        case .hold: break
-                        case .addWorkers(let k): targetN = min(targetN + k, 16)
-                        case .dropWorkers(let k): targetN = max(targetN - k, 1)
-                        case .commit(let n): targetN = min(max(n, 1), 16)
-                        case .backOffPinLow: targetN = 1
+                        let decisionLabel: String
+                        switch decision {
+                        case .hold: decisionLabel = "hold"
+                        case .addWorkers(let k): targetN = min(targetN + k, 16); decisionLabel = "addWorkers(\(k))"
+                        case .dropWorkers(let k): targetN = max(targetN - k, 1); decisionLabel = "dropWorkers(\(k))"
+                        case .commit(let n): targetN = min(max(n, 1), 16); decisionLabel = "commit(\(n))"
+                        case .backOffPinLow: targetN = 1; decisionLabel = "backOffPinLow"
                         }
+                        trace.recordGovernorDecision(
+                            phase: governor.phaseLabel, decision: decisionLabel,
+                            currentN: targetN, hostKey: hostKey(for: job.url))
                     }
 
                     // Re-admit chunk(s) up to the (possibly governor-updated)
