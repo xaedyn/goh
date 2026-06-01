@@ -261,7 +261,8 @@ struct DownloadEngineTests {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let url = "https://test.local/\(UUID().uuidString).bin"
-        // 4 MiB against a 1 MiB minimum chunk → four ranges.
+        // 4 MiB with a 1 MiB chunkSize → four fixed-size chunks. With 8
+        // requested workers the queue (4 chunks) caps peak concurrency at 4.
         let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
         MockURLProtocol.stub(url, body: payload)
 
@@ -269,7 +270,7 @@ struct DownloadEngineTests {
         let destination = directory.appending(path: "out.bin").path
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
 
-        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 20).run(jobID: job.id, in: store)
 
         let final = store.job(id: job.id)
         #expect(final?.state == .completed)
@@ -292,8 +293,10 @@ struct DownloadEngineTests {
         let store = JobStore()
         let destination = directory.appending(path: "out.bin").path
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 2)
+        // 2 MiB with a 1 MiB chunkSize → two chunks → two concurrent workers.
         let engine = DownloadEngine(
             session: mockSession(),
+            chunkSize: 1 << 20,
             cookieHeaderProvider: { jobID, requestURL in
                 guard jobID == job.id, requestURL.absoluteString == url else { return nil }
                 return "session=abc; pref=dark"
@@ -834,14 +837,15 @@ struct DownloadEngineTests {
 
         let url = "https://test.local/\(UUID().uuidString).bin"
         let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
-        // Four 1 MiB ranges; fail the one beginning at 2 MiB.
+        // Four 1 MiB chunks; fail the GET for the chunk beginning at 2 MiB. A
+        // 1 MiB chunkSize puts a chunk boundary exactly at the fault offset.
         MockURLProtocol.stub(url, body: payload, failRangeStartingAt: 2 << 20)
 
         let store = JobStore()
         let destination = directory.appending(path: "out.bin").path
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
 
-        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 20).run(jobID: job.id, in: store)
 
         #expect(store.job(id: job.id)?.state == .failed)
     }
@@ -853,13 +857,14 @@ struct DownloadEngineTests {
 
         let url = "https://test.local/\(UUID().uuidString).bin"
         let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        // 1 MiB chunkSize puts a chunk boundary at the truncated offset.
         MockURLProtocol.stub(url, body: payload, truncateRangeStartingAt: 1 << 20)
 
         let store = JobStore()
         let destination = directory.appending(path: "out.bin").path
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
 
-        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 20).run(jobID: job.id, in: store)
 
         let final = store.job(id: job.id)
         #expect(final?.state == .failed)
@@ -873,6 +878,7 @@ struct DownloadEngineTests {
 
         let url = "https://test.local/\(UUID().uuidString).bin"
         let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        // 1 MiB chunkSize puts a chunk boundary at the overridden offset.
         MockURLProtocol.stub(
             url,
             body: payload,
@@ -884,7 +890,7 @@ struct DownloadEngineTests {
         let destination = directory.appending(path: "out.bin").path
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
 
-        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 20).run(jobID: job.id, in: store)
 
         let final = store.job(id: job.id)
         #expect(final?.state == .failed)
@@ -1067,5 +1073,25 @@ struct DownloadEngineTests {
         let data = try Data(contentsOf: URL(fileURLWithPath: destination))
         #expect(data == payload)
         #expect(store.job(id: job.id)?.actualConnectionCount ?? 0 >= 1)
+    }
+
+    @Test("P3 (11A): fixed-size chunk pool downloads byte-identical output across many chunks")
+    func fixedSizeChunkPoolMultiChunk() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let total: UInt64 = 8 * 1024 * 1024            // 8 MiB
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<Int(total)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 4)
+        // Small chunkSize → many chunks (8 MiB / 1 MiB = 8 chunks) across the 4 workers.
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 20).run(jobID: job.id, in: store)
+        #expect(store.job(id: job.id)?.state == .completed)
+        let data = try Data(contentsOf: URL(fileURLWithPath: destination))
+        #expect(data == payload)
+        // 8 chunks, 4 workers → peak concurrent workers is 4.
+        #expect(store.job(id: job.id)?.actualConnectionCount == 4)
     }
 }

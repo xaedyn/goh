@@ -2,21 +2,20 @@ import Darwin
 import Foundation
 import Synchronization
 
-/// Aggregates per-range byte counts so a job's reported progress reflects every
-/// connection. A reference type, so the range tasks share one instance.
-private final class RangeProgress: Sendable {
-    private let counts: Mutex<[UInt64]>
+/// A shared, monotonic byte counter for the dynamic worker pool. Every worker
+/// adds its per-flush byte delta and reads back the running cumulative total
+/// across ALL workers — independent of how many chunks or workers produced the
+/// bytes. A `Sendable` reference type so the worker tasks share one instance
+/// (a bare `Mutex` is noncopyable and cannot be captured by the sending task
+/// closures). Replaces the per-range-index `RangeProgress`.
+private final class ByteCounter: Sendable {
+    private let total: Mutex<UInt64>
 
-    init(rangeCount: Int) {
-        counts = Mutex(Array(repeating: 0, count: rangeCount))
-    }
+    init() { total = Mutex(0) }
 
-    /// Records range `index`'s byte count, returning the new overall total.
-    func report(index: Int, written: UInt64) -> UInt64 {
-        counts.withLock { counts in
-            counts[index] = written
-            return counts.reduce(0, +)
-        }
+    /// Adds `delta` to the running total and returns the new cumulative value.
+    func add(_ delta: UInt64) -> UInt64 {
+        total.withLock { $0 += delta; return $0 }
     }
 }
 
@@ -59,6 +58,14 @@ public struct DownloadEngine: Sendable {
     /// persistence failure becomes diagnosable.
     public typealias UnexpectedStoreErrorReporter = @Sendable (UInt64, String, any Error) -> Void
 
+    /// Fixed chunk granularity for the dynamic worker pool. Workers pull
+    /// `chunkSize`-byte intervals one at a time (the last takes the remainder),
+    /// so there is always spare unclaimed work for the governor (Task 12) to
+    /// hand a freshly-added worker. Independent of the requested connection
+    /// count `N`. Defaults to 8 MiB; injectable so tests can force many small
+    /// chunks. Must be ≥ `bufferSize`.
+    private let chunkSize: UInt64
+
     private let session: URLSession
     private let checkpointStore: CheckpointStore?
     private let control: DownloadControl?
@@ -70,6 +77,7 @@ public struct DownloadEngine: Sendable {
 
     public init(
         session: URLSession,
+        chunkSize: UInt64 = 8 << 20,
         checkpointStore: CheckpointStore? = nil,
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
@@ -78,6 +86,7 @@ public struct DownloadEngine: Sendable {
         unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
         hostProfileStore: HostProfileStore? = nil
     ) {
+        self.chunkSize = chunkSize
         self.session = session
         self.checkpointStore = checkpointStore
         self.control = control
@@ -501,63 +510,79 @@ public struct DownloadEngine: Sendable {
         trace: EngineDiagnostics,
         clock: ContinuousClock = ContinuousClock()   // injected; default keeps callers unchanged
     ) async throws {
-        let ranges = ByteRange.split(
-            total: total, requested: job.requestedConnectionCount, minChunk: Self.minChunk)
-
         let file = try DownloadFile(path: job.destination, expectedSize: total)
         let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
         let checkpointRecorder = makeCheckpointRecorder(
             job: job, total: total, response: initialResponse)
 
-        let progress = RangeProgress(rangeCount: ranges.count)
+        // Byte-based progress: a single shared counter accumulating every
+        // worker's per-flush delta. Monotonic and N-agnostic — the sum of all
+        // per-flush `pieceLength`s equals total bytes written, regardless of how
+        // many chunks or workers produced them. Replaces the per-range-index
+        // `RangeProgress` (which assumed a fixed range count).
+        let bytesWritten = ByteCounter()
         let started = clock.now
 
-        // Seed the dynamic chunk pool. In P2 the queue holds exactly the N split
-        // ranges, and targetN is static (= requestedConnectionCount), so this
-        // spawns one worker per range and reaps them — identical to the prior
-        // static TaskGroup. The control loop + queue are the structure P3 needs
-        // to vary N live.
-        let queue = ChunkQueue(intervals: ranges.map { ByteInterval(from: $0) })
-        // Map each interval's start offset back to its range index (trace + RangeProgress).
-        var indexByStart: [UInt64: Int] = [:]
-        for (i, r) in ranges.enumerated() { indexByStart[r.start] = i }
-        let targetN = Int(job.requestedConnectionCount)   // STATIC in P2; P3 makes this governor-driven
+        // Seed the dynamic chunk pool with FIXED-size chunks (spec §6.1): a
+        // daemon constant independent of N. The last chunk takes the remainder.
+        // Because there are many more chunks than N (for total > chunkSize), the
+        // queue always holds spare unclaimed work — that is what lets the
+        // governor (Task 12) add a worker live. The first chunk (start 0)
+        // reuses the speculative firstRangeStream; all others open a fresh GET.
+        var chunks: [ByteInterval] = []
+        var offset: UInt64 = 0
+        while offset < total {
+            let len = min(chunkSize, total - offset)
+            chunks.append(ByteInterval(start: offset, length: len))
+            offset += len
+        }
+        let queue = ChunkQueue(intervals: chunks)
+        let targetN = Int(job.requestedConnectionCount)   // STATIC in P2/11A; Task 12 makes it governor-driven
 
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
+            // The group element is the connection SLOT the worker held, returned
+            // on completion so the control loop can free it. Slots are a stable
+            // index in 0..<liveWorkers (NOT the unbounded chunk index) so Task
+            // 12's governor can tag each rate sample with a per-worker identity.
+            try await withThrowingTaskGroup(of: Int.self) { group in
                 var liveWorkers = 0
                 var peakWorkers = 0
+                // 16 = the hard worker cap (the governor may grow targetN to 16
+                // in Task 12). The lowest free slot is allocated on spawn and
+                // returned to the set on reap; at fixed targetN ≤ 16 only the low
+                // slots are ever used.
+                var availableSlots = Set(0..<16)
 
                 // The control loop is the SOLE caller of group.addTask. A worker
-                // downloads one interval (range 0 reuses the speculative
-                // firstRangeStream; others open a fresh ranged GET via
-                // downloadRange) and returns. Workers never call addTask.
-                func spawn(_ interval: ByteInterval) throws {
-                    guard let index = indexByStart[interval.start] else {
-                        throw GohError(
-                            code: .connectionFailed,
-                            message: "chunk pool: no range index for offset \(interval.start)")
-                    }
-                    let range = ranges[index]
-                    if index == 0 {
+                // downloads one captured chunk (the first chunk reuses the
+                // speculative firstRangeStream; others open a fresh ranged GET
+                // via downloadRange) and returns its slot id. Workers never call
+                // addTask and never touch the slot set.
+                func spawn(_ chunk: ByteInterval) {
+                    let slot = availableSlots.min()!
+                    availableSlots.remove(slot)
+                    let range = ByteRange(start: chunk.start, length: chunk.length)
+                    if chunk.start == 0 {
                         group.addTask {
                             try await consumeRange(
-                                index: 0, range: range, file: file,
-                                assembler: assembler, progress: progress,
+                                index: slot, range: range, file: file,
+                                assembler: assembler, bytesWritten: bytesWritten,
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
                                 clock: clock, started: started, trace: trace,
                                 stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
+                            return slot
                         }
                     } else {
                         group.addTask {
                             try await downloadRange(
-                                index: index, range: range, url: url, file: file,
-                                assembler: assembler, progress: progress,
+                                index: slot, range: range, url: url, file: file,
+                                assembler: assembler, bytesWritten: bytesWritten,
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
                                 clock: clock, started: started, trace: trace)
+                            return slot
                         }
                     }
                     liveWorkers += 1
@@ -565,29 +590,32 @@ public struct DownloadEngine: Sendable {
                 }
 
                 // Admit workers up to the target while the queue has work. Called
-                // from the seed phase and after each reap (P3 will pass a
+                // from the seed phase and after each reap (Task 12 will pass a
                 // governor-updated target here).
-                func fillToTarget(_ target: Int) throws {
-                    while liveWorkers < target, let interval = queue.pull() {
-                        try spawn(interval)
+                func fillToTarget(_ target: Int) {
+                    while liveWorkers < target, let chunk = queue.pull() {
+                        spawn(chunk)
                     }
                 }
 
-                try fillToTarget(targetN)
-                // Record peak concurrent workers (== ranges.count at fixed N)
-                // for goh top / ls.
+                fillToTarget(targetN)
+                // Record peak concurrent workers (== min(targetN, chunkCount) at
+                // fixed N) for goh top / ls.
                 _ = try store.setActualConnectionCount(id: job.id, UInt8(peakWorkers))
 
                 while liveWorkers > 0 {
+                    let freedSlot: Int?
                     do {
-                        _ = try await group.next()
+                        freedSlot = try await group.next()
                     } catch {
                         group.cancelAll()
                         throw error
                     }
                     liveWorkers -= 1
-                    // Re-admit if target/queue allow (no-op at fixed N once drained).
-                    try fillToTarget(targetN)
+                    if let s = freedSlot { availableSlots.insert(s) }
+                    // Re-admit the next chunk(s) onto freed slots (no-op at fixed
+                    // N once the queue drains).
+                    fillToTarget(targetN)
                 }
             }
         } catch {
@@ -627,7 +655,7 @@ public struct DownloadEngine: Sendable {
     /// open-ended stream that ``download(job:store:trace:)`` already started.
     private func downloadRange(
         index: Int, range: ByteRange, url: URL, file: DownloadFile,
-        assembler: ChunkAssembler, progress: RangeProgress,
+        assembler: ChunkAssembler, bytesWritten: ByteCounter,
         checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
@@ -648,7 +676,7 @@ public struct DownloadEngine: Sendable {
         try Self.validateContentRange(http, matches: range, total: total)
         try await consumeRange(
             index: index, range: range, file: file,
-            assembler: assembler, progress: progress,
+            assembler: assembler, bytesWritten: bytesWritten,
             checkpointRecorder: checkpointRecorder,
             job: job, store: store, total: total,
             clock: clock, started: started, trace: trace,
@@ -662,7 +690,7 @@ public struct DownloadEngine: Sendable {
     /// break is benign for them.
     private func consumeRange(
         index: Int, range: ByteRange, file: DownloadFile,
-        assembler: ChunkAssembler, progress: RangeProgress,
+        assembler: ChunkAssembler, bytesWritten: ByteCounter,
         checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
@@ -694,7 +722,10 @@ public struct DownloadEngine: Sendable {
             buffer.removeAll(keepingCapacity: true)
             trace.timed(index, .report) {
                 assembler.complete(interval: ByteInterval(start: pieceStart, length: pieceLength))
-                let overall = progress.report(index: index, written: written)
+                // Add this flush's byte delta to the shared cumulative counter;
+                // `overall` is the running total across ALL workers — monotonic
+                // and independent of chunk/worker count.
+                let overall = bytesWritten.add(pieceLength)
                 recordProgress(
                     store: store, jobID: job.id,
                     Self.progress(completed: overall, total: total,
