@@ -335,7 +335,10 @@ whole duration** on that host; and the engine actually used the requested count
 `Range` and fell back to a single connection cannot pollute the arm for the
 requested N). Throughput is `bytes / transfer-phase-seconds` — the engine threads
 the **transfer-phase** `Duration` (after admission/setup, excluding queue wait) to
-the completion sink via the widened `completedDownloadHandler`.
+the completion sink via the widened `completedDownloadHandler`. `actualConnectionCount`
+is the peak concurrent connections used during the transfer; the cap is the hard
+ceiling (16), not the admission-time `requestedConnectionCount`, which the in-flight
+governor may exceed.
 
 **Whole-duration-solo tracking.** A point-in-time concurrency check at completion
 is insufficient: a sibling that starts and finishes inside another download's

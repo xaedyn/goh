@@ -167,17 +167,21 @@ public final class JobStore: Sendable {
         }
     }
 
-    /// Records how many connections the engine used — set once the engine has
-    /// probed and decided, at most the requested count (`DESIGN.md` §2.2,
-    /// "`actualConnectionCount` lifecycle"). Silently skips when the job is
-    /// not `active` or the count violates `0 < count <= requestedConnectionCount`
-    /// — the documented lifecycle constraints, enforced at the API boundary
-    /// rather than trusted of every caller.
+    /// Records the peak concurrent connection count the engine has used.
+    ///
+    /// Each call updates the stored value to the running maximum — a count that
+    /// falls back below a previously-seen peak does not lower the stored value.
+    /// The hard ceiling is 16 (the in-flight governor may push N above the
+    /// admission-time `requestedConnectionCount`). Silently skips when the job is
+    /// not `active` or `count` is 0 (`DESIGN.md` §Adaptive host scheduling,
+    /// "`actualConnectionCount` lifecycle").
     public func setActualConnectionCount(id: UInt64, _ count: UInt8) throws -> JobSummary {
         try mutateJob(id: id) { job in
             guard job.state == .active else { return }
-            guard count > 0, count <= job.requestedConnectionCount else { return }
-            job.actualConnectionCount = count
+            guard count > 0 else { return }
+            // Peak-max: store the highest N seen over the transfer. Cap is the
+            // hard ceiling 16 — the governor may exceed requestedConnectionCount.
+            job.actualConnectionCount = max(job.actualConnectionCount, min(count, 16))
         }
     }
 
