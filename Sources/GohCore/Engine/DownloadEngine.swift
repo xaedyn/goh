@@ -503,7 +503,6 @@ public struct DownloadEngine: Sendable {
     ) async throws {
         let ranges = ByteRange.split(
             total: total, requested: job.requestedConnectionCount, minChunk: Self.minChunk)
-        _ = try store.setActualConnectionCount(id: job.id, UInt8(ranges.count))
 
         let file = try DownloadFile(path: job.destination, expectedSize: total)
         let assembler = ChunkAssembler(file: file, totalBytes: total)
@@ -514,36 +513,81 @@ public struct DownloadEngine: Sendable {
         let progress = RangeProgress(rangeCount: ranges.count)
         let started = clock.now
 
+        // Seed the dynamic chunk pool. In P2 the queue holds exactly the N split
+        // ranges, and targetN is static (= requestedConnectionCount), so this
+        // spawns one worker per range and reaps them — identical to the prior
+        // static TaskGroup. The control loop + queue are the structure P3 needs
+        // to vary N live.
+        let queue = ChunkQueue(intervals: ranges.map { ByteInterval(from: $0) })
+        // Map each interval's start offset back to its range index (trace + RangeProgress).
+        var indexByStart: [UInt64: Int] = [:]
+        for (i, r) in ranges.enumerated() { indexByStart[r.start] = i }
+        let targetN = Int(job.requestedConnectionCount)   // STATIC in P2; P3 makes this governor-driven
+
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                // Range 0 reuses the open-ended stream that download() already
-                // started; consumeRange truncates it at ranges[0].length.
-                group.addTask {
-                    try await consumeRange(
-                        index: 0, range: ranges[0], file: file,
-                        assembler: assembler, progress: progress,
-                        checkpointRecorder: checkpointRecorder,
-                        job: job, store: store, total: total,
-                        clock: clock, started: started, trace: trace,
-                        stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
+                var liveWorkers = 0
+                var peakWorkers = 0
+
+                // The control loop is the SOLE caller of group.addTask. A worker
+                // downloads one interval (range 0 reuses the speculative
+                // firstRangeStream; others open a fresh ranged GET via
+                // downloadRange) and returns. Workers never call addTask.
+                func spawn(_ interval: ByteInterval) throws {
+                    guard let index = indexByStart[interval.start] else {
+                        throw GohError(
+                            code: .connectionFailed,
+                            message: "chunk pool: no range index for offset \(interval.start)")
+                    }
+                    let range = ranges[index]
+                    if index == 0 {
+                        group.addTask {
+                            try await consumeRange(
+                                index: 0, range: range, file: file,
+                                assembler: assembler, progress: progress,
+                                checkpointRecorder: checkpointRecorder,
+                                job: job, store: store, total: total,
+                                clock: clock, started: started, trace: trace,
+                                stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
+                        }
+                    } else {
+                        group.addTask {
+                            try await downloadRange(
+                                index: index, range: range, url: url, file: file,
+                                assembler: assembler, progress: progress,
+                                checkpointRecorder: checkpointRecorder,
+                                job: job, store: store, total: total,
+                                clock: clock, started: started, trace: trace)
+                        }
+                    }
+                    liveWorkers += 1
+                    peakWorkers = max(peakWorkers, liveWorkers)
                 }
-                for (index, range) in ranges.enumerated().dropFirst() {
-                    group.addTask {
-                        try await downloadRange(
-                            index: index, range: range, url: url, file: file,
-                            assembler: assembler, progress: progress,
-                            checkpointRecorder: checkpointRecorder,
-                            job: job, store: store, total: total,
-                            clock: clock, started: started, trace: trace)
+
+                // Admit workers up to the target while the queue has work. Called
+                // from the seed phase and after each reap (P3 will pass a
+                // governor-updated target here).
+                func fillToTarget(_ target: Int) throws {
+                    while liveWorkers < target, let interval = queue.pull() {
+                        try spawn(interval)
                     }
                 }
-                for _ in ranges {
+
+                try fillToTarget(targetN)
+                // Record peak concurrent workers (== ranges.count at fixed N)
+                // for goh top / ls.
+                _ = try store.setActualConnectionCount(id: job.id, UInt8(peakWorkers))
+
+                while liveWorkers > 0 {
                     do {
                         _ = try await group.next()
                     } catch {
                         group.cancelAll()
                         throw error
                     }
+                    liveWorkers -= 1
+                    // Re-admit if target/queue allow (no-op at fixed N once drained).
+                    try fillToTarget(targetN)
                 }
             }
         } catch {

@@ -1050,4 +1050,22 @@ struct DownloadEngineTests {
         #expect(reportedErrors.withLock { $0 }.isEmpty)
         #expect(store.job(id: job.id) == nil)
     }
+
+    @Test("P2: control-loop pool downloads correctly at fixed N=4")
+    func controlLoopPoolDownload() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let total: UInt64 = 8 * 1024 * 1024   // 8 MiB → multi-range
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data(repeating: 0xAB, count: Int(total))
+        MockURLProtocol.stub(url, body: payload)
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 4)
+        await DownloadEngine(session: mockSession()).run(jobID: job.id, in: store)
+        #expect(store.job(id: job.id)?.state == .completed)
+        let data = try Data(contentsOf: URL(fileURLWithPath: destination))
+        #expect(data == payload)
+        #expect(store.job(id: job.id)?.actualConnectionCount ?? 0 >= 1)
+    }
 }
