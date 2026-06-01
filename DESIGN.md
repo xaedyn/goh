@@ -351,6 +351,35 @@ The completion handler reads `wasSolo(jobID:)` **before** the `defer`-scheduled
 `end` runs, so the answer reflects the entire download. Only a job that was never
 concurrent with a sibling is eligible to record.
 
+**Governor-gate redesign (in-flight adaptive parallelism slice).** With the live
+governor (below), "the engine used the requested N" is no longer the right
+clean-measurement test — N now varies *during* the transfer. The gate predicate is
+migrated to an `ObservationRequest` parameter struct (replacing the previous
+positional call so adding fields is a mechanical call-site change), and the
+`actualConnectionCount == requestedConnectionCount` condition is **replaced** by a
+governor-convergence condition: record **iff** `GovernorOutcome.effectiveN != nil`
+(the governor converged to a **bandit-candidate** operating N, i.e. one of
+`{2,4,8,16}`) **and** `GovernorOutcome.stabilized` (it reached the cruise phase).
+Off-candidate convergence (a binary-search refinement to e.g. 6), a never-stabilized
+download, an explicit `--connections N` run, and a kill-switched run all produce
+`effectiveN = nil` and record **nothing** — so the frozen EWMA never receives a
+snapped or biased value. The arm the bandit then learns is the governor's own
+converged N, fed back through the unchanged `recordObservation` path. `GovernorOutcome`
+is **daemon-internal** (a fourth argument on the completion sink) — it is *not* on the
+wire and triggers no `protocolVersion`/`JobSummary`/`host-scheduling.plist` change.
+The explicit-`--connections` "governor-off" signal is carried daemon-internally by an
+ephemeral jobID→N table (`ExplicitConnectionCounts`), not by a `JobSummary` field, so
+a user-pinned N disables the governor without any format change.
+
+**Throttle-pin scope (conservative divergence).** When the governor detects an
+anti-abuse throttle signature it pins the host low. That pin lives for the lifetime
+of the per-download `ParallelismGovernor` instance — i.e. **per download**, not "for
+the session" — so the next download to that host re-probes from scratch. This is a
+deliberate, safe divergence: a stale cross-download pin could needlessly throttle a
+host whose limit has lifted, whereas re-probing is cheap and self-correcting.
+Persisting throttle state to `host-scheduling.plist` for a true session scope is a
+future option that needs no format change (it fits the existing arm metadata).
+
 **Observability.** `GOH_ENGINE_TRACE=1` adds a per-admission
 `scheduling host=… chosenN=… reason=… ewmas=[…]` line (emitted from
 `CommandDispatcher`, the one site where host key, chosen N, reason, and arm EWMAs
@@ -358,7 +387,14 @@ are all in hand). It carries the credential-stripped host key only — never a U
 userinfo. Off by default. CI-enforced pure selector tests prove exploit never
 regresses to a worse arm and a thin single sample cannot displace a settled arm; an
 optional, env-gated `goh-bench regression-guard` subcommand (not in CI) measures
-real-network throughput.
+real-network throughput. The same scheduling-decision line emits `reason=warmStart`
+in place of `reason=exploit` precisely when the bandit exploits a settled arm **and**
+the download will run with the live governor (no explicit `--connections`, kill-switch
+on) — distinguishing a governor-seeded warm start from an ordinary exploit. The live
+governor additionally emits per-decision lines —
+`governor phase=<probe|cruise|pinned> decision=<hold|addWorkers(k)|dropWorkers(k)|commit(n)|backOffPinLow> N=<n> host=<key>`
+— carrying the credential-stripped host key only (never a URL or userinfo). Off by
+default.
 
 *Honest caveat (carried from ROADMAP).* The amenable-workload gap vs `aria2c` is
 structural (HTTP/2 multiplexing over one connection vs N separate TCP connections),
