@@ -5,7 +5,39 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-05-31 (impl session) — In-flight adaptive parallelism **P3 IN PROGRESS** (Tasks 10–11 done; architectural gap found → Task 11A added); next = Task 11A
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P3 COMPLETE** (governor functional + fed back to bandit); next = P4 (benchmarks + per-host budget)
+
+- **P3 of 5 shipped on `design/in-flight-parallelism`.** **503 tests pass**, warning-clean,
+  strict-concurrency-clean. **The in-flight governor is now functional** — it adjusts the live connection
+  count during a download and feeds its converged candidate-aligned N back into the per-host bandit. Full
+  breakdown in the P3 artifact (`docs/superpowers/progress/...-phase3.md`) and the detailed in-progress entry
+  below. Commits: Task 10 `af6e728`, Task 11 `bcb0ece`, **Task 11A `a0160df`** (fixed-size chunk pool,
+  Opus-reviewed), **Task 12 `df35c8d`** (governor wired + explicit-N off channel + GovernorOutcome,
+  Opus-reviewed), Task 13 `090af0a` (warm-start trace), Task 15 `d82ad98` (governor trace), Task 14 `5b28652`
+  (DESIGN.md), P3 artifact (next commit).
+- **The architectural gap (build-it-right):** the plan would have wired an inert governor onto P2's "N big
+  pieces"; **Task 11A** (the spec §6.1 fixed-size-chunk pool + byte progress + connection slots) was added as
+  the prerequisite that makes the governor actually converge. Both 11A and 12 (the data-path + concurrency
+  cores) passed dedicated **Opus concurrency/data-integrity reviews** (no blocks; the governor never overrides
+  an explicit `--connections` pin; the bandit can't be polluted; no data race; cooperative drop loses no bytes).
+- **Two review-caught issues (don't re-introduce):** (1) `Mutex` is noncopyable → used the project's
+  reference-type idiom (`ExplicitConnectionCounts`, `RateSampleSink`, like `ByteCounter`); (2) the 11A slot
+  force-unwrap was a latent crash → closed in Task 12 (clamp `targetN`∈[1,16] + guard slot allocation).
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape,
+  `host-scheduling.plist` v1, `DownloadCheckpoint` v1 — all unchanged. `GovernorOutcome`/`ExplicitConnection
+  Counts`/`RateSampleSink` are daemon-internal.
+- **NEXT ACTION — P4 (Tasks 17–19): the headline benchmarks + per-host budget.** (1) **Task 17** — global
+  per-host `ConnectionBudget` (deliberately deferred from P2/P3; insert the budget gate into the control
+  loop's `fillToTarget` + a worker-`defer` release — the structure is ready). (2) **Task 18** — `goh-bench`
+  LFN subcommand + runbook (path is `Benchmarks/goh-bench/`, NOT `Sources/`). (3) **Task 19** — prove **SM5a**
+  (governed > static N=8 on a sourced LFN target, non-overlapping IQR) and **SM2** (≤5% saturated regression)
+  using the **confirmed dummynet harness** ([[dummynet-macos26-confirmed]]) + `sin-speed.hetzner.com/1GB.bin`;
+  **tune `Config.default` + `chunkSize`** against measured convergence (first-cut values). P4 **ships the
+  single-edge headline.** Then P5 (NWConnection multi-edge, behind a feasibility spike + security review).
+  Continue with `subagent-driven-development`, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P3 detail** (Tasks 10–11 + architectural gap → Task 11A)
 
 - **P3 started on `design/in-flight-parallelism`.** Tasks 10 + 11 shipped (497 tests pass, warning-clean):
   - `af6e728` — **Task 10:** `SelectionReason.warmStart` + `ObservationRequest` parameter struct; the
