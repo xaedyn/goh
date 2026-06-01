@@ -331,7 +331,13 @@ struct HostProfileStoreTests {
                     totalBytes: UInt64(throughput * 30), transferDuration: .seconds(30))
             }
         }
-        let (chosenN, reason) = store.selectN(hostKey: key)
+        // `store.selectN` uses an unseeded system RNG and explores ε of the time, so it
+        // would flake on the exploit assertion. Test the exploit path deterministically by
+        // driving the pure selector with ε=0 (never explores) over the recorded profile —
+        // this proves the warm-start arm (best EWMA = N=8) is the one exploit picks.
+        let profile = store.profile(hostKey: key)
+        var rng = SeededRNG(seed: 1)
+        let (chosenN, reason) = BanditSelector(epsilon: 0).select(profile: profile, rng: &rng)
         #expect(chosenN == 8, "SM4: exploit should pick N=8 (best EWMA); got \(chosenN)")
         #expect(reason == .exploit, "selectN returns .exploit; warmStart is the trace annotation, not a selectN return")
     }
