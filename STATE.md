@@ -5,6 +5,43 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P2 COMPLETE** (dynamic chunk pool + interval-set assembler); next = P3
+
+- **P2 of 5 shipped on `design/in-flight-parallelism`** via `subagent-driven-development` (TDD, two-stage
+  review incl. Opus quality/concurrency). **493 tests pass** (was 483 at P1 end; +10), warning-clean,
+  strict-concurrency-clean. **Behaviour-equivalent at fixed N — no functional change**; this is the
+  structural rework enabling P3's live-N governor. Four atomic commits + artifact:
+  - `efe69cf` — `ChunkQueue` + `ByteInterval` (`Sources/GohCore/Engine/ChunkQueue.swift`).
+  - `b99fdd1` — interval-set `ChunkAssembler` rework: `complete(interval:)` additive-merge, coalesce,
+    byte-0 frontier, `[0,total)` end-condition; SHA-256 in-order invariant preserved; `advance`/`fixedLength`
+    deleted; all callers migrated (incl. `goh-bench/main.swift`).
+  - `9a02981` — fix: empty (`Content-Length: 0`) downloads digest the canonical empty SHA-256 instead of
+    failing (regression caught by Opus quality review).
+  - `b41136a` — control-loop worker pool in `fetchRanged`: single-control-loop-inside-`TaskGroup`
+    (sole `addTask` caller), `ChunkQueue`-seeded, range-0 `firstRangeStream` reuse preserved. Opus
+    concurrency review APPROVED (single-adder safe, behaviour-equivalent, no race/hang/lost-cancellation).
+  - P2 artifact: `docs/superpowers/progress/2026-05-31-in-flight-adaptive-parallelism-phase2.md`.
+- **Two defects caught by review & fixed (don't re-introduce):** (1) the plan's `init(totalBytes: UInt64)`
+  + `fetchSingle` `?? UInt64.max` was a bug for unknown-length downloads → corrected to
+  **`init(file:totalBytes: UInt64?)`** (nil = unknown, skips end-condition); (2) the empty-file regression
+  above. Both have regression tests.
+- **`ConnectionBudget` is a P4 deliverable** — deliberately NOT referenced in P2's control loop (the plan's
+  Task 8 text mentioned it prematurely). P4 inserts the budget gate + worker-`defer`-release into the
+  structure P2 built. **`setActualConnectionCount` peak-max is Task 11/P3** — P2 calls it with peakWorkers
+  (== ranges.count at fixed N); the JobStore method body is unchanged.
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape,
+  `host-scheduling.plist` v1, `DownloadCheckpoint` v1 — all unchanged (checkpoint `recordCompletedPiece`
+  called identically per-flush).
+- **NEXT ACTION — P3 (Tasks 11–18):** wire the governor to the pool. `setActualConnectionCount` peak-max
+  semantics (Task 11); `ObservationRequest`/`SelectionReason.warmStart` (Task 10/11); the explicit-N
+  governor-off channel (ephemeral `Mutex<[UInt64:UInt8]>` jobID→N table in gohd — NOT a JobSummary field);
+  compute per-flush rate **deltas + per-worker EWMA** from `consumeRange`'s accumulator (currently
+  cumulative `(bytes,elapsed)`, unconsumed) and feed `WorkerRateSample`s to the governor; apply
+  `GovernorDecision` via `targetN` + `fillToTarget`; emit candidate-only `GovernorOutcome` to the bandit;
+  warm-start (SM4); `GOH_ENGINE_TRACE` governor lines; DESIGN.md §Persistence/§Observability reconciliation.
+  Continue with `subagent-driven-development`, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
 ### 2026-05-31 (impl session) — In-flight adaptive parallelism **P1 COMPLETE** (governor + clock + dummynet confirmed); next = P2
 
 - **P1 of 5 shipped on `design/in-flight-parallelism`** via `subagent-driven-development` (TDD per task,
