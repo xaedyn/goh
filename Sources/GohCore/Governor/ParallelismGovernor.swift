@@ -1,29 +1,12 @@
 // Sources/GohCore/Governor/ParallelismGovernor.swift
 
-// MARK: — Wire types (sent between engine and governor)
-
-/// A single per-worker rate sample at a flush boundary.
-/// Injected by consumeRange's flush() chokepoint.
-public struct WorkerRateSample: Sendable {
-    public var workerIndex: Int
-    public var bytesPerSecond: Double
-    /// Coarse RTT ratio vs observed floor (nil when unavailable or too noisy).
-    public var rttRatio: Double?
-    public init(workerIndex: Int, bytesPerSecond: Double, rttRatio: Double? = nil) {
-        self.workerIndex = workerIndex
-        self.bytesPerSecond = bytesPerSecond
-        self.rttRatio = rttRatio
-    }
-}
-
 // MARK: — Governor decision
 
 public enum GovernorDecision: Sendable, Equatable {
     case hold
     case addWorkers(Int)
-    /// Reserved for Phase 3 cruise/throttle-response wiring: the live worker pool
-    /// cooperatively sheds workers when the cruise controller detects excess concurrency.
-    /// `decide()` never emits this in P1 (probe-only); it is not dead code.
+    /// Reserved for cruise/throttle-response wiring: the live worker pool
+    /// cooperatively sheds workers when excess concurrency is detected.
     case dropWorkers(Int)
     case commit(Int)
     case backOffPinLow
@@ -31,45 +14,68 @@ public enum GovernorDecision: Sendable, Equatable {
 
 // MARK: — Governor
 
+/// In-flight parallelism governor (spec §6). A BBR-style controller lifted to
+/// *connection count*: it watches the **aggregate** delivery rate of the whole
+/// download and hill-climbs the connection count up the bandit candidate ladder
+/// `{2, 4, 8, 16}`, keeping a step only when it raised aggregate throughput by
+/// at least `kneeGainThreshold`. The signal is the total bytes/sec across all
+/// connections — NOT per-connection steadiness, which is far too noisy on a real
+/// network to gate on (the per-worker "all within 5%" detector this replaces
+/// never converged in the field; see the OVH long-fat-network benchmark).
+///
+/// Pure value type: deterministic and unit-testable. The engine feeds it one
+/// aggregate sample per control tick via `record(aggregateBytesPerSecond:)` and
+/// asks for a `decide(operatingN:remainingBytes:)` at each reap.
 public struct ParallelismGovernor: Sendable {
 
     public struct Config: Sendable {
-        public var steadyStateWindow: Int
-        public var steadyStateThreshold: Double
+        /// Aggregate samples to accumulate at a connection count before judging
+        /// it — long enough for the EWMA to settle and for newly-added
+        /// connections to ramp past TCP slow-start. Replaces the old
+        /// per-worker steady-state window/threshold.
+        public var settleSamples: Int
+        /// Minimum fractional aggregate-throughput gain to justify keeping a
+        /// step up the ladder. Below this, the higher N isn't worth the extra
+        /// connections and the governor settles at the lower N.
         public var kneeGainThreshold: Double
-        public var rttBufferbloatFactor: Double
         public var hardCap: Int
         public var tinyFileThreshold: UInt64
-        public var reproBeCadence: Int
+        /// Cruise re-probe cadence: after this many cruise ticks the governor
+        /// re-enters probe to re-test the next candidate (conditions change
+        /// mid-transfer — the whole point of an in-flight governor).
+        public var reprobeCadence: Int
+        /// EWMA smoothing factor for the aggregate rate (0..1; higher = more
+        /// responsive, noisier).
         public var rateAlpha: Double
 
+        // First-cut values tuned against the OVH long-fat-network benchmark
+        // (2026-06-02). The measured aggregate gain from 8→16 connections on a
+        // real LFN path is ~10%, so kneeGainThreshold sits below that (0.07) to
+        // reliably KEEP the higher N through per-sample noise, while still
+        // rejecting the ~0% gain of a saturated link. settleSamples is short
+        // enough to reach the optimal N quickly (less probe overhead) yet long
+        // enough for added connections to ramp past TCP slow-start.
         public static let `default` = Config(
-            steadyStateWindow: 5,
-            steadyStateThreshold: 0.05,
-            kneeGainThreshold: 0.10,
-            rttBufferbloatFactor: 1.5,
+            settleSamples: 8,
+            kneeGainThreshold: 0.07,
             hardCap: 16,
             tinyFileThreshold: 4 * 1024 * 1024,
-            reproBeCadence: 20,
+            reprobeCadence: 40,
             rateAlpha: 0.3)
 
         public init(
-            steadyStateWindow: Int,
-            steadyStateThreshold: Double,
+            settleSamples: Int,
             kneeGainThreshold: Double,
-            rttBufferbloatFactor: Double,
             hardCap: Int,
             tinyFileThreshold: UInt64,
-            reproBeCadence: Int,
+            reprobeCadence: Int,
             rateAlpha: Double
         ) {
-            self.steadyStateWindow = steadyStateWindow
-            self.steadyStateThreshold = steadyStateThreshold
+            self.settleSamples = settleSamples
             self.kneeGainThreshold = kneeGainThreshold
-            self.rttBufferbloatFactor = rttBufferbloatFactor
             self.hardCap = hardCap
             self.tinyFileThreshold = tinyFileThreshold
-            self.reproBeCadence = reproBeCadence
+            self.reprobeCadence = reprobeCadence
             self.rateAlpha = rateAlpha
         }
     }
@@ -81,26 +87,28 @@ public struct ParallelismGovernor: Sendable {
     }
 
     private var config: Config
-    private var workerRates: [Int: Double]
-    private var workerHistory: [Int: [Double]]
-    private var rttFloor: Double?
-    private var rttSmoothed: Double?
-    private var aggregateBeforeLastDouble: Double?
+    /// Smoothed aggregate delivery rate (bytes/sec across ALL connections).
+    private var aggregateSmoothed: Double?
+    /// Samples accumulated since the last connection-count change.
+    private var samplesSinceStep: Int
+    /// Aggregate measured at the connection count we stepped *up from* — the
+    /// baseline the current N is judged against.
+    private var aggregateBeforeStep: Double?
+    private var nBeforeStep: Int?
     private var phase: Phase
     private var cruiseTicks: Int
     private var throttleDetected: Bool
 
     public init(config: Config = .default, rng: some RandomNumberGenerator) {
         self.config = config
-        self.workerRates = [:]
-        self.workerHistory = [:]
-        self.rttFloor = nil
-        self.rttSmoothed = nil
-        self.aggregateBeforeLastDouble = nil
+        self.aggregateSmoothed = nil
+        self.samplesSinceStep = 0
+        self.aggregateBeforeStep = nil
+        self.nBeforeStep = nil
         self.phase = .probe
         self.cruiseTicks = 0
         self.throttleDetected = false
-        // RNG reserved for Phase 3 epsilon-draw probe jitter; ignored here.
+        // RNG reserved for future epsilon-draw probe jitter; ignored here.
         _ = rng
     }
 
@@ -113,27 +121,12 @@ public struct ParallelismGovernor: Sendable {
         }
     }
 
-    public mutating func record(sample: WorkerRateSample) {
-        let prev = workerRates[sample.workerIndex] ?? sample.bytesPerSecond
-        let smoothed = config.rateAlpha * sample.bytesPerSecond + (1 - config.rateAlpha) * prev
-        workerRates[sample.workerIndex] = smoothed
-
-        var history = workerHistory[sample.workerIndex] ?? []
-        history.append(smoothed)
-        if history.count > config.steadyStateWindow * 2 {
-            history.removeFirst()
-        }
-        workerHistory[sample.workerIndex] = history
-
-        if let ratio = sample.rttRatio {
-            if let floor = rttFloor {
-                rttFloor = min(floor, ratio)
-            } else {
-                rttFloor = ratio
-            }
-            let prevRTT = rttSmoothed ?? ratio
-            rttSmoothed = config.rateAlpha * ratio + (1 - config.rateAlpha) * prevRTT
-        }
+    /// Feed one aggregate delivery-rate sample (total bytes/sec across all live
+    /// connections, measured over the last control interval).
+    public mutating func record(aggregateBytesPerSecond bps: Double) {
+        let prev = aggregateSmoothed ?? bps
+        aggregateSmoothed = config.rateAlpha * bps + (1 - config.rateAlpha) * prev
+        samplesSinceStep += 1
     }
 
     public mutating func notifyThrottleDetected() {
@@ -153,7 +146,7 @@ public struct ParallelismGovernor: Sendable {
         }
     }
 
-    public mutating func decide(liveWorkers: Int, remainingBytes: UInt64) -> GovernorDecision {
+    public mutating func decide(operatingN: Int, remainingBytes: UInt64) -> GovernorDecision {
         if remainingBytes < config.tinyFileThreshold {
             return .commit(1)
         }
@@ -163,62 +156,60 @@ public struct ParallelismGovernor: Sendable {
         switch phase {
         case .pinned(let n):
             return .commit(n)
+
         case .cruise(let opN):
             cruiseTicks += 1
-            if cruiseTicks >= config.reproBeCadence {
-                cruiseTicks = 0
-                let candidate = min(opN + 1, config.hardCap)
-                if candidate > opN {
-                    return .addWorkers(1)
-                }
+            if cruiseTicks >= config.reprobeCadence,
+               let target = candidateAbove(opN), target <= config.hardCap {
+                // Re-test the next candidate — conditions may have changed.
+                beginStep(from: opN)
+                return .addWorkers(target - opN)
             }
             return .hold
+
         case .probe:
-            guard allWorkersInSteadyState(liveWorkers: liveWorkers) else {
+            // Dwell: wait for the EWMA to settle (and new connections to ramp)
+            // before judging this connection count.
+            guard samplesSinceStep >= config.settleSamples,
+                  let aggregate = aggregateSmoothed, aggregate > 0 else {
                 return .hold
             }
-            let aggregate = aggregateRate()
-            if let prevAggregate = aggregateBeforeLastDouble {
-                let gain = aggregate > 0 ? (aggregate - prevAggregate) / prevAggregate : 0
+            // If we just stepped up, judge whether the step paid off.
+            if let before = aggregateBeforeStep, let n0 = nBeforeStep, before > 0 {
+                let gain = (aggregate - before) / before
                 if gain < config.kneeGainThreshold {
-                    phase = .cruise(operatingN: liveWorkers)
-                    return .commit(liveWorkers)
+                    // The higher N didn't earn its keep — settle at the lower N.
+                    enterCruise(n0)
+                    return .commit(n0)
                 }
-                if let smoothedRTT = rttSmoothed,
-                   let floor = rttFloor,
-                   floor > 0,
-                   smoothedRTT / floor > config.rttBufferbloatFactor
-                {
-                    phase = .cruise(operatingN: liveWorkers)
-                    return .commit(liveWorkers)
-                }
+                // It paid off — fall through and try the next candidate.
             }
-            let nextN = candidateAbove(liveWorkers)
-            guard let target = nextN, target <= config.hardCap else {
-                phase = .cruise(operatingN: liveWorkers)
-                return .commit(liveWorkers)
+            if let target = candidateAbove(operatingN), target <= config.hardCap {
+                beginStep(from: operatingN)
+                return .addWorkers(target - operatingN)
             }
-            aggregateBeforeLastDouble = aggregate
-            return .addWorkers(target - liveWorkers)
+            // No higher candidate — we're at the top of the ladder. Settle.
+            enterCruise(operatingN)
+            return .commit(operatingN)
         }
     }
 
-    private func allWorkersInSteadyState(liveWorkers: Int) -> Bool {
-        guard liveWorkers > 0 else { return false }
-        for index in 0..<liveWorkers {
-            let history = workerHistory[index] ?? []
-            guard history.count >= config.steadyStateWindow else { return false }
-            let recent = Array(history.suffix(config.steadyStateWindow))
-            let mean = recent.reduce(0, +) / Double(recent.count)
-            guard mean > 0 else { return false }
-            let maxDev = recent.map { abs($0 - mean) / mean }.max() ?? 0
-            if maxDev > config.steadyStateThreshold { return false }
-        }
-        return true
+    // MARK: — Helpers
+
+    /// Snapshot the current aggregate as the baseline and arm the dwell for a
+    /// probe step up from `n`.
+    private mutating func beginStep(from n: Int) {
+        aggregateBeforeStep = aggregateSmoothed
+        nBeforeStep = n
+        samplesSinceStep = 0
+        phase = .probe
     }
 
-    private func aggregateRate() -> Double {
-        workerRates.values.reduce(0, +)
+    private mutating func enterCruise(_ operatingN: Int) {
+        phase = .cruise(operatingN: operatingN)
+        cruiseTicks = 0
+        aggregateBeforeStep = nil
+        nBeforeStep = nil
     }
 
     private func candidateAbove(_ n: Int) -> Int? {

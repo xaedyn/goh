@@ -17,31 +17,11 @@ private final class ByteCounter: Sendable {
     func add(_ delta: UInt64) -> UInt64 {
         total.withLock { $0 += delta; return $0 }
     }
-}
 
-/// A `Sendable` reference-type collector for per-flush worker rate samples. The
-/// worker tasks append to it from their flush chokepoint; the control loop drains
-/// it at each reap and feeds the governor. A reference type (not a bare `Mutex`,
-/// which is noncopyable and cannot be captured by the sending task closures or
-/// passed as an `Optional` parameter), mirroring `ByteCounter`.
-private final class RateSampleSink: Sendable {
-    private let samples: Mutex<[WorkerRateSample]>
-
-    init() { samples = Mutex([]) }
-
-    /// Appends one sample (called from a worker's flush).
-    func append(_ sample: WorkerRateSample) {
-        samples.withLock { $0.append(sample) }
-    }
-
-    /// Atomically returns and clears all buffered samples (called from the
-    /// control loop at each reap).
-    func drain() -> [WorkerRateSample] {
-        samples.withLock { buffered -> [WorkerRateSample] in
-            let s = buffered
-            buffered.removeAll(keepingCapacity: true)
-            return s
-        }
+    /// The current cumulative total across all workers. The control loop reads
+    /// this at each reap to derive the aggregate delivery rate for the governor.
+    var value: UInt64 {
+        total.withLock { $0 }
     }
 }
 
@@ -80,6 +60,13 @@ public struct DownloadEngine: Sendable {
     /// When `false`, `fetchRanged` falls back to a static N (the requested
     /// connection count) and never runs the governor. Defaults to `true`.
     static let governorEnabled = true
+
+    /// Minimum wall-clock window over which the control loop measures one
+    /// aggregate delivery-rate sample for the governor. Per-reap intervals are
+    /// far too short (tens of ms) and produce a jitter-swamped rate estimate;
+    /// averaging over ≥0.25 s yields a stable signal the governor can detect a
+    /// modest throughput gain against.
+    static let minGovernorSampleSeconds = 0.25
 
     /// Reports a `JobStore` mutation failure other than the expected
     /// `.jobNotFound` (which the engine ignores because it means the job was
@@ -591,7 +578,6 @@ public struct DownloadEngine: Sendable {
         // loop below (record/decide). Workers never touch it. The sample sink is
         // the sole worker→control-loop channel (a Mutex).
         var governor = ParallelismGovernor(config: .default, rng: SystemRandomNumberGenerator())
-        let sampleSink: RateSampleSink? = governorEnabled ? RateSampleSink() : nil
 
         // Per-host connection budget gate (spec §8). Computed once; nil when the
         // host key is unparseable — in that case the gate is skipped entirely.
@@ -654,8 +640,7 @@ public struct DownloadEngine: Sendable {
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
                                 clock: clock, started: started, trace: trace,
-                                stream: firstRangeStream, cancelStream: cancelFirstRangeStream,
-                                sampleSink: sampleSink)
+                                stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
                             return slot
                         }
                     } else {
@@ -670,8 +655,7 @@ public struct DownloadEngine: Sendable {
                                 assembler: assembler, bytesWritten: bytesWritten,
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
-                                clock: clock, started: started, trace: trace,
-                                sampleSink: sampleSink)
+                                clock: clock, started: started, trace: trace)
                             return slot
                         }
                     }
@@ -738,8 +722,7 @@ public struct DownloadEngine: Sendable {
                                         checkpointRecorder: checkpointRecorder,
                                         job: job, store: store, total: total,
                                         clock: clock, started: started, trace: trace,
-                                        stream: firstRangeStream, cancelStream: cancelFirstRangeStream,
-                                        sampleSink: sampleSink)
+                                        stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
                                     return slot
                                 }
                             } else {
@@ -750,8 +733,7 @@ public struct DownloadEngine: Sendable {
                                         assembler: assembler, bytesWritten: bytesWritten,
                                         checkpointRecorder: checkpointRecorder,
                                         job: job, store: store, total: total,
-                                        clock: clock, started: started, trace: trace,
-                                        sampleSink: sampleSink)
+                                        clock: clock, started: started, trace: trace)
                                     return slot
                                 }
                             }
@@ -771,6 +753,14 @@ public struct DownloadEngine: Sendable {
                 // fixed N) for goh top / ls.
                 _ = try store.setActualConnectionCount(id: job.id, UInt8(peakWorkers))
 
+                // Aggregate delivery-rate sampling for the governor: at each reap
+                // we measure total bytes/sec across ALL connections over the
+                // interval since the last reap. This is the BBR-style signal the
+                // governor hill-climbs on — robust to the per-connection jitter
+                // that made the old per-worker steady-state detector inert.
+                var lastSampledTotal: UInt64 = 0
+                var lastSampledAt = started
+
                 while liveWorkers > 0 {
                     let freedSlot: Int?
                     do {
@@ -782,16 +772,29 @@ public struct DownloadEngine: Sendable {
                     liveWorkers -= 1
                     if let s = freedSlot { availableSlots.insert(s) }
 
-                    // Governor step (governor-on only). Drain the per-flush rate
-                    // samples the workers deposited, feed them to the governor,
-                    // then ask for a decision and apply it to targetN. Mutating
-                    // `governor` here is safe — this is the sole synchronous
-                    // mutator; workers only append to the Mutex-guarded sink.
-                    if governorEnabled, let sampleSink {
-                        let drained = sampleSink.drain()
-                        for s in drained { governor.record(sample: s) }
+                    // Governor step (governor-on only). Measure the aggregate
+                    // delivery rate over the interval since the last reap (total
+                    // bytes across ALL connections), feed it to the governor, ask
+                    // for a decision, and apply it to the OPERATING target N (not
+                    // the just-decremented liveWorkers — the governor reasons
+                    // about the intended connection count). Mutating `governor`
+                    // here is safe — this is the sole synchronous mutator.
+                    if governorEnabled {
+                        let nowTotal = bytesWritten.value
+                        let nowInstant = clock.now
+                        let interval = nowInstant - lastSampledAt
+                        let dSeconds = Double(interval.components.seconds)
+                            + Double(interval.components.attoseconds) / 1e18
+                        // Only record once the window is long enough to be a
+                        // low-noise rate estimate; otherwise keep accumulating.
+                        if dSeconds >= Self.minGovernorSampleSeconds {
+                            let bps = Double(nowTotal - lastSampledTotal) / dSeconds
+                            governor.record(aggregateBytesPerSecond: bps)
+                            lastSampledTotal = nowTotal
+                            lastSampledAt = nowInstant
+                        }
                         let decision = governor.decide(
-                            liveWorkers: liveWorkers, remainingBytes: queue.remainingBytes)
+                            operatingN: targetN, remainingBytes: queue.remainingBytes)
                         let decisionLabel: String
                         switch decision {
                         case .hold: decisionLabel = "hold"
@@ -868,8 +871,7 @@ public struct DownloadEngine: Sendable {
         checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
-        trace: EngineDiagnostics,
-        sampleSink: RateSampleSink?
+        trace: EngineDiagnostics
     ) async throws {
         var request = request(for: url, job: job)
         let last = range.start + range.length - 1
@@ -890,8 +892,7 @@ public struct DownloadEngine: Sendable {
             checkpointRecorder: checkpointRecorder,
             job: job, store: store, total: total,
             clock: clock, started: started, trace: trace,
-            stream: stream, cancelStream: cancelStream,
-            sampleSink: sampleSink)
+            stream: stream, cancelStream: cancelStream)
     }
 
     /// Consumes `range`'s bytes from `stream` into `file`. Stops reading once
@@ -907,20 +908,13 @@ public struct DownloadEngine: Sendable {
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics,
         stream: AsyncThrowingStream<Data, Error>,
-        cancelStream: @escaping @Sendable () -> Void,
-        sampleSink: RateSampleSink?
+        cancelStream: @escaping @Sendable () -> Void
     ) async throws {
         defer { cancelStream() }
         trace.rangeStarted(index, bytes: range.length)
         var buffer = Data()
         buffer.reserveCapacity(Self.bufferSize)
         var written: UInt64 = 0
-        // Per-flush rate sampling for the governor (P3). We track the last flush's
-        // cumulative bytes/elapsed and emit the delta-derived bytes-per-second
-        // tagged with this worker's connection SLOT (`index`) — the stable
-        // per-connection identity the governor's steady-state detector keys on.
-        var lastBytes: UInt64 = 0
-        var lastElapsed = clock.now - started
 
         func flush() throws {
             guard !buffer.isEmpty else { return }
@@ -946,17 +940,6 @@ public struct DownloadEngine: Sendable {
                     store: store, jobID: job.id,
                     Self.progress(completed: overall, total: total,
                                   elapsed: clock.now - started))
-            }
-            if let sampleSink {
-                let nowElapsed = clock.now - started
-                let dBytes = written - lastBytes
-                let dSeconds = Double((nowElapsed - lastElapsed).components.seconds)
-                    + Double((nowElapsed - lastElapsed).components.attoseconds) / 1e18
-                let bps = dSeconds > 0 ? Double(dBytes) / dSeconds : 0
-                sampleSink.append(WorkerRateSample(
-                    workerIndex: index, bytesPerSecond: bps, rttRatio: nil))
-                lastBytes = written
-                lastElapsed = nowElapsed
             }
             try control?.stopIfRequested(jobID: job.id)
         }

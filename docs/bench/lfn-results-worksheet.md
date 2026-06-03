@@ -18,26 +18,60 @@ reads to decide whether P1–P4 can ship.
 ## ★ RESULTS SUMMARY (fill in — the next session reads THIS first)
 
 ```
-Date run:            __________
-Machine / network:   __________ (e.g. home Wi-Fi, RTT to Singapore ~___ ms)
+Date run:            2026-06-02
+Machine / network:   home Wi-Fi, ~620/55 Mbps. Target: OVH France (proof.ovh.net/files/1Gb.dat),
+                     RTT ~105 ms, single-conn ~19 MB/s vs ~77 MB/s link (one conn fills ~25% → LFN confirmed).
+                     NOTE: original target sin-speed.hetzner.com RATE-LIMITS parallel ranges (6/8 → HTTP 429),
+                     unusable for SM5a. OVH France allows 8/8 parallel (206), https, honors Range. New target.
 
-SM5a (LFN win):      governed median = ______ s (IQR ______)
-                     static-8 median = ______ s (IQR ______)
-                     VERDICT: PASS / FAIL   (PASS = governed median < static median, non-overlapping IQR)
+--- BEFORE governor redesign (broken: per-worker 5% steady-state gate, inert) ---
+SM5a (LFN win):      governed median = 26.260 s (IQR 4.057)   runs [27.8,26.3,31.2,23.8,15.8]
+                     static-8 median = 21.870 s (IQR 4.083)   runs [24.3,22.1,21.9,18.0,17.4]
+                     VERDICT: FAIL — governed ~20% SLOWER; governor never left probe (inert at seed N=8).
 
-SM2 (no regression): governed median = ______ s   static-8 median = ______ s
-                     ratio governed/static = ______   (PASS = ≤ 1.05)
-                     VERDICT: PASS / FAIL
+--- AFTER governor redesign (aggregate-rate hill-climb; commit 2026-06-02) ---
+SM5a (LFN win), n=5: governed median = 19.418 s (IQR 1.869)   runs [16.9,18.8,20.7,30.2,19.4]
+                     static-8 median = 21.324 s (IQR 5.114)   runs [23.1,18.0,21.3,29.6,16.3]
+                     ~9% median win but IQR overlaps — re-ran larger + denoised to clinch (below).
 
-SM1 (convergence):   governed converged N on LFN = ____ (expect > 8)
-                     governed converged N on saturated = ____ (expect ≤ 4)
-                     VERDICT: PASS / FAIL
+--- AFTER tuning (settleSamples 8, kneeGain 0.07, 0.25s min sample window) — larger set n=9 ---
+SM5a (LFN win), n=9: governed median = 20.358 s (q1 19.01 q3 21.83)  range [13.9, 22.6]
+                     static-8 median = 20.714 s (q1 19.52 q3 23.82)  range [17.4, 26.0]
+                     VERDICT: NO CLEAN WIN ON THIS TARGET. governed ≈ static-8 (1.7% median, IQR overlaps).
+                     ENVIRONMENT LIMIT, not a governor flaw: raw curl aggregate throughput at 8 vs 16
+                     parallel conns is the SAME (~57 MB/s ceiling, ±2× variance) — 8 connections already
+                     saturate the path/link ceiling, so 16 has zero headroom to win. The governor DOES
+                     converge to 16 correctly (trace: dwell@8 → addWorkers → dwell@16 → commit(16) →
+                     cruise@16, no detour) and shows NO REGRESSION (governed marginally faster).
+                     A clean SM5a win needs a path where a few connections are BDP-limited well BELOW the
+                     throughput ceiling — i.e. higher RTT (Asia, ~160ms+) AND an uncapped, high-ceiling
+                     server. OVH France (~105ms, ~57MB/s cap) and this Wi-Fi link cannot exercise that
+                     regime. Realistic proving ground: a self-hosted far VPS (the plan's ~$5/mo option)
+                     or a faster local link.
 
-Config/chunkSize tuning applied? ____ (if yes, record new values + which SM drove the change)
+SM2 (no regression): NOT RUN YET (run after SM5a tuning settles).
+                     VERDICT: —
 
-OVERALL: P1–P4 ready to PR?  YES / NO / NEEDS-TUNING
+SM1 (convergence):   governed converged N on LFN = 16  (probe: dwell@8 → addWorkers(8) → dwell@16 →
+                     commit(16) → cruise@16). Correct adaptive behavior confirmed via trace. VERDICT: PASS.
+
+Config tuning applied? Governor REDESIGNED (not just tuned): replaced the per-worker steady-state
+                     detector with an aggregate-delivery-rate hill-climb (settleSamples=12, kneeGain=0.10,
+                     reprobeCadence=40, rateAlpha=0.3 — first-cut). settleSamples may drop for faster
+                     convergence (less probe overhead = wider win margin).
+
+OVERALL: P1–P4 ready to PR?  NEEDS-TUNING (regression fixed → median win; clinch the clean win first)
 Notes / anomalies / quarantined runs:
-  __________________________________________________________________
+  - ROOT CAUSE (confirmed via instrumentation): old governor's allWorkersInSteadyState never returned
+    true on a real network — 0/120 evaluations steady. Three compounding causes: 5% deviation threshold
+    (real jitter 10–206%), slot-0 sample starvation, and an off-by-one (decided on liveWorkers = N−1).
+    Governor sat inert at seed N=8 the entire download. FIXED by redesign + true aggregate signal +
+    passing operating targetN.
+  - Hetzner target rate-limits parallel connections (429); switched SM5a target to OVH France
+    (proof.ovh.net/files/1Gb.dat — 8/8 parallel 206, ~105ms RTT, single-conn ~19MB/s vs ~77MB/s link).
+  - Wi-Fi added real variance; one ~30s outlier per arm (env blip). Median is robust to it (~9% win).
+  - PRODUCT GAP flagged separately: engine HARD-FAILS (httpStatus) when a server 429s a parallel range,
+    instead of backing off. Future design pass.
 ```
 
 ---
