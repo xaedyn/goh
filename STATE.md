@@ -5,6 +5,79 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-03 (session) — Governor **REDESIGNED + fixed** (was inert/regressing); LFN headline unprovable on this link; strategic **pivot to the trust layer**; `goh diagnose` scoped next
+
+**Branch `design/in-flight-parallelism`. Commit `38be1b0` (`fix(governor): redesign convergence around aggregate delivery rate`). 507 tests pass, `-warnings-as-errors` clean. NOT pushed yet.**
+
+**1. The governor was broken — now fixed (committed).** Running Task 19's benchmark caught it: the in-flight
+governor was **inert** and *regressed* ~20% vs static-8 on a real LFN. Root cause (confirmed via field
+instrumentation, 0/120 evaluations ever "steady"): the per-worker steady-state detector (`allWorkersInSteadyState`,
+"all connections within 5%") could never pass on a real network — real per-flush rates jitter 10–206%, slot 0 was
+sample-starved, and `decide()` was called on `liveWorkers` (N−1, an off-by-one). Governor sat at the seed N the
+whole download.
+  - **Fix (commit `38be1b0`):** replaced the per-worker gate with a **BBR-style hill-climb on the AGGREGATE
+    delivery rate**. Governor now takes one aggregate sample per control window via
+    `record(aggregateBytesPerSecond:)`; the engine measures aggregate over **≥0.25 s windows** (per-reap intervals
+    were too short → jitter) from the shared `ByteCounter` (added a `.value` getter) and passes the **operating
+    `targetN`** to `decide()` (off-by-one fixed). Dwell `settleSamples` windows at each N, keep a step up the
+    `{2,4,8,16}` ladder only when aggregate gain ≥ `kneeGainThreshold`, else settle lower; periodic cruise
+    re-probe. `Config.default` tuned: `settleSamples 8, kneeGainThreshold 0.07, reprobeCadence 40, rateAlpha 0.3`.
+    Removed `RateSampleSink`/`WorkerRateSample`/per-worker machinery. Files: `ParallelismGovernor.swift` (rewrite),
+    `DownloadEngine.swift` (aggregate sampling + operating-N), `ParallelismGovernorTests.swift` (rewritten, 7 tests).
+  - **Validated:** trace now shows correct convergence (dwell@8 → addWorkers → dwell@16 → commit(16) → cruise@16,
+    no detour) and **no regression** (governed ≈ static-8).
+
+**2. The SM5a "headline win" is UNPROVABLE on this connection — and that's an environment limit, not a bug.**
+  - Original target `sin-speed.hetzner.com` **rate-limits parallel connections** (6/8 → HTTP 429). Unusable. Note:
+    the engine currently **hard-fails (httpStatus)** when a server 429s a parallel range — a real product-robustness
+    gap worth a future design pass (governor should back off, not abort).
+  - Switched to **OVH France** (`https://proof.ovh.net/files/1Gb.dat` — 8/8 parallel 206, ~105 ms RTT, https,
+    honors Range). Good LFN target. Results in `docs/bench/lfn-results-worksheet.md` (full before/after recorded).
+  - **n=9: governed 20.36 s vs static-8 20.71 s — ~1.7 %, IQR overlaps.** Raw curl proved why: aggregate throughput
+    is the SAME at 8 and 16 conns (~57 MB/s ceiling) AND two far sources combined ≤ one source. **The bottleneck is
+    the user's last-mile (~50–57 MB/s to distant hosts over Wi-Fi), not the source.** 8 conns already saturate it;
+    16 has no headroom; multi-source can't help either. A clean SM5a win needs higher RTT + uncapped + higher-ceiling
+    (a self-hosted far VPS, e.g. Vultr Tokyo — researched, ~1¢/hr) or a faster link. User declined the VPS for now.
+  - **Disposition:** the governor ships as **correct + adaptive + no-regression**; the *benchmarked* headline is
+    deferred (needs a proper proving ground). Worksheet `OVERALL: NEEDS-TUNING/defer headline`.
+
+**3. STRATEGIC PIVOT — speed is at the physics ceiling for this user; the moat is the trust layer.** Ran the
+`product-vision` skill (parallel codebase + market analysis, both Opus). New memo: **`docs/vision/VISION-2026-06-03.md`**
+(supersedes the trust-layer sections of `VISION-2026-05-26.md`). Sharpened thesis: don't pitch "trust layer" (too
+close to OpenSSF signing) or "integrity for downloads" (HF/Ollama do per-source already). The **unowned, defensible
+wedge goh already built**: a **vendor-neutral, offline lockfile** — *"is this still exactly what I downloaded?"*
+verified against YOUR frozen record, across any source, even if upstream is deleted (HF's `hf cache verify` checks
+the LIVE hub; the TRELLIS-deletion case proves upstream isn't a reliable oracle). Evidence: aria2 #173 (open since
+2013), HF #3298/#3643, Ollama #14554. Platform risk: ~12 mo before HF could close the HF-only slice.
+
+**4. `hf://` adapter — proposed then DECLINED by the user.** The vision's top "bet" was smart-URL adapters
+(`hf://`, `kaggle://`). User **declined**: doesn't want to couple goh to an external service's API (breakage +
+maintenance) or build any login/token path. New memory saved: **[[goh-prefers-self-contained]]** — favor
+self-contained trust-layer work, don't pitch external-service integrations.
+
+**5. NEXT ACTION — build `goh diagnose <url>` (self-contained; scoped, not started).** Surface the engine's existing
+diagnostics (`EngineDiagnostics`/`GOH_ENGINE_TRACE`, `Sources/GohCore/Engine/EngineDiagnostics.swift`) as a clean
+plain-English CLI verb. **Confirmed behavior:** quick ~10 s sample by default, `--full` flag for the whole file;
+discards the bytes; CLI-local (no daemon, no new XPC/wire surface — mirror `goh verify`/`which`). Report shape (user
+approved): server + range support, negotiated protocol (h2/h3/1.1), #connections opened & how many the server
+accepted (catch 429 rate-limiting), throughput estimate, bottleneck (last-mile vs source), one-line verdict.
+  - **THE DESIGN WRINKLE to solve first:** to report *"server rejected 6 of 8 connections"*, diagnose **cannot**
+    reuse the normal download path (it aborts on the first non-206 — the Hetzner httpStatus failure). Needs a
+    **probe mode that opens connections and records each outcome WITHOUT aborting**. Everything else is
+    straightforward reuse (DownloadEngine + EngineDiagnostics, run in-process, temp/throwaway sink, ~10 s
+    cancel, structured summary instead of stderr-scraping → extend EngineDiagnostics to retain structured data).
+  - Files likely touched: new `GohDiagnoseCommand.swift`, `EngineDiagnostics.swift` (structured capture),
+    `GohCommandLine.swift` (verb + usage), tests. ~3–5 files. Start with `enterprise-pipeline` (it has the
+    probe-without-abort design decision) — or `quick-plan` if the wrinkle resolves trivially on inspection.
+
+**Session-end housekeeping for next time:** `38be1b0` is unpushed on `design/in-flight-parallelism`. The
+in-flight-parallelism P1–P4 work is functionally done + correct but the SM5a headline benchmark is deferred — decide
+whether to (a) PR P1–P4 as "correct adaptive governor, no regression" (drop the headline claim), or (b) hold for a
+VPS/faster-link proof. The `goh diagnose` work is a fresh, self-contained slice — could be its own branch off this
+one or off `main` after deciding the P1–P4 PR question.
+
+---
+
 ### 2026-05-31 (impl session) — In-flight adaptive parallelism **P4 code done (Tasks 17–18)**; only Task 19 (the manual benchmark run) remains before the headline ships
 
 - **P4 Tasks 17 + 18 shipped on `design/in-flight-parallelism`** (the autonomous code parts). **508 tests
