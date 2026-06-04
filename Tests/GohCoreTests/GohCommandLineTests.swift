@@ -364,3 +364,80 @@ struct GohCommandLineTests {
         var description: String { "test transport failure" }
     }
 }
+
+// MARK: - diagnose wiring tests
+
+extension GohCommandLineTests {
+
+    @Test("diagnose dispatches to the injected closure")
+    func diagnoseDispatchesToClosure() {
+        var capturedURL: String?
+        var diagnoseRunCount = 0
+
+        let result = GohCommandLine(
+            arguments: ["diagnose", "https://example.com/f.bin"],
+            diagnose: { url, full, json, connections in
+                capturedURL = url
+                diagnoseRunCount += 1
+                return GohCommandLineResult(
+                    exitCode: 0,
+                    standardOutput: "diagnose flow\n")
+            },
+            send: { _ in throw TestTransportError() }
+        ).run()
+
+        #expect(capturedURL == "https://example.com/f.bin")
+        #expect(diagnoseRunCount == 1)
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput == "diagnose flow\n")
+        #expect(result.standardError == "")
+    }
+
+    @Test("diagnose with --full and --connections passes flags")
+    func diagnosePassesFlags() {
+        var capturedFull: Bool?
+        var capturedConnections: Int?
+
+        _ = GohCommandLine(
+            arguments: ["diagnose", "https://example.com/f.bin", "--full", "--connections", "4"],
+            diagnose: { _, full, _, connections in
+                capturedFull = full
+                capturedConnections = connections
+                return GohCommandLineResult(exitCode: 0)
+            },
+            send: { _ in throw TestTransportError() }
+        ).run()
+
+        #expect(capturedFull == true)
+        #expect(capturedConnections == 4)
+    }
+
+    @Test("diagnose missing URL exits 64")
+    func diagnoseMissingURLExits64() {
+        let result = GohCommandLine(
+            arguments: ["diagnose"],
+            diagnose: { _, _, _, _ in GohCommandLineResult(exitCode: 0) },
+            send: { _ in throw TestTransportError() }
+        ).run()
+        #expect(result.exitCode == 64)
+    }
+
+    @Test("diagnose appears in usage output")
+    func diagnoseAppearsInUsage() {
+        let result = GohCommandLine(
+            arguments: ["--help"],
+            send: { _ in throw TestTransportError() }
+        ).run()
+        #expect(result.standardOutput.contains("diagnose"))
+    }
+
+    @Test("diagnose without configured closure returns exit 1")
+    func diagnoseWithoutClosureExits1() {
+        let result = GohCommandLine(
+            arguments: ["diagnose", "https://example.com/f.bin"],
+            send: { _ in throw TestTransportError() }
+        ).run()
+        // No diagnose closure wired → exit 1 (not configured).
+        #expect(result.exitCode == 1)
+    }
+}

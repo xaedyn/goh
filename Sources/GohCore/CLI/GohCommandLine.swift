@@ -18,12 +18,14 @@ public struct GohCommandLine {
     public typealias Foreground = (AddRequest) throws -> GohCommandLineResult
     public typealias Top = () throws -> GohCommandLineResult
     public typealias Doctor = () throws -> GohCommandLineResult
+    public typealias Diagnose = (_ url: String, _ full: Bool, _ json: Bool, _ connections: Int?) throws -> GohCommandLineResult
 
     private let arguments: [String]
     private let homeDirectory: URL
     private let foreground: Foreground?
     private let top: Top?
     private let doctor: Doctor?
+    private let diagnose: Diagnose?
     private let send: Sender
 
     public init(
@@ -32,6 +34,7 @@ public struct GohCommandLine {
         foreground: Foreground? = nil,
         top: Top? = nil,
         doctor: Doctor? = nil,
+        diagnose: Diagnose? = nil,
         send: @escaping Sender
     ) {
         self.arguments = arguments
@@ -39,6 +42,7 @@ public struct GohCommandLine {
         self.foreground = foreground
         self.top = top
         self.doctor = doctor
+        self.diagnose = diagnose
         self.send = send
     }
 
@@ -89,6 +93,14 @@ public struct GohCommandLine {
                         standardError: "The doctor diagnostic is not configured.\n")
                 }
                 return try doctor()
+
+            case .diagnose(let url, let full, let json, let connections):
+                guard let diagnose else {
+                    return GohCommandLineResult(
+                        exitCode: 1,
+                        standardError: "The diagnose command is not configured.\n")
+                }
+                return try diagnose(url, full, json, connections)
 
             case .which(let path):
                 let lockPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -193,6 +205,7 @@ private enum ParsedCommand: Equatable {
     case foreground(AddRequest)
     case top
     case doctor
+    case diagnose(url: String, full: Bool, json: Bool, connections: Int?)
     case which(path: String)
     case verify(lockPath: String, strictUntracked: Bool)
     case sync(manifestPath: String, base: String?, acceptChanged: Bool)
@@ -238,6 +251,9 @@ extension GohCommandLine {
         }
         if arguments == ["doctor"] {
             return .doctor
+        }
+        if arguments.first == "diagnose" {
+            return try parseDiagnose(Array(arguments.dropFirst()))
         }
         if arguments.first == "which" {
             let rest = Array(arguments.dropFirst())
@@ -393,6 +409,44 @@ extension GohCommandLine {
         return .sync(manifestPath: manifestPath, base: base, acceptChanged: acceptChanged)
     }
 
+    private static func parseDiagnose(_ arguments: [String]) throws -> ParsedCommand {
+        var url: String?
+        var full = false
+        var json = false
+        var connections: Int?
+        var index = 0
+        while index < arguments.count {
+            let arg = arguments[index]
+            switch arg {
+            case "--full":
+                full = true; index += 1
+            case "--json":
+                json = true; index += 1
+            case "--connections", "-c":
+                guard index + 1 < arguments.count else {
+                    throw ParseError(message: "\(arg) requires a value")
+                }
+                let raw = arguments[index + 1]
+                guard let n = Int(raw), (1...16).contains(n) else {
+                    throw ParseError(message: "connections must be an integer from 1 to 16")
+                }
+                connections = n; index += 2
+            default:
+                guard !arg.hasPrefix("-") else {
+                    throw ParseError(message: "unknown diagnose option \(arg)")
+                }
+                guard url == nil else {
+                    throw ParseError(message: "diagnose accepts exactly one URL")
+                }
+                url = arg; index += 1
+            }
+        }
+        guard let resolvedURL = url else {
+            throw ParseError(message: "diagnose requires a URL")
+        }
+        return .diagnose(url: resolvedURL, full: full, json: json, connections: connections)
+    }
+
     private static func parseJobID(_ raw: String) throws -> UInt64 {
         guard let id = UInt64(raw) else {
             throw ParseError(message: "job id must be an unsigned integer")
@@ -468,6 +522,7 @@ extension GohCommandLine {
           goh ls [--json]
           goh top
           goh doctor
+          goh diagnose [--full] [--json] [--connections <1-16> | -c <1-16>] <url>
           goh which <path>
           goh sync [<manifest>] [--base <dir>] [--accept-changed]   (--base is cwd-relative)
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
