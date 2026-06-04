@@ -118,3 +118,172 @@ struct DiagnoseTypesTests {
         )
     }
 }
+
+// MARK: - verdict() exhaustive tests (AC5)
+
+extension DiagnoseTypesTests {
+
+    // AC5 — verdict must never over-claim; protocol-gated split is load-bearing.
+
+    @Test func verdictInsufficientDataWhenSingleConnNil() {
+        // Case 1: singleConnMBps nil → insufficientData regardless of other fields.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.singleConnMBps = nil
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .insufficientData)
+    }
+
+    @Test func verdictRangeUnsupportedWhenRangeIsFalse() {
+        // Case 2: rangeSupported == false → rangeUnsupported.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = false
+        r.singleConnMBps = 10.0
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .rangeUnsupported)
+    }
+
+    @Test func verdictRangeSupportedSizeUnknownWhenTotalBytesNil() {
+        // Case 3: rangeSupported == true but totalBytes == nil → rangeSupportedSizeUnknown.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = nil
+        r.singleConnMBps = 10.0
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .rangeSupportedSizeUnknown)
+    }
+
+    @Test func verdictRateLimitedWhenAcceptedLessThanAttempted() {
+        // Case 4: Phase 2 ran, accepted < attempted → rateLimited.
+        // bestObserved = max(singleConnMBps, multiConnMBps).
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 5
+        r.singleConnMBps = 10.0
+        r.multiConnMBps = 45.0
+        let (v, text) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .rateLimited)
+        #expect(text.contains("45"))    // bestObserved = 45 (multiConnMBps is higher)
+        #expect(text.contains("5 of 8"))
+    }
+
+    @Test func verdictRateLimitedBestObservedUsesSingleWhenHigher() {
+        // bestObserved = max(singleConnMBps ?? 0, multiConnMBps ?? 0)
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 3
+        r.singleConnMBps = 50.0
+        r.multiConnMBps = 30.0   // single is higher
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .rateLimited)
+    }
+
+    @Test func verdictScaledWhenTnExceedsThreshold() {
+        // Case 5: Phase 2 ran, all accepted, Tₙ ≥ scalingFactor * T₁ → scaled.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 8
+        r.singleConnMBps = 10.0
+        r.multiConnMBps = 14.0    // 14.0 >= 1.3 * 10.0 = 13.0 ✓
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .scaled)
+    }
+
+    @Test func verdictDidNotScaleMultiplexedForH2() {
+        // Case 6: Phase 2 ran, all accepted, Tₙ < threshold, protocol h2 → multiplexed.
+        // AC5: must NOT assert link-vs-server for h2.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 8
+        r.networkProtocol = "h2"
+        r.singleConnMBps = 10.0
+        r.multiConnMBps = 11.0    // 11.0 < 1.3 * 10.0 = 13.0 ✗ (did not scale)
+        let (v, text) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .didNotScaleMultiplexed)
+        #expect(!text.lowercased().contains("your connection"))
+    }
+
+    @Test func verdictDidNotScaleMultiplexedForH3() {
+        // Case 6: h3 also takes the multiplexed branch.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 8
+        r.networkProtocol = "h3"
+        r.singleConnMBps = 10.0
+        r.multiConnMBps = 11.0
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .didNotScaleMultiplexed)
+    }
+
+    @Test func verdictDidNotScaleMultiplexedForUnknownProtocol() {
+        // Case 6: nil (unknown) protocol → conservative multiplexed branch. AC5.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 8
+        r.networkProtocol = nil   // unknown
+        r.singleConnMBps = 10.0
+        r.multiConnMBps = 11.0
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .didNotScaleMultiplexed)
+    }
+
+    @Test func verdictDidNotScaleHTTP1OnlyForExactHTTP1() {
+        // Case 7: http/1.1 exactly → HTTP1 branch (real parallel TCP). AC5.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 8
+        r.networkProtocol = "http/1.1"
+        r.singleConnMBps = 10.0
+        r.multiConnMBps = 11.0    // did not scale
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .didNotScaleHTTP1)
+    }
+
+    @Test func verdictDidNotScaleMultiplexedForHTTP10() {
+        // "http/1.0" is NOT "http/1.1" — falls to multiplexed (allow-list). AC5.
+        var r = DiagnosisReport(url: "https://example.com/f.bin")
+        r.reachable = true
+        r.rangeSupported = true
+        r.totalBytes = 100_000_000
+        r.attempted = 8
+        r.accepted = 8
+        r.networkProtocol = "http/1.0"
+        r.singleConnMBps = 10.0
+        r.multiConnMBps = 11.0
+        let (v, _) = verdict(r, config: DiagnoseConfig())
+        #expect(v == .didNotScaleMultiplexed)
+    }
+
+    // NOTE — AC5 named anchors:
+    // `verdictDidNotScaleOnlyForHTTP1()` and `verdictMultiplexedForH2AndUnknown()` are
+    // NOT separate stub tests here; the coverage is already provided by the two tests
+    // immediately above (`verdictDidNotScaleHTTP1OnlyForExactHTTP1` and
+    // `verdictDidNotScaleMultiplexedForH2`). The AC table references those real tests.
+    // Duplicate stubs that only re-assert the same verdict with a different name provide
+    // no additional coverage and have been removed to keep the suite DRY.
+}

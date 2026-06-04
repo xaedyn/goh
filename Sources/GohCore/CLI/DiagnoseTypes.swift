@@ -96,3 +96,127 @@ public struct DiagnosisReport: Codable, Sendable {
         self.url = url
     }
 }
+
+// MARK: - Pure logic
+
+/// Selects the one verdict for the given report.
+/// Pure function: no I/O, no side effects — unit-testable in isolation.
+/// Returns (Verdict, verdictText). The text is NOT frozen; the Verdict case is.
+///
+/// Evaluated in spec priority order (§2.3):
+/// 1. insufficientData
+/// 2. rangeUnsupported
+/// 3. rangeSupportedSizeUnknown
+/// 4. rateLimited
+/// 5. scaled
+/// 6. didNotScaleMultiplexed
+/// 7. didNotScaleHTTP1
+public func verdict(
+    _ report: DiagnosisReport,
+    config: DiagnoseConfig
+) -> (Verdict, String) {
+    // Case 1 — no reliable T₁
+    guard let t1 = report.singleConnMBps else {
+        return (
+            .insufficientData,
+            "File too small or too few bytes sampled to estimate throughput reliably."
+                + " (Range support: \(report.rangeSupported ? "supported" : "not supported");"
+                + " protocol: \(report.networkProtocol ?? "unknown").)"
+        )
+    }
+
+    // Case 2 — server ignores Range
+    guard report.rangeSupported else {
+        return (
+            .rangeUnsupported,
+            "Server ignores Range — single connection only; parallel connections"
+                + " won't help. ~\(formatted(t1)) MB/s."
+        )
+    }
+
+    // Case 3 — Range supported but size unknown (no safe offsets for Phase 2)
+    guard report.totalBytes != nil else {
+        return (
+            .rangeSupportedSizeUnknown,
+            "Range supported, but the server didn't report a file size,"
+                + " so parallelism couldn't be tested. ~\(formatted(t1)) MB/s."
+        )
+    }
+
+    // Phase 2 ran (attempted >= 2 and accepted/totalBytes are in hand).
+    // Cases 4-7 require Phase 2 to have run (attempted > 1).
+    // If targetConnections == 1 or Phase 2 was skipped, report falls to
+    // insufficientData or rangeSupportedSizeUnknown above; the only way
+    // we reach here with attempted == 1 is a degenerate DiagnosisReport
+    // (tests can build that directly — the verdict is well-defined either way).
+
+    // Case 4 — rate-limited: some ranged GETs were rejected
+    if report.accepted < report.attempted {
+        let bestObserved = max(t1, report.multiConnMBps ?? 0)
+        let m = report.accepted
+        let n = report.attempted
+        return (
+            .rateLimited,
+            "Server rate-limits parallel range requests (accepted \(m) of \(n))."
+                + " goh is limited to ~\(m) connections here."
+                + " ~\(formatted(bestObserved)) MB/s."
+        )
+    }
+
+    // Cases 5-7 — all accepted; compare T₁ vs Tₙ
+    let tn = report.multiConnMBps ?? t1   // if Tₙ nil, treat as equal (conservative)
+    let n = report.attempted
+
+    if tn >= config.scalingFactor * t1 {
+        // Case 5 — throughput scaled
+        return (
+            .scaled,
+            "Throughput scaled with more connections — the source/path is the limit"
+                + " and parallelism helps (goh uses up to \(n) connections)."
+                + " ~\(formatted(tn)) MB/s at \(n) connections."
+        )
+    }
+
+    // Did not scale. Branch on protocol — allow-listed: only "http/1.1" exactly
+    // triggers the HTTP/1.1 branch (real parallel TCP / separate congestion windows).
+    // Any other value — nil, "h2", "h3", "http/1.0", or unexpected ALPN — falls
+    // to the conservative multiplexed branch. This is the bet from the research
+    // brief: "could not distinguish" is an acceptable honest answer for h2/h3.
+    if report.networkProtocol == "http/1.1" {
+        // Case 7 — http/1.1: separate TCP connections, but throughput didn't scale
+        return (
+            .didNotScaleHTTP1,
+            "Adding parallel connections didn't increase throughput — either your"
+                + " connection is the limit or the server caps total bandwidth per"
+                + " client; these can't be told apart without a faster reference."
+                + " ~\(formatted(tn)) MB/s."
+        )
+    } else {
+        // Case 6 — h2/h3/unknown: N range requests share ~one connection
+        let proto = report.networkProtocol ?? "unknown"
+        return (
+            .didNotScaleMultiplexed,
+            "Throughput didn't increase, but over \(proto) parallel range requests"
+                + " share one connection, so this test can't tell whether your link"
+                + " or the source is the limit."
+                + " ~\(formatted(tn)) MB/s."
+                + " (goh's multi-connection speedups apply to HTTP/1.1 origins.)"
+        )
+    }
+}
+
+// MARK: - rate()
+
+/// Converts a byte delta and elapsed duration to decimal MB/s.
+/// Pure function: no I/O, no state, unit-testable in isolation.
+/// Uses decimal MB (bytes / 1_000_000.0), matching the spec §2.2.
+public func rate(byteDelta: Int, over seconds: Double) -> Double {
+    guard seconds > 0, byteDelta >= 0 else { return 0 }
+    return Double(byteDelta) / 1_000_000.0 / seconds
+}
+
+// MARK: - Private formatting
+
+private func formatted(_ mbps: Double) -> String {
+    String(format: "%.1f", mbps)
+}
