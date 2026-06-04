@@ -78,7 +78,13 @@ public enum GohDiagnoseCommand {
             session: session,
             full: parsed.full)
 
-        // Async→sync bridge: Task runs probe on cooperative pool; semaphore blocks main thread.
+        // Async→sync bridge: a Task runs the probe on the cooperative pool while this
+        // function blocks on the semaphore. IMPORTANT: this MUST be called from a thread
+        // that is NOT part of the Swift-concurrency cooperative pool — in production the CLI
+        // invokes it from the process main thread, which is safe. Calling it from a pool
+        // thread (e.g. directly inside a Swift Testing `@Test` body) blocks a pool thread;
+        // enough concurrent such calls block every pool thread and the probe Task can never
+        // run → deadlock. Tests hop onto a detached thread (see GohDiagnoseCommandTests).
         // BLOCK 7: nonisolated(unsafe) satisfies Swift 6 Sendable checking for the write-before-
         // signal / read-after-wait pattern. The semaphore establishes a happens-before edge.
         let semaphore = DispatchSemaphore(value: 0)
