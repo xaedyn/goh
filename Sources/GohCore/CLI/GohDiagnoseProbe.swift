@@ -201,7 +201,24 @@ struct GohDiagnoseProbe: Sendable {
         report: inout DiagnosisReport
     ) async {
         let n = config.targetConnections
-        let runPhase2 = report.rangeSupported && report.totalBytes != nil && n >= 2
+
+        // Phase 2 runs ONLY when the file is genuinely large enough to (a) split into
+        // `n` NON-EMPTY contiguous parts and (b) yield a meaningful parallel sample.
+        // BLOCK 1: a small ranged file (totalBytes < n) gives partSize == 0, and the
+        // non-last-part `end = start + partSize - 1` would underflow UInt64 and trap.
+        // Such a file is also below minSampleBytes, so a parallel sample is meaningless.
+        // Skipping Phase 2 here mirrors the rangeSupported-but-cannot-parallelize path:
+        // a single-stream-only run whose tiny T₁ falls through to insufficientData.
+        let canSplitIntoNParts: Bool = {
+            guard let total = report.totalBytes, n >= 2 else { return false }
+            return total / UInt64(n) > 0
+        }()
+        let largeEnoughForParallelSample = (report.totalBytes ?? 0) >= UInt64(config.minSampleBytes)
+        let runPhase2 = report.rangeSupported
+            && report.totalBytes != nil
+            && n >= 2
+            && canSplitIntoNParts
+            && largeEnoughForParallelSample
 
         // Per-connection byte counters. Index 0 = conn-0 (Phase 0 / Phase 1 stream).
         // Indices 1..<n = Phase-2 connections. Sendable via ByteCounter's @unchecked wrapper.
@@ -232,9 +249,22 @@ struct GohDiagnoseProbe: Sendable {
         let firstByteInstant = Mutex<ContinuousClock.Instant?>(nil)
         let eofTotalBytes = Mutex<UInt64>(0)
 
-        // Part geometry for Phase 2.
+        // BLOCK 2: terminal-completion signal for conn-0. The coordinator's first-byte
+        // wait loop (and the Phase-2 opens barrier) have NO deadline backstop in --full
+        // mode (no deadline child is added). If conn-0 returns 206 but never delivers a
+        // byte, its drain child reaches EOF (or throws) WITHOUT setting firstByteInstant,
+        // and a `while firstByteInstant == nil` loop would spin forever. The drain child
+        // sets this flag when it exits without ever recording a first byte; the wait loops
+        // check it so they terminate cleanly with firstByteInstant still nil → treated as
+        // no measurable sample (singleConnMBps == nil → insufficientData).
+        let conn0Ended = Mutex<Bool>(false)
+
+        // Part geometry for Phase 2. When runPhase2 is true the canSplitIntoNParts gate
+        // above guarantees total / n > 0, so partSize >= 1 for every opened connection —
+        // making the `start + partSize - 1` below underflow-proof. We still clamp to >= 1
+        // defensively so no underflow is even arithmetically possible.
         let total = report.totalBytes ?? 0
-        let partSize: UInt64 = (runPhase2 && total > 0) ? total / UInt64(n) : 0
+        let partSize: UInt64 = runPhase2 ? max(1, total / UInt64(n)) : 0
 
         // Tear-down helper: cancels every open URLSession data task. Calling the
         // per-connection cancels is what actually unblocks the drain children's
@@ -267,6 +297,13 @@ struct GohDiagnoseProbe: Sendable {
                     }
                 } catch { }
                 eofTotalBytes.withLock { $0 += localTotal }
+                // BLOCK 2: if conn-0's drain ended (EOF / error / cancellation) WITHOUT
+                // ever recording a first byte, signal terminal completion so the
+                // coordinator's first-byte wait loop can exit instead of spinning forever
+                // (no deadline child exists in --full mode).
+                if firstByteInstant.withLock({ $0 }) == nil {
+                    conn0Ended.withLock { $0 = true }
+                }
                 return .drainFinished
             }
 
@@ -326,12 +363,24 @@ struct GohDiagnoseProbe: Sendable {
                 // Wait for conn-0's first byte before starting the warmup clock.
                 // Poll with a short sleep to avoid a busy-wait; bail if the deadline fires
                 // (the group is cancelled → Task.sleep throws CancellationError).
-                while firstByteInstant.withLock({ $0 }) == nil {
+                // BLOCK 2: also bail if conn-0 ended with no bytes (the --full backstop —
+                // no deadline child exists in --full mode, so this is the ONLY way out of
+                // this loop when conn-0 delivers 206 headers but never a body byte).
+                while firstByteInstant.withLock({ $0 }) == nil && !conn0Ended.withLock({ $0 }) {
                     do {
                         try await Task.sleep(for: .milliseconds(5))
                     } catch {
                         return .coordinatorDone  // group cancelled (deadline fired first)
                     }
+                }
+
+                // BLOCK 2: conn-0 produced no measurable sample (ended with no first byte).
+                // Leave singleConnMBps nil (→ insufficientData), skip Phase 2 and the Tₙ
+                // window, and terminate cleanly. In --full mode tear down any other open
+                // connections so the group can exit instead of draining indefinitely.
+                if firstByteInstant.withLock({ $0 }) == nil {
+                    cancelAllConnections()
+                    return .coordinatorDone
                 }
 
                 // --- T₁ measurement ---
@@ -361,7 +410,12 @@ struct GohDiagnoseProbe: Sendable {
                     // Barrier: wait until every Phase-2 connection has finished its OPEN
                     // (accepted or rejected) before measuring Tₙ, so the aggregate window
                     // never races the opens. Bail if the deadline cancels us mid-wait.
-                    while phase2OpensCompleted.withLock({ $0 }) < expectedPhase2Opens {
+                    // BLOCK 2: also bail if conn-0 has ended — in --full mode there is no
+                    // deadline child, so a Phase-2 open that never returns (server hangs at
+                    // header time) would otherwise spin this barrier forever. conn-0 ending
+                    // (EOF/error) is the --full backstop signal here too.
+                    while phase2OpensCompleted.withLock({ $0 }) < expectedPhase2Opens
+                        && !conn0Ended.withLock({ $0 }) {
                         do {
                             try await Task.sleep(for: .milliseconds(2))
                         } catch { return .coordinatorDone }

@@ -32,6 +32,11 @@ final class MockURLProtocol: URLProtocol {
         /// in-flight downloads deterministically.
         var bodyChunkSize: Int?
         var bodyChunkDelayMicroseconds: useconds_t = 0
+        /// Test-only: when true, a successful ranged request delivers the 206
+        /// headers (with a positive Content-Length) but then finishes WITHOUT
+        /// delivering any body bytes — simulating a server that returns 206 then
+        /// never sends a payload byte. Exercises the diagnose no-first-byte path.
+        var emptyBodyOn206: Bool = false
     }
 
     private static let stubs = Mutex<[String: Stub]>([:])
@@ -47,7 +52,8 @@ final class MockURLProtocol: URLProtocol {
         requiredCookieHeader: String? = nil,
         requiredIfRange: String? = nil,
         bodyChunkSize: Int? = nil,
-        bodyChunkDelayMicroseconds: useconds_t = 0
+        bodyChunkDelayMicroseconds: useconds_t = 0,
+        emptyBodyOn206: Bool = false
     ) {
         stubs.withLock {
             $0[url] = Stub(
@@ -58,7 +64,8 @@ final class MockURLProtocol: URLProtocol {
                 headers: headers, requiredCookieHeader: requiredCookieHeader,
                 requiredIfRange: requiredIfRange,
                 bodyChunkSize: bodyChunkSize,
-                bodyChunkDelayMicroseconds: bodyChunkDelayMicroseconds)
+                bodyChunkDelayMicroseconds: bodyChunkDelayMicroseconds,
+                emptyBodyOn206: emptyBodyOn206)
         }
     }
 
@@ -120,9 +127,16 @@ final class MockURLProtocol: URLProtocol {
                 ? min(upper, start + max(0, (upper - start) / 2)) : upper
             let slice = Data(stub.body[start...actualUpper])
             var headers = headers(for: stub)
-            headers["Content-Length"] = "\(slice.count)"
             headers["Content-Range"] = stub.contentRangeOverride[start]
                 ?? "bytes \(start)-\(upper)/\(stub.body.count)"
+            if stub.emptyBodyOn206 {
+                // Deliver 206 headers (advertising a positive size) but no body bytes,
+                // then finish — simulating a server that 206s then never sends a payload.
+                headers["Content-Length"] = "\(slice.count)"
+                deliver(url: url, status: 206, headers: headers, body: nil)
+                return
+            }
+            headers["Content-Length"] = "\(slice.count)"
             deliver(url: url, status: 206, headers: headers, body: slice)
             return
         }

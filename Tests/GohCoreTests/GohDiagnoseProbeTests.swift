@@ -352,3 +352,104 @@ struct GohDiagnoseProbeIntegrationTests {
         }
     }
 }
+
+@Suite("GohDiagnoseProbe — termination-safety regressions")
+struct GohDiagnoseProbeTerminationSafetyTests {
+
+    /// Runs `probe.run()` but fails the test (instead of hanging the suite) if it does
+    /// not return within `seconds`. Returns nil on timeout so the caller can record it.
+    private func runBounded(
+        _ probe: GohDiagnoseProbe,
+        seconds: Double
+    ) async -> (DiagnosisReport, ProbeTermination)? {
+        await withTaskGroup(of: (DiagnosisReport, ProbeTermination)?.self) { group in
+            group.addTask { await probe.run() }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(seconds))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    // BLOCK 1 regression: a TINY range-supporting file (body smaller than N bytes) with the
+    // default-ish connection count (n = 8). Before the fix, partSize = totalBytes / n == 0,
+    // and the non-last Phase-2 part computed `end = start + 0 - 1`, trapping on UInt64
+    // underflow. The probe MUST NOT crash; Phase 2 must be skipped and the verdict falls
+    // through to insufficientData (tiny T₁ < minSampleBytes).
+    @Test func tinyRangeSupportingFileDoesNotCrash() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        // 4-byte body — strictly fewer bytes than n = 8 connections.
+        MockURLProtocol.stub(url, body: Data([0x01, 0x02, 0x03, 0x04]), acceptsRanges: true)
+
+        let config = DiagnoseConfig(
+            targetConnections: 8,           // n > body size → partSize would be 0
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: 2.0,
+            minSampleBytes: 8_000_000,      // realistic floor → tiny file is insufficient
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 5.0)
+
+        let probe = GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: false)
+
+        guard let (report, termination) = await runBounded(probe, seconds: 5.0) else {
+            Issue.record("Probe did not return within bound (tiny-file path)")
+            return
+        }
+
+        // Did not crash — and Phase 2 was skipped (single-stream only).
+        #expect(report.reachable == true)
+        #expect(report.rangeSupported == true)
+        #expect(report.attempted == 1)          // Phase 2 skipped → attempted stays 1
+        #expect(report.multiConnMBps == nil)    // Tₙ never measured
+        #expect(report.singleConnMBps == nil)   // 4 bytes < minSampleBytes
+        if case .diagnosed = termination { } else {
+            Issue.record("Expected .diagnosed, got \(termination)")
+        }
+        // Verdict falls through to insufficientData.
+        let (v, _) = verdict(report, config: config)
+        #expect(v == .insufficientData)
+    }
+
+    // BLOCK 2 regression: `--full` mode against a server that returns 206 headers but never
+    // delivers a body byte. Before the fix, the coordinator's `while firstByteInstant == nil`
+    // loop had no backstop in --full mode (no deadline child), so the probe spun forever.
+    // The probe MUST terminate; singleConnMBps must be nil (no measurable sample).
+    @Test func fullModeNoFirstByteTerminates() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        // 10 MB advertised size, but every 206 delivers zero body bytes (immediate EOF).
+        let body = Data(repeating: 0xEE, count: 10_000_000)
+        MockURLProtocol.stub(url, body: body, acceptsRanges: true, emptyBodyOn206: true)
+
+        let config = DiagnoseConfig(
+            targetConnections: 2,           // exercise the Phase-2 opens barrier too
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: 2.0,    // unused in --full (no deadline child)
+            minSampleBytes: 0,
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 5.0)
+
+        let probe = GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: true)
+
+        guard let (report, termination) = await runBounded(probe, seconds: 5.0) else {
+            Issue.record("Probe HUNG in --full mode with a no-first-byte server")
+            return
+        }
+
+        // Terminated cleanly with no measurable sample.
+        #expect(report.reachable == true)
+        #expect(report.singleConnMBps == nil)
+        #expect(report.wholeFileMBps == nil)
+        if case .diagnosed = termination { } else {
+            Issue.record("Expected .diagnosed, got \(termination)")
+        }
+    }
+}
