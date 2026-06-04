@@ -49,6 +49,12 @@ extension URLSession {
                     taskBox.cancel()
                 }
                 task.resume()
+                // `withTaskCancellationHandler` fires `onCancel` immediately (before this
+                // body runs) if the task was ALREADY cancelled when entering the handler.
+                // In that case `taskBox` was nil when `onCancel` fired, so the URLSession
+                // task did not get cancelled. Self-cancel here to close that race: if the
+                // calling task is cancelled at this point, the session task must be too.
+                if Task.isCancelled { taskBox.cancel() }
             }
         } onCancel: {
             taskBox.cancel()

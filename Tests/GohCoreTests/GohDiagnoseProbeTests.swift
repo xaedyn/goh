@@ -453,3 +453,155 @@ struct GohDiagnoseProbeTerminationSafetyTests {
         }
     }
 }
+
+@Suite("GohDiagnoseProbe — AC4 time-box", .serialized)
+struct GohDiagnoseProbeTimeBoxTests {
+
+    // AC4a — default mode completes within ~deadline even with a large/slow body AND Phase 2.
+    // BLOCK A: deadline must bound Phase 1 + Phase 2 together (N=2 so Phase 2 runs).
+    // BLOCK D: targetConnections = 2 so the deadline child in runSamplingProbe is tested.
+    //
+    // Design: sampleWindowSeconds (0.5 s) > defaultDeadlineSeconds (0.3 s) so the coordinator's
+    // T1 window sleep is interrupted by the deadline child firing first. This exercises the
+    // deadline-as-bound path, not just the coordinator-finishes-first path.
+    @Test func diagnoseDefaultModeCompletesWithinDeadline() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        // 10 MB body, 4 KiB chunks at 5 ms each → ~12 s total delivery.
+        // sampleWindowSeconds = 0.5 s means the coordinator would take > 1 s, but the
+        // 0.3 s deadline fires first and bounds the whole probe.
+        let largeBody = Data(repeating: 0xFF, count: 10_000_000)
+        MockURLProtocol.stub(
+            url, body: largeBody, acceptsRanges: true,
+            bodyChunkSize: 4_096,
+            bodyChunkDelayMicroseconds: 5_000,  // 5 ms per chunk
+            asyncChunkDelivery: true)  // frees URL loading thread immediately after each chunk
+
+        let deadline = 0.3   // shorter than sampleWindowSeconds so deadline fires first
+        let config = DiagnoseConfig(
+            targetConnections: 2,   // Phase 2 runs; deadline must bound BOTH Phase 1 + Phase 2
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.5,  // > deadline, so coordinator's sleep is interrupted
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: deadline,
+            minSampleBytes: 0,
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 5.0)
+
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        let (report, _) = await GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: false).run()
+
+        let elapsed = clock.now - start
+        let elapsedSeconds = Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1e18
+
+        // Must return within deadline + generous slack (3×). If this fires, the deadline child
+        // did NOT interrupt Phase 1/2 sampling (BLOCK A regression).
+        #expect(elapsedSeconds < deadline * 3.0,
+            "Probe took \(elapsedSeconds)s — deadline is \(deadline)s; deadline child failed to bound the probe (BLOCK A)")
+        #expect(report.reachable == true)
+    }
+
+    // AC4b — stalled server (slow paced delivery, N=2): default mode must return within ~deadline.
+    // Complements AC4a: uses smaller chunks at slower pace to verify deadline cancellation
+    // fires even when per-chunk latency is high (not just when the body is large).
+    // MockURLProtocol now uses async DispatchQueue delivery so URL loading threads stay free.
+    @Test func stalledServerWithPhase2DoesNotHangInDefaultMode() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        // 2 MB body, 1 KiB chunks at 50 ms each → ~100 s total delivery.
+        // Deadline is 0.3 s (< sampleWindowSeconds=0.5 s), so deadline fires first.
+        // Async delivery ensures no URL loading threads are blocked after cancellation.
+        let bigBody = Data(repeating: 0x00, count: 2_000_000)
+        MockURLProtocol.stub(url, body: bigBody, acceptsRanges: true,
+            bodyChunkSize: 1_024,
+            bodyChunkDelayMicroseconds: 50_000,  // 50 ms; slow — deadline must cancel
+            asyncChunkDelivery: true)  // frees URL loading thread so no cross-test starvation
+
+        let deadline = 0.3
+        let config = DiagnoseConfig(
+            targetConnections: 2,   // Phase 2 runs; must also be cancelled by deadline
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.5,  // > deadline, so coordinator doesn't finish first
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: deadline,
+            minSampleBytes: 0,
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 5.0)
+
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        let (report, _) = await GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: false).run()
+
+        let elapsed = clock.now - start
+        let elapsedSeconds = Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1e18
+
+        #expect(elapsedSeconds < deadline * 3.0,
+            "Probe took \(elapsedSeconds)s — stall guard + Phase-2 deadline failed (BLOCK A)")
+        #expect(report.reachable == true)
+    }
+
+    // AC4c — `--full` drains all N connections to EOF; wholeFileMBps is non-nil.
+    // BLOCK B: --full must read past the sample window (drainStream must not break at windowEnd).
+    // BLOCK D: N=2 so Phase-2 EOF drain is also exercised.
+    //
+    // Design: delivery rate is 131 KiB per 5 ms = ~26 MB/s. The 4 MB body across 2 connections
+    // takes ~150 ms to drain per connection (each drains 2 MB ÷ 26 MB/s). The T1 sample window
+    // is 0.05 s — so the drain runs for ~100 ms BEYOND the window, proving --full reads past
+    // the window boundary. The near-zero defaultDeadlineSeconds (0.001) is ignored in --full mode
+    // (no deadline child is added), confirming BLOCK B: deadline does not bound --full.
+    @Test func diagnoseFullDrainesToEOF() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        // 4 MB body, 128 KiB chunks, 5 ms per chunk.
+        // Per-connection delivery time: 2 MB ÷ (128 KiB / 5 ms) ≈ 78 chunks × 5 ms = 390 ms.
+        // T1 window is 0.05 s, so the drain runs ~340 ms past the window.
+        let body = Data(repeating: 0xEE, count: 4_000_000)
+        MockURLProtocol.stub(
+            url, body: body, acceptsRanges: true,
+            bodyChunkSize: 131_072,
+            bodyChunkDelayMicroseconds: 5_000,  // 5 ms per chunk
+            asyncChunkDelivery: true)  // async delivery for cross-test isolation
+
+        let config = DiagnoseConfig(
+            targetConnections: 2,   // Phase 2 also drains to EOF in --full mode (BLOCK D)
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: 0.001,  // effectively zero — --full MUST ignore this (BLOCK B)
+            minSampleBytes: 0,
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 5.0)
+
+        let (report, _) = await GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: true).run()
+
+        #expect(report.reachable == true)
+        // T₁ non-nil (minSampleBytes=0 so any byte count yields a rate).
+        #expect(report.singleConnMBps != nil)
+        // --full mode: wholeFileMBps must be non-nil (BLOCK B: proves EOF drain happened).
+        // If wholeFileMBps is nil, the drain stopped at the window boundary (BLOCK B regression).
+        #expect(report.wholeFileMBps != nil,
+            "wholeFileMBps nil in --full mode — drain stopped at window boundary (BLOCK B)")
+    }
+
+    // AC4d — default (non-full) mode: wholeFileMBps is nil.
+    @Test func diagnoseDefaultModeWholeFileMBpsIsNil() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        MockURLProtocol.stub(url, body: tenMB, acceptsRanges: true,
+            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500)
+
+        let config = DiagnoseConfig(
+            targetConnections: 2, warmupSeconds: 0, sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0, defaultDeadlineSeconds: 2.0,
+            minSampleBytes: 0, scalingFactor: 1.3, connectTimeoutSeconds: 5.0)
+
+        let (report, _) = await GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: false).run()
+
+        #expect(report.wholeFileMBps == nil)
+    }
+}

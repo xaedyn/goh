@@ -323,6 +323,17 @@ struct GohDiagnoseProbe: Sendable {
                             // Register cancel closure so the deadline child can tear down.
                             cancelClosures.withLock { $0.append(cancelPart) }
 
+                            // Guard: if the deadline fired while this connection was opening
+                            // (e.g., the URL loading thread was briefly contended), the cancel
+                            // closure wasn't in `cancelClosures` when `cancelAllConnections()`
+                            // ran. Detect that here and self-cancel so the drain doesn't escape
+                            // the deadline. This is equivalent to a late-registered cancel.
+                            guard !Task.isCancelled else {
+                                cancelPart()
+                                phase2OpensCompleted.withLock { $0 += 1 }
+                                return .drainFinished
+                            }
+
                             if resp.statusCode == 206 {
                                 acceptedCount.withLock { $0 += 1 }
                                 // Open succeeded — release the coordinator's Tₙ barrier now,
@@ -487,9 +498,15 @@ struct GohDiagnoseProbe: Sendable {
                 switch outcome {
                 case .coordinatorDone, .deadlineFired:
                     if !full {
-                        // Connections were already cancelled by the finishing child; now stop
-                        // the other timer child's sleep so the group exits without waiting out
-                        // the full deadline.
+                        // `cancelAllConnections()` was called by the finishing child (coordinator
+                        // or deadline). Call it again here, BEFORE `group.cancelAll()`, to catch
+                        // any Phase-2 connections that registered their cancel closure AFTER the
+                        // first `cancelAllConnections()` ran (i.e., connections that were still
+                        // in `streamingResponse` when the deadline fired and have since opened).
+                        // This closes their streams so drain children's `for try await` exits.
+                        cancelAllConnections()
+                        // Cancel remaining tasks (sleeping timer children, any drain still in
+                        // `streamingResponse` via its `withTaskCancellationHandler` onCancel).
                         group.cancelAll()
                     }
                 case .deadlineCancelled, .drainFinished:
@@ -499,7 +516,6 @@ struct GohDiagnoseProbe: Sendable {
                 }
             }
         }
-
         // --- Assemble report from coordinator results ---
         report.singleConnMBps = t1Result.withLock { $0 }
         report.multiConnMBps = runPhase2 ? tnResult.withLock({ $0 }) : nil
