@@ -148,12 +148,19 @@ final class EngineDiagnostics: Sendable {
         let host = hostKey ?? "(nil)"
         let reasonStr: String
         switch reason {
-        case .cold:     reasonStr = "cold"
-        case .exploit:  reasonStr = "exploit"
-        case .explore:  reasonStr = "explore"
-        case .explicit: reasonStr = "explicit"
+        case .cold:      reasonStr = "cold"
+        case .exploit:   reasonStr = "exploit"
+        case .explore:   reasonStr = "explore"
+        case .explicit:  reasonStr = "explicit"
+        case .warmStart: reasonStr = "warm-start"
         }
         emit("scheduling host=\(host) chosenN=\(chosenN) reason=\(reasonStr) ewmas=[\(ewmaStr)]")
+    }
+
+    /// Emits a governor-decision trace line when `GOH_ENGINE_TRACE=1` (SM1: probe→cruise observable).
+    func recordGovernorDecision(phase: String, decision: String, currentN: Int, hostKey: String?) {
+        guard enabled else { return }
+        emit("governor phase=\(phase) decision=\(decision) N=\(currentN) host=\(hostKey ?? "(nil)")")
     }
 
     /// Emits the download-level summary line — the peak concurrent range count

@@ -19,6 +19,8 @@ func usage() -> Never {
           goh-bench hash-overhead <sizeMiB>
           goh-bench regression-guard <destination-directory>
               (requires GOH_BENCH_REGRESSION_URL env var)
+          goh-bench lfn [--url <url>] [--runs <n>] [--static-n <n>] [--output <file>]
+              (SM5a/SM2: governed vs static-N; median + IQR seconds as JSON)
 
         """.utf8))
     exit(2)
@@ -138,14 +140,14 @@ func hashOverheadBenchmark(sizeMiB: Int) async throws {
     let unifiedPath = directory.appending(path: "goh-bench-unified-\(UUID().uuidString)").path
     let unifiedStart = clock.now
     let unifiedFile = try DownloadFile(path: unifiedPath, expectedSize: total)
-    let assembler = ChunkAssembler(
-        file: unifiedFile, ranges: [ByteRange(start: 0, length: total)])
+    let assembler = ChunkAssembler(file: unifiedFile, totalBytes: total)
     async let assembled = assembler.hashToCompletion()
     var unifiedOffset: UInt64 = 0
     for _ in 0..<sizeMiB {
-        try unifiedFile.write(chunk, at: unifiedOffset)
+        let writeStart = unifiedOffset
+        try unifiedFile.write(chunk, at: writeStart)
         unifiedOffset += UInt64(chunkSize)
-        assembler.advance(range: 0, writtenBytes: unifiedOffset)
+        assembler.complete(interval: ByteInterval(start: writeStart, length: UInt64(chunkSize)))
     }
     assembler.finish()
     let result = await assembled
@@ -171,6 +173,78 @@ func hashOverheadBenchmark(sizeMiB: Int) async throws {
         """)
 }
 
+// MARK: — lfn (SM5a/SM2): governed vs static-N over a long-fat-network target.
+
+func median(_ xs: [Double]) -> Double {
+    let s = xs.sorted()
+    guard !s.isEmpty else { return 0 }
+    let n = s.count
+    return n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2
+}
+
+/// Linear-interpolated inter-quartile range (Q3 − Q1).
+func iqr(_ xs: [Double]) -> Double {
+    let s = xs.sorted()
+    guard s.count >= 2 else { return 0 }
+    func quantile(_ p: Double) -> Double {
+        let idx = p * Double(s.count - 1)
+        let lo = Int(idx.rounded(.down)), hi = Int(idx.rounded(.up))
+        if lo == hi { return s[lo] }
+        let frac = idx - Double(lo)
+        return s[lo] * (1 - frac) + s[hi] * frac
+    }
+    return quantile(0.75) - quantile(0.25)
+}
+
+/// Runs `runs` downloads of `url`, governed (staticN == nil) or pinned to a static N
+/// (staticN != nil → the engine's explicit-connection-count channel disables the governor),
+/// and prints a JSON line with median + IQR wall-clock seconds. Real network; not in CI.
+func lfnBenchmark(url: String, runs: Int, staticN: UInt8?, output: String?) async {
+    let mode = staticN.map { "static-\($0)" } ?? "governed"
+    var times: [Double] = []
+    for run in 1...runs {
+        let destination = FileManager.default.temporaryDirectory
+            .appending(path: "goh-bench-lfn-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: destination) }
+        let store = JobStore()
+        // requestedConnectionCount seeds N₀ (the governor refines it live; static-N pins it).
+        let job = store.create(
+            url: url, destination: destination, requestedConnectionCount: staticN ?? 8)
+        let session = URLSession(configuration: GohCore.downloadSessionConfiguration())
+        let clock = ContinuousClock()
+        let start = clock.now
+        // staticN != nil → explicitConnectionCount disables the governor (the control arm).
+        await DownloadEngine(session: session).run(
+            jobID: job.id, in: store, explicitConnectionCount: staticN)
+        let elapsed = seconds(clock.now - start)
+        guard let final = store.job(id: job.id), final.state == .completed else {
+            let reason = store.job(id: job.id)?.error.map { "\($0.code)" } ?? "unknown"
+            FileHandle.standardError.write(
+                Data("goh-bench lfn: run \(run)/\(runs) (\(mode)) did not complete (\(reason))\n".utf8))
+            exit(1)
+        }
+        times.append(elapsed)
+        FileHandle.standardError.write(
+            Data("  run \(run)/\(runs) (\(mode)): \(String(format: "%.3f", elapsed)) s\n".utf8))
+    }
+    let med = median(times)
+    let spread = iqr(times)
+    let allSeconds = times.map { String(format: "%.3f", $0) }.joined(separator: ",")
+    let json = "{\"url\":\"\(url)\",\"mode\":\"\(mode)\",\"runs\":\(runs),"
+        + "\"medianSeconds\":\(String(format: "%.3f", med)),"
+        + "\"iqrSeconds\":\(String(format: "%.3f", spread)),"
+        + "\"allSeconds\":[\(allSeconds)]}"
+    print(json)
+    if let output {
+        do { try json.write(toFile: output, atomically: true, encoding: .utf8) }
+        catch {
+            FileHandle.standardError.write(
+                Data("goh-bench lfn: could not write \(output): \(error)\n".utf8))
+            exit(1)
+        }
+    }
+}
+
 let arguments = CommandLine.arguments
 guard arguments.count >= 2 else { usage() }
 
@@ -185,6 +259,30 @@ case "hash-overhead":
 case "regression-guard":
     guard arguments.count == 3 else { usage() }
     await regressionGuard(destinationDirectory: arguments[2])
+case "lfn":
+    var url = "https://sin-speed.hetzner.com/1GB.bin"
+    var runs = 5
+    var staticN: UInt8?
+    var output: String?
+    var i = 2
+    while i < arguments.count {
+        switch arguments[i] {
+        case "--url":
+            i += 1; guard i < arguments.count else { usage() }; url = arguments[i]
+        case "--runs":
+            i += 1; guard i < arguments.count, let r = Int(arguments[i]), r > 0 else { usage() }
+            runs = r
+        case "--static-n":
+            i += 1; guard i < arguments.count, let n = UInt8(arguments[i]), n > 0 else { usage() }
+            staticN = n
+        case "--output":
+            i += 1; guard i < arguments.count else { usage() }; output = arguments[i]
+        default:
+            usage()
+        }
+        i += 1
+    }
+    await lfnBenchmark(url: url, runs: runs, staticN: staticN, output: output)
 default:
     usage()
 }

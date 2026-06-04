@@ -59,6 +59,359 @@ doesn't modify the engine except the additive StreamingDataTask cancel guard). T
 (vendor-neutral offline lockfile, `docs/vision/VISION-2026-06-03.md`) remains the strategic moat — next
 self-contained slice candidates live there.
 
+### 2026-06-03 (session) — Governor **REDESIGNED + fixed** (was inert/regressing); LFN headline unprovable on this link; strategic **pivot to the trust layer**; `goh diagnose` scoped next
+
+**Branch `design/in-flight-parallelism`. Commit `38be1b0` (`fix(governor): redesign convergence around aggregate delivery rate`). 507 tests pass, `-warnings-as-errors` clean. NOT pushed yet.**
+
+**1. The governor was broken — now fixed (committed).** Running Task 19's benchmark caught it: the in-flight
+governor was **inert** and *regressed* ~20% vs static-8 on a real LFN. Root cause (confirmed via field
+instrumentation, 0/120 evaluations ever "steady"): the per-worker steady-state detector (`allWorkersInSteadyState`,
+"all connections within 5%") could never pass on a real network — real per-flush rates jitter 10–206%, slot 0 was
+sample-starved, and `decide()` was called on `liveWorkers` (N−1, an off-by-one). Governor sat at the seed N the
+whole download.
+  - **Fix (commit `38be1b0`):** replaced the per-worker gate with a **BBR-style hill-climb on the AGGREGATE
+    delivery rate**. Governor now takes one aggregate sample per control window via
+    `record(aggregateBytesPerSecond:)`; the engine measures aggregate over **≥0.25 s windows** (per-reap intervals
+    were too short → jitter) from the shared `ByteCounter` (added a `.value` getter) and passes the **operating
+    `targetN`** to `decide()` (off-by-one fixed). Dwell `settleSamples` windows at each N, keep a step up the
+    `{2,4,8,16}` ladder only when aggregate gain ≥ `kneeGainThreshold`, else settle lower; periodic cruise
+    re-probe. `Config.default` tuned: `settleSamples 8, kneeGainThreshold 0.07, reprobeCadence 40, rateAlpha 0.3`.
+    Removed `RateSampleSink`/`WorkerRateSample`/per-worker machinery. Files: `ParallelismGovernor.swift` (rewrite),
+    `DownloadEngine.swift` (aggregate sampling + operating-N), `ParallelismGovernorTests.swift` (rewritten, 7 tests).
+  - **Validated:** trace now shows correct convergence (dwell@8 → addWorkers → dwell@16 → commit(16) → cruise@16,
+    no detour) and **no regression** (governed ≈ static-8).
+
+**2. The SM5a "headline win" is UNPROVABLE on this connection — and that's an environment limit, not a bug.**
+  - Original target `sin-speed.hetzner.com` **rate-limits parallel connections** (6/8 → HTTP 429). Unusable. Note:
+    the engine currently **hard-fails (httpStatus)** when a server 429s a parallel range — a real product-robustness
+    gap worth a future design pass (governor should back off, not abort).
+  - Switched to **OVH France** (`https://proof.ovh.net/files/1Gb.dat` — 8/8 parallel 206, ~105 ms RTT, https,
+    honors Range). Good LFN target. Results in `docs/bench/lfn-results-worksheet.md` (full before/after recorded).
+  - **n=9: governed 20.36 s vs static-8 20.71 s — ~1.7 %, IQR overlaps.** Raw curl proved why: aggregate throughput
+    is the SAME at 8 and 16 conns (~57 MB/s ceiling) AND two far sources combined ≤ one source. **The bottleneck is
+    the user's last-mile (~50–57 MB/s to distant hosts over Wi-Fi), not the source.** 8 conns already saturate it;
+    16 has no headroom; multi-source can't help either. A clean SM5a win needs higher RTT + uncapped + higher-ceiling
+    (a self-hosted far VPS, e.g. Vultr Tokyo — researched, ~1¢/hr) or a faster link. User declined the VPS for now.
+  - **Disposition:** the governor ships as **correct + adaptive + no-regression**; the *benchmarked* headline is
+    deferred (needs a proper proving ground). Worksheet `OVERALL: NEEDS-TUNING/defer headline`.
+
+**3. STRATEGIC PIVOT — speed is at the physics ceiling for this user; the moat is the trust layer.** Ran the
+`product-vision` skill (parallel codebase + market analysis, both Opus). New memo: **`docs/vision/VISION-2026-06-03.md`**
+(supersedes the trust-layer sections of `VISION-2026-05-26.md`). Sharpened thesis: don't pitch "trust layer" (too
+close to OpenSSF signing) or "integrity for downloads" (HF/Ollama do per-source already). The **unowned, defensible
+wedge goh already built**: a **vendor-neutral, offline lockfile** — *"is this still exactly what I downloaded?"*
+verified against YOUR frozen record, across any source, even if upstream is deleted (HF's `hf cache verify` checks
+the LIVE hub; the TRELLIS-deletion case proves upstream isn't a reliable oracle). Evidence: aria2 #173 (open since
+2013), HF #3298/#3643, Ollama #14554. Platform risk: ~12 mo before HF could close the HF-only slice.
+
+**4. `hf://` adapter — proposed then DECLINED by the user.** The vision's top "bet" was smart-URL adapters
+(`hf://`, `kaggle://`). User **declined**: doesn't want to couple goh to an external service's API (breakage +
+maintenance) or build any login/token path. New memory saved: **[[goh-prefers-self-contained]]** — favor
+self-contained trust-layer work, don't pitch external-service integrations.
+
+**5. NEXT ACTION — build `goh diagnose <url>` (self-contained; scoped, not started).** Surface the engine's existing
+diagnostics (`EngineDiagnostics`/`GOH_ENGINE_TRACE`, `Sources/GohCore/Engine/EngineDiagnostics.swift`) as a clean
+plain-English CLI verb. **Confirmed behavior:** quick ~10 s sample by default, `--full` flag for the whole file;
+discards the bytes; CLI-local (no daemon, no new XPC/wire surface — mirror `goh verify`/`which`). Report shape (user
+approved): server + range support, negotiated protocol (h2/h3/1.1), #connections opened & how many the server
+accepted (catch 429 rate-limiting), throughput estimate, bottleneck (last-mile vs source), one-line verdict.
+  - **THE DESIGN WRINKLE to solve first:** to report *"server rejected 6 of 8 connections"*, diagnose **cannot**
+    reuse the normal download path (it aborts on the first non-206 — the Hetzner httpStatus failure). Needs a
+    **probe mode that opens connections and records each outcome WITHOUT aborting**. Everything else is
+    straightforward reuse (DownloadEngine + EngineDiagnostics, run in-process, temp/throwaway sink, ~10 s
+    cancel, structured summary instead of stderr-scraping → extend EngineDiagnostics to retain structured data).
+  - Files likely touched: new `GohDiagnoseCommand.swift`, `EngineDiagnostics.swift` (structured capture),
+    `GohCommandLine.swift` (verb + usage), tests. ~3–5 files. Start with `enterprise-pipeline` (it has the
+    probe-without-abort design decision) — or `quick-plan` if the wrinkle resolves trivially on inspection.
+
+**Session-end housekeeping for next time:** `38be1b0` is unpushed on `design/in-flight-parallelism`. The
+in-flight-parallelism P1–P4 work is functionally done + correct but the SM5a headline benchmark is deferred — decide
+whether to (a) PR P1–P4 as "correct adaptive governor, no regression" (drop the headline claim), or (b) hold for a
+VPS/faster-link proof. The `goh diagnose` work is a fresh, self-contained slice — could be its own branch off this
+one or off `main` after deciding the P1–P4 PR question.
+
+---
+
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P4 code done (Tasks 17–18)**; only Task 19 (the manual benchmark run) remains before the headline ships
+
+- **P4 Tasks 17 + 18 shipped on `design/in-flight-parallelism`** (the autonomous code parts). **508 tests
+  pass**, warning-clean. Task 19 (running the benchmarks) is the **you-in-the-loop** step — see below.
+  - `24d4cb6` + `d45934d` — **Task 17:** global per-host `ConnectionBudget` (spec §8) gated into the control
+    loop (budget request before each spawn, worker-`defer` release, leak-proof). **Opus-reviewed ✅.** It's a
+    **soft cap with a liveness floor**: a download that would seed zero workers (siblings hold the budget)
+    force-admits exactly one un-budgeted connection so it always progresses — peak per-host bounded at
+    `16 + (D−1)`. Default-nil in the engine (no behavior change for existing tests); gohd creates one shared
+    16-budget. DESIGN.md §Adaptive host scheduling documents the soft-cap.
+  - `fe08c5a` — **Task 18:** `goh-bench lfn` subcommand (governed vs `--static-n`, median + IQR seconds,
+    JSON out) + `docs/bench/lfn-runbook.md` (SM5a/SM2 commands + quarantine policy). The static control arm
+    uses the explicit-connection-count channel to disable the governor. Builds; not run (real network).
+- **NEXT ACTION — Task 19 (manual, you-in-the-loop): run the benchmarks + tune + write the P4 artifact.**
+  This is the only thing between here and shipping the single-edge headline. **The fill-in worksheet is
+  `docs/bench/lfn-results-worksheet.md`** (copy-paste commands + result slots + a RESULTS SUMMARY block the
+  next session reads first; embeds a `Range`-honoring server for the local SM2 test). Rationale is in
+  `docs/bench/lfn-runbook.md`. When the user says "results are in the worksheet," read its summary block and
+  either write the P4 artifact + prep the P1–P4 PR, or iterate on tuning if a gate failed. Two gotchas the
+  smoke test caught: `GOH_ENGINE_TRACE` needs the built binary (not `swift run`), and the governor only
+  engages on a `Range`-honoring server (`python3 -m http.server` returns 200 → single-connection). Steps:
+  (1) **SM5a** — `swift run goh-bench lfn --url https://sin-speed.hetzner.com/1GB.bin --runs 5 --output
+  governed.json` vs `--static-n 8 --output static8.json`; accept = governed median < static8 median,
+  non-overlapping IQR. (2) **SM2** — saturated target via dummynet ([[dummynet-macos26-confirmed]], needs
+  sudo via `!`) or a throttling CDN; accept = governed median ≤ 1.05× static8 (≤5% regression = rollback
+  trigger). (3) Confirm **SM1** probe→cruise via `GOH_ENGINE_TRACE=1 ... | grep '^governor '`. (4) If the
+  win is marginal or SM2 regresses, **tune `Config.default` + `chunkSize`** against the medians and re-run.
+  (5) Write `docs/superpowers/progress/2026-05-31-in-flight-adaptive-parallelism-phase4.md` with the numbers.
+  **Then P1–P4 is the proven single-edge headline → one PR.** P5 (NWConnection multi-edge) is a separate
+  later PR behind its feasibility spike + dedicated security review.
+- **Do NOT PR yet:** the governor is default-on but UNPROVEN on real networks until Task 19 passes SM5a/SM2;
+  the PR's CI can't run the LFN benchmarks. Merge a *proven* feature.
+
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P3 COMPLETE** (governor functional + fed back to bandit); next = P4 (benchmarks + per-host budget)
+
+- **P3 of 5 shipped on `design/in-flight-parallelism`.** **503 tests pass**, warning-clean,
+  strict-concurrency-clean. **The in-flight governor is now functional** — it adjusts the live connection
+  count during a download and feeds its converged candidate-aligned N back into the per-host bandit. Full
+  breakdown in the P3 artifact (`docs/superpowers/progress/...-phase3.md`) and the detailed in-progress entry
+  below. Commits: Task 10 `af6e728`, Task 11 `bcb0ece`, **Task 11A `a0160df`** (fixed-size chunk pool,
+  Opus-reviewed), **Task 12 `df35c8d`** (governor wired + explicit-N off channel + GovernorOutcome,
+  Opus-reviewed), Task 13 `090af0a` (warm-start trace), Task 15 `d82ad98` (governor trace), Task 14 `5b28652`
+  (DESIGN.md), P3 artifact (next commit).
+- **The architectural gap (build-it-right):** the plan would have wired an inert governor onto P2's "N big
+  pieces"; **Task 11A** (the spec §6.1 fixed-size-chunk pool + byte progress + connection slots) was added as
+  the prerequisite that makes the governor actually converge. Both 11A and 12 (the data-path + concurrency
+  cores) passed dedicated **Opus concurrency/data-integrity reviews** (no blocks; the governor never overrides
+  an explicit `--connections` pin; the bandit can't be polluted; no data race; cooperative drop loses no bytes).
+- **Two review-caught issues (don't re-introduce):** (1) `Mutex` is noncopyable → used the project's
+  reference-type idiom (`ExplicitConnectionCounts`, `RateSampleSink`, like `ByteCounter`); (2) the 11A slot
+  force-unwrap was a latent crash → closed in Task 12 (clamp `targetN`∈[1,16] + guard slot allocation).
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape,
+  `host-scheduling.plist` v1, `DownloadCheckpoint` v1 — all unchanged. `GovernorOutcome`/`ExplicitConnection
+  Counts`/`RateSampleSink` are daemon-internal.
+- **NEXT ACTION — P4 (Tasks 17–19): the headline benchmarks + per-host budget.** (1) **Task 17** — global
+  per-host `ConnectionBudget` (deliberately deferred from P2/P3; insert the budget gate into the control
+  loop's `fillToTarget` + a worker-`defer` release — the structure is ready). (2) **Task 18** — `goh-bench`
+  LFN subcommand + runbook (path is `Benchmarks/goh-bench/`, NOT `Sources/`). (3) **Task 19** — prove **SM5a**
+  (governed > static N=8 on a sourced LFN target, non-overlapping IQR) and **SM2** (≤5% saturated regression)
+  using the **confirmed dummynet harness** ([[dummynet-macos26-confirmed]]) + `sin-speed.hetzner.com/1GB.bin`;
+  **tune `Config.default` + `chunkSize`** against measured convergence (first-cut values). P4 **ships the
+  single-edge headline.** Then P5 (NWConnection multi-edge, behind a feasibility spike + security review).
+  Continue with `subagent-driven-development`, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P3 detail** (Tasks 10–11 + architectural gap → Task 11A)
+
+- **P3 started on `design/in-flight-parallelism`.** Tasks 10 + 11 shipped (497 tests pass, warning-clean):
+  - `af6e728` — **Task 10:** `SelectionReason.warmStart` + `ObservationRequest` parameter struct; the
+    observation gate now keys off the governor outcome (`effectiveN != nil && stabilized`) instead of the
+    old `actualConnectionCount == requestedConnectionCount`. `recordObservationIfEligible` added. All 7
+    gate tests + the `gohd` call site migrated. **`d5GateConnectionMismatchRejected` → `d5GateOffCandidate
+    Rejected`** (the actual==requested condition no longer exists).
+  - `bcb0ece` — **Task 11:** `JobStore.setActualConnectionCount` is now peak-max
+    (`max(existing, min(count,16))`, cap 16 not requestedN). DESIGN.md note added.
+- **⚠️ WIP CAVEAT (don't merge mid-P3):** after Task 10, `gohd/main.swift` builds the `ObservationRequest`
+  with `governorOutcome: .governorOff` (a `// TODO(P3 Task 12)` placeholder), so the daemon currently
+  records **NO** bandit observations until Task 12 passes the real `GovernorOutcome` through a 4-arg
+  `completedDownloadHandler`. This is an intentional intermediate state on the WIP branch; the end state
+  (Task 12) restores observation recording with the governor's converged N.
+- **ARCHITECTURAL GAP FOUND + RESOLVED (user gate "build it right", 2026-05-31):** the plan's P3 wired the
+  governor onto P2's "N big pieces" queue — but the governor can only *add* a worker if there is spare
+  unclaimed work, and N pieces are all claimed up front, so the governor would be **inert**. The spec §6.1
+  mandates **fixed-size chunks** (a daemon constant, independent of N) that workers pull one at a time —
+  that is what enables live add/drop. P2 used N-pieces for behaviour-equivalence; P3 must switch. Added
+  **Task 11A** to the plan (`docs/plans/...-plan.md`, before Task 12): fixed-size chunk pool + byte-based
+  progress (replacing the per-piece-index `RangeProgress`) + connection-slot indexing (`0..<targetN`,
+  reused; the governor's `WorkerRateSample.workerIndex` must be a stable slot, not the chunk index).
+  Behaviour-equivalent at fixed N (identical bytes/SHA-256). This is the prerequisite that unblocks the
+  governor. **The user chose "build it right" over "wire structurally only" or "re-plan with full review."**
+- **NEXT ACTION — Task 11A (the heavy, sensitive rework; do with an Opus implementer + Opus concurrency +
+  data-integrity review).** Design is written in the plan's Task 11A section. Key points: `chunkSize`
+  daemon constant (≈8 MiB) made **injectable** on `DownloadEngine` (default 8 MiB) so tests can pass a
+  small value (e.g. 1 MiB) to exercise multi-chunk parallelism; the `withThrowingTaskGroup` element type
+  becomes the **slot id** (`Int`) so reaps free the slot; `consumeRange`/`downloadRange` swap
+  `progress: RangeProgress` → a `Mutex<UInt64>` byte counter and take the slot as their trace index; the
+  first chunk `[0, chunkSize)` reuses `firstRangeStream`; expect to fix tests that asserted a specific
+  piece/connection count (pass a small chunkSize or adjust). THEN Task 12 (wire the governor — now
+  functional), 13 (warm-start trace), 14 (DESIGN.md), 15 (governor trace), 16 (kill-switch + artifact).
+  Continue with `subagent-driven-development`, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P2 COMPLETE** (dynamic chunk pool + interval-set assembler); next = P3
+
+- **P2 of 5 shipped on `design/in-flight-parallelism`** via `subagent-driven-development` (TDD, two-stage
+  review incl. Opus quality/concurrency). **493 tests pass** (was 483 at P1 end; +10), warning-clean,
+  strict-concurrency-clean. **Behaviour-equivalent at fixed N — no functional change**; this is the
+  structural rework enabling P3's live-N governor. Four atomic commits + artifact:
+  - `efe69cf` — `ChunkQueue` + `ByteInterval` (`Sources/GohCore/Engine/ChunkQueue.swift`).
+  - `b99fdd1` — interval-set `ChunkAssembler` rework: `complete(interval:)` additive-merge, coalesce,
+    byte-0 frontier, `[0,total)` end-condition; SHA-256 in-order invariant preserved; `advance`/`fixedLength`
+    deleted; all callers migrated (incl. `goh-bench/main.swift`).
+  - `9a02981` — fix: empty (`Content-Length: 0`) downloads digest the canonical empty SHA-256 instead of
+    failing (regression caught by Opus quality review).
+  - `b41136a` — control-loop worker pool in `fetchRanged`: single-control-loop-inside-`TaskGroup`
+    (sole `addTask` caller), `ChunkQueue`-seeded, range-0 `firstRangeStream` reuse preserved. Opus
+    concurrency review APPROVED (single-adder safe, behaviour-equivalent, no race/hang/lost-cancellation).
+  - P2 artifact: `docs/superpowers/progress/2026-05-31-in-flight-adaptive-parallelism-phase2.md`.
+- **Two defects caught by review & fixed (don't re-introduce):** (1) the plan's `init(totalBytes: UInt64)`
+  + `fetchSingle` `?? UInt64.max` was a bug for unknown-length downloads → corrected to
+  **`init(file:totalBytes: UInt64?)`** (nil = unknown, skips end-condition); (2) the empty-file regression
+  above. Both have regression tests.
+- **`ConnectionBudget` is a P4 deliverable** — deliberately NOT referenced in P2's control loop (the plan's
+  Task 8 text mentioned it prematurely). P4 inserts the budget gate + worker-`defer`-release into the
+  structure P2 built. **`setActualConnectionCount` peak-max is Task 11/P3** — P2 calls it with peakWorkers
+  (== ranges.count at fixed N); the JobStore method body is unchanged.
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape,
+  `host-scheduling.plist` v1, `DownloadCheckpoint` v1 — all unchanged (checkpoint `recordCompletedPiece`
+  called identically per-flush).
+- **NEXT ACTION — P3 (Tasks 11–18):** wire the governor to the pool. `setActualConnectionCount` peak-max
+  semantics (Task 11); `ObservationRequest`/`SelectionReason.warmStart` (Task 10/11); the explicit-N
+  governor-off channel (ephemeral `Mutex<[UInt64:UInt8]>` jobID→N table in gohd — NOT a JobSummary field);
+  compute per-flush rate **deltas + per-worker EWMA** from `consumeRange`'s accumulator (currently
+  cumulative `(bytes,elapsed)`, unconsumed) and feed `WorkerRateSample`s to the governor; apply
+  `GovernorDecision` via `targetN` + `fillToTarget`; emit candidate-only `GovernorOutcome` to the bandit;
+  warm-start (SM4); `GOH_ENGINE_TRACE` governor lines; DESIGN.md §Persistence/§Observability reconciliation.
+  Continue with `subagent-driven-development`, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
+### 2026-05-31 (impl session) — In-flight adaptive parallelism **P1 COMPLETE** (governor + clock + dummynet confirmed); next = P2
+
+- **P1 of 5 shipped on `design/in-flight-parallelism`** via `subagent-driven-development` (TDD per task,
+  two-stage review). **483 tests pass** (was ~481), warning-clean under `-warnings-as-errors`,
+  strict-concurrency-clean. **No behaviour change** — the governor is a pure value type, unit-tested
+  only; nothing is wired to the engine yet. Six atomic commits + artifact:
+  - `bf0aca6` — inject `ContinuousClock` into `fetchRanged` (deterministic testability; defaulted param,
+    callers unchanged).
+  - `b451823` — per-chunk rate accumulator at the `consumeRange` `flush()` chokepoint (**P1 placeholder**,
+    `_ = rateSamples`; not yet consumed).
+  - `6875bd9` + `6c75420` — pure `ParallelismGovernor` (three-phase: probe / knee / cruise+re-probe,
+    gain-only RTT fallback) + **strengthened SM3 tests**. Review caught that the first-cut SM3 tests
+    passed via a degenerate `allWorkersInSteadyState`-false early-return; they were rewritten to genuinely
+    drive the probe-up, RTT-bufferbloat, and gain-only-knee branches.
+  - `3f57db2` — `GovernorOutcome` daemon-internal struct (`{effectiveN: UInt8?, stabilized: Bool}` +
+    `.governorOff`); **never on the wire**.
+  - `e3cfe9d` — P1 progress artifact.
+- **dummynet spike CONFIRMED (spec §12.1 top `[UNVERIFIED]` risk — now closed):** `dnctl`+`pfctl` work on
+  **macOS 26.5 / arm64** (live `dnctl pipe 1 config bw 50Mbit/s delay 150 plr 0.005` → `DUMMYNET_OK`).
+  **P4's hermetic benchmark gate uses `dnctl`+`pfctl` directly; the Linux-VM `tc netem` fallback is not
+  needed.** See [[dummynet-macos26-confirmed]].
+- **Open items carried to P2/P3** (full list in the P1 artifact): the rate-sample tuple is a placeholder
+  (P3 must compute per-flush deltas + per-worker EWMA, not cumulative bytes/total-elapsed);
+  `.dropWorkers`/`Phase.pinned` are forward-API reserved for P3 wiring; `Config.default` values are
+  first-cut, tuned against the dummynet harness in P4; the RNG is stored-for-later (revisit in P3).
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape,
+  `host-scheduling.plist` v1, `DownloadCheckpoint` v1 — all unchanged.
+- **NEXT ACTION — P2 (Tasks 6–10):** the highest-risk phase. Replace the static `ByteRange.split` +
+  `TaskGroup` with a dynamic `ChunkQueue` + **interval-set frontier `ChunkAssembler`** (the SHA-256
+  in-order invariant + `[0,total)` end-condition + additive-merge `complete(interval:)` — round-2 plan
+  review's compile-break fix migrated `verifyHash`/`fetchSingle`/`consumeRange` callers off the deleted
+  `advance`) + the **single control-loop-inside-the-`TaskGroup`** live worker pool with worker-owned
+  `defer` budget release (Block-2 fix). Behaviour-equivalent at fixed N until P3 drives it. Continue with
+  `subagent-driven-development`, one task at a time, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`). Do **not** re-run design/spec/plan review.
+
+### 2026-05-31 (planning session) — In-flight adaptive parallelism: implementation plan **WRITTEN + 2-round adversarial review PASSED + USER-APPROVED at the gate**; P1 implementation starting
+
+- **Plan written** via `custom-writing-plans` (Sonnet): `docs/plans/2026-05-31-in-flight-adaptive-parallelism-plan.md`
+  — **25 TDD tasks segmented at the spec's P1–P5 boundaries** (P1: 5 / P2: 4 / P3: 7 / P4: 3 / P5: 6),
+  every task with failing-test-first Swift Testing stubs, exact `DEVELOPER_DIR`-prefixed `swift test`
+  commands, complete copy-pasteable Swift, and SM1–SM6/AC1–AC5 mapped to owning tasks. Five phase
+  artifacts seeded under `docs/superpowers/progress/2026-05-31-in-flight-adaptive-parallelism-phase{1..5}.md`.
+- **Reviewed** via `adversarial-plan-review` (Opus), the **2-round cap reached**:
+  - **Round 1 — 6 BLOCKs, all fixed:** (1) explicit `--connections` never disabled the governor (silent
+    override of a user pin); (2) `actualConnectionCount` wasn't actually peak-max; (3) dual-writer clobber
+    between the legacy `advance` shim and the new interval-set `complete(interval:)`; (4) under-specified
+    per-host budget / `TaskGroup` single-adder ownership; (5) vacuous SM4 tests (`#expect(true)` / wrong
+    assertion); (6) wrong `goh-bench` path (`Sources/` vs `Benchmarks/`).
+  - **Round 2 — 3 BLOCKs, all fixed:** all were *second-order defects the round-1 fixes introduced* —
+    (1) three legacy `ChunkAssembler` callers (`verifyHash`/`fetchSingle`/`consumeRange`) left unmigrated
+    → compile break; (2) per-host budget **slot leak** on a worker-throw path; (3) the governor-off test
+    under-asserted. Fixed with caller migration to `complete(interval:)` + `init(file:totalBytes:)`,
+    worker-owned `defer` slot-release via a `fillToTarget` helper, and a strengthened test asserting peak
+    N stays pinned. **No unresolved BLOCKs.** Remaining advisories: side-table not cleared on `rm`
+    (harmless/bounded), kill-switch is a compile-time constant (spec permits env *or* constant).
+  - **3rd review NOT authorized** (2-round cap); user accepted the mechanical round-2 fixes as the gate
+    decision (the per-task `swift test` + review gates in subagent-driven-development are the real check).
+- **USER GATE PASSED:** plan approved; proceed to implementation, **P1 first**.
+- **Key design invariants the plan preserves** (verify they hold at every task): `protocolVersion` 3,
+  `JobCatalog.version` 1, `JobSummary` wire shape, `host-scheduling.plist` v1 — **all unchanged**. The
+  explicit-N governor-off channel is an *ephemeral daemon-internal* `Mutex<[UInt64:UInt8]>` jobID→N
+  table in `gohd` (NOT a `JobSummary` wire field). `GovernorOutcome` is daemon-internal; off-candidate
+  convergence records nothing (no EWMA bias). The pure `ParallelismGovernor` takes injected clock + RNG.
+- **NEXT ACTION — implement P1** via `superpowers:subagent-driven-development`, one task at a time, TDD,
+  real `swift test` (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`), two-stage review gate
+  after each task. P1 = injected `ContinuousClock` into `fetchRanged`/`consumeRange` + per-chunk rate
+  sampling at the `flush()` chokepoint + the pure `ParallelismGovernor` (geometric probe / knee / cruise,
+  SM3 deterministic) + the `GovernorOutcome` struct + the **dummynet-on-macOS-26 verification spike**
+  (fallback: Linux-VM `tc netem`) — one of the two MUST be confirmed in P1 so SM1/SM3 get a hermetic
+  deterministic gate. No behaviour change ships in P1. Do **not** re-run design, spec review, or plan
+  review — all closed.
+
+### 2026-05-31 (design session) — In-flight adaptive parallelism: four-round design **APPROVED** + benchmark plan; **no code yet**
+
+- **Slice started:** in-flight adaptive parallelism (the v0.2 performance headline), driven through
+  `enterprise-pipeline`. This is a *design-only* session per the directive: four-round design + a
+  benchmark-sourcing plan, **no code**.
+- **Approach chosen (USER GATE):** **A3 — continuous in-flight governor + multi-edge fan-out** (the
+  end-state path). A BBR-style governor lifted to *connection count*, driven by URLSession
+  delivery-rate + coarse chunk-timing, with history-seeded warm-start unifying with the PR #77
+  bandit.
+- **Load-bearing finding (verified):** multi-edge fan-out is **infeasible on URLSession** — Apple
+  documents no SNI override when connecting to a raw IP, and a trust-delegate can't fix the SNI byte
+  on the wire. **Decision:** build multi-edge **correctly on NWConnection**
+  (`sec_protocol_options_set_tls_server_name` for SNI + `sec_protocol_options_set_verify_block` for
+  hostname-pinned trust) — a hand-rolled **HTTP/1.1 range client over `NWConnection<TLS>`** for the
+  IP-pinned edge connections. This **revises the URLSession-only transport brief** (DESIGN.md
+  §Transport — an *addition* for the one case URLSession can't serve, not a reversal). Bonus:
+  NWConnection gives **separate real TCP connections** — the structural lever that beats HTTP/2
+  multiplexing (the amenable gap).
+- **Spec APPROVED** through **2 adversarial Opus rounds**. Round 1 found 4 real BLOCKs — the
+  URLSession-SNI infeasibility, a hand-waved interval-frontier rework, `actualConnectionCount` wire
+  semantics under a varying N, and live-`TaskGroup` add/drop concurrency — all resolved; round 2 =
+  all 10 categories PASS. 5 advisories (the "10★" scrub actioned).
+- **Phasing (deployment-independent; P1–P4 independent of P5):**
+  1. **P1** — injected `ContinuousClock` + per-chunk rate instrumentation + the pure
+     `ParallelismGovernor` (deterministic SM3 test). No behaviour change. Includes the **dummynet-on-
+     macOS-26 verification spike** (fallback: Linux-VM `tc netem`).
+  2. **P2** — dynamic chunk pool + **interval-set frontier** `ChunkAssembler` + the single-control-
+     loop-inside-the-group worker pool (single edge, URLSession).
+  3. **P3** — wire the governor; **observation-gate redesign** + **candidate-only** bandit feedback
+     (off-candidate convergence records nothing — no EWMA bias) + warm-start; governor trace lines.
+  4. **P4** — global per-host connection budget; LFN `goh-bench` harness + runbook → **ships the
+     headline (SM5a)**.
+  5. **P5** — NWConnection HTTP/1.1 multi-edge transport + the verify block + the **transport-brief
+     revision**, behind a **feasibility spike** and a **dedicated security review** (trust-core
+     Phase 3 precedent). Dormant behind a constant until then.
+- **Invariants held:** `protocolVersion` 3, `JobCatalog.version` 1, `JobSummary` wire shape, and
+  `host-scheduling.plist` v1 all **unchanged**; all governor feedback is daemon-internal (a
+  `GovernorOutcome` struct on the completion sink, no wire field). `actualConnectionCount` keeps its
+  wire shape; its meaning is re-documented as "peak concurrent connections used."
+- **Benchmark-sourcing plan (2nd deliverable):** spec §12 + the research brief's options table.
+  Local `dnctl`/`pfctl` dummynet (P1 verifies on macOS 26; `tc netem` VM fallback) as the **hermetic
+  deterministic gate**; `sin-speed.hetzner.com/1GB.bin` for the real no-throttle LFN proof (SM5a);
+  optional ~$5/mo Singapore VPS; Cloudflare `__down` for multi-edge (SM5b, best-effort, P5).
+- **Artifacts** (all under `docs/superpowers/`): `research/2026-05-31-in-flight-adaptive-parallelism-{ccb,acceptance-criteria,brief,approaches,design-validation}.md`
+  and `specs/2026-05-31-in-flight-adaptive-parallelism-design.md`. **Not yet committed** — no branch
+  cut this session (design artifacts only).
+- **Branch state:** `design/in-flight-parallelism` is **pushed** to origin (commit `ed48486`, all 6
+  artifacts + this STATE.md). Work from this branch — do **not** branch off `main` again.
+- **CLOSED — do NOT re-run:** the design pass is finished. Do not re-run `enterprise-pipeline`,
+  approach generation, the approach gate, or `adversarial-spec-review` — the spec is **approved**
+  (2 rounds, all 10 block categories pass) and the approach (A3, multi-edge via NWConnection) is a
+  settled user decision. Do not re-litigate the URLSession-SNI finding (see the
+  [[urlsession-no-sni-override-for-ip]] memory).
+- **NEXT ACTION — kick off the implementation plan.** Go **straight to `custom-writing-plans`**
+  (the CLAUDE.md override that replaces `writing-plans`), dispatched as a Sonnet subagent with:
+  - `SPEC_FILE_PATH` = `docs/superpowers/specs/2026-05-31-in-flight-adaptive-parallelism-design.md`
+  - `RESEARCH_BRIEF_PATH` = `docs/superpowers/research/2026-05-31-in-flight-adaptive-parallelism-brief.md`
+  - `TECH_STACK` = from `CLAUDE.md` §Stack; `PROJECT_CONVENTIONS` = from `CLAUDE.md` (Test/Branch
+    discipline, four-round, the recurring gotchas).
+  - **Segment the plan at the spec's P1–P5 phase boundaries** (they are deployment-independent;
+    P1–P4 ship the single-edge headline, P5 is the NWConnection multi-edge + security-review gate).
+  Then **`adversarial-plan-review`** (the CLAUDE.md override; max 2 rounds; fix block issues between
+  rounds). Then **USER GATE: spec+plan approval**, then `superpowers:subagent-driven-development`
+  implementing **P1 first** (pure governor + injected clock + per-chunk instrumentation + the
+  dummynet-on-macOS-26 verification spike), TDD, real `swift test`
+  (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`, see [[dev-toolchain-developer-dir]]).
+  **Still no implementation code until the plan is approved at the gate.**
+
 ### 2026-05-31 (merge session) — Phase 2 adaptive scheduling **MERGED to `main`**; next = Phase 3 launch
 
 - **Both PRs merged to `main` via squash** (branch protection: PRs required, self-merge OK; branches deleted on origin + local):
@@ -721,6 +1074,20 @@ remaining adaptive host scheduling work to v0.2.
   tests; CI green.
 
 ## Next-session handoff
+
+**MOST RECENT: see the top "Current state" entry (dated 2026-06-03).** The in-flight adaptive
+parallelism governor has since been **redesigned + fixed and P1–P4 are functionally complete** on
+`design/in-flight-parallelism` (now **PR #80**, CI green, headline-benchmark deferred). This
+2026-05-31 design-session note is **historical**: the four-round design (spec
+`docs/superpowers/specs/2026-05-31-in-flight-adaptive-parallelism-design.md`, approach **A3 —
+continuous governor + NWConnection multi-edge** because URLSession can't override SNI for IP
+connections) was approved over 2 adversarial Opus rounds and has been implemented through P4; the
+branch is cut, committed, and pushed (no longer "uncommitted on `main`"). **Pick-up options:**
+(a) review/merge PR #80, then **P5** (NWConnection multi-edge) behind its feasibility spike +
+dedicated security review; or (b) the Phase-3 public-launch track below (credential-gated). The
+detailed breakdown is the top "Current state" entry dated *2026-06-03*.
+
+---
 
 `main` now includes **Phase 2 — adaptive per-host range scheduling** (PR #77,
 squash `32efda1`) and the **in-flight-parallelism design seed** (PR #78, squash

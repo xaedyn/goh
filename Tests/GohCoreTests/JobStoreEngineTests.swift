@@ -51,6 +51,19 @@ struct JobStoreEngineTests {
         #expect(updated.actualConnectionCount == 8)
     }
 
+    @Test("P3: setActualConnectionCount stores the peak, not the last value")
+    func actualConnectionCountStoresPeak() throws {
+        let store = JobStore()
+        let job = store.create(
+            url: "https://example.com/file.bin", destination: "/tmp/file.bin",
+            requestedConnectionCount: 16)
+        _ = try store.start(id: job.id)
+        _ = try store.setActualConnectionCount(id: job.id, 4)
+        _ = try store.setActualConnectionCount(id: job.id, 8)
+        _ = try store.setActualConnectionCount(id: job.id, 4)   // back down — must NOT lower the stored peak
+        #expect(store.job(id: job.id)?.actualConnectionCount == 8)
+    }
+
     @Test("complete moves an active job to completed with a completion time")
     func completeFinishesActiveJob() throws {
         let store = JobStore()
