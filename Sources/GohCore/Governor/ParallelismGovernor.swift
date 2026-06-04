@@ -131,6 +131,14 @@ public struct ParallelismGovernor: Sendable {
 
     public mutating func notifyThrottleDetected() {
         throttleDetected = true
+        // Transition into `.pinned` so `outcome` reports `stabilized: false`
+        // (suppressing the bandit observation): a throttled tail pinned to a
+        // single connection is NOT a representative converged sample for the
+        // operating N, and feeding it back would bias the per-host EWMA. This
+        // also makes the `.pinned` phase reachable. (The throttle signal itself
+        // is reserved for the deferred "back off, don't hard-fail, on 429"
+        // wiring; until then `notifyThrottleDetected()` is unused at runtime.)
+        phase = .pinned(n: 1)
     }
 
     /// The governor's converged outcome for the bandit feed. `effectiveN` is

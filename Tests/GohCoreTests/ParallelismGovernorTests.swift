@@ -94,6 +94,30 @@ struct ParallelismGovernorTests {
         #expect(decision == .backOffPinLow)
     }
 
+    @Test("throttle transitions to pinned and suppresses the bandit observation")
+    func throttleEntersPinnedAndSuppressesOutcome() {
+        // Drive the governor to a converged cruise at a bandit candidate (16, the
+        // top of the ladder) so that WITHOUT the pinned transition `outcome` would
+        // report a stale stabilized N=16 and pollute the per-host EWMA.
+        var gov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        for _ in 0..<ParallelismGovernor.Config.default.settleSamples {
+            gov.record(aggregateBytesPerSecond: 80_000_000)
+        }
+        let commit = gov.decide(operatingN: 16, remainingBytes: 500_000_000)
+        #expect(commit == .commit(16))
+        #expect(gov.phaseLabel == "cruise")
+        #expect(gov.outcome.effectiveN == 16)
+        #expect(gov.outcome.stabilized)
+
+        // Throttle detected mid-cruise: transition to pinned, suppress the feed.
+        gov.notifyThrottleDetected()
+        #expect(gov.phaseLabel == "pinned")
+        #expect(gov.outcome.effectiveN == nil)
+        #expect(!gov.outcome.stabilized)
+        // And decisions keep backing off.
+        #expect(gov.decide(operatingN: 16, remainingBytes: 500_000_000) == .backOffPinLow)
+    }
+
     @Test("hard cap — never recommends adding workers beyond 16")
     func hardCap16() {
         // Seeded at the cap: there is no higher candidate, so the governor must
