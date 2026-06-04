@@ -116,7 +116,8 @@ struct GohDiagnoseCommandTests {
         let url = "https://diagnose-cmd-test.local/\(UUID().uuidString).bin"
         MockURLProtocol.stub(
             url, body: tenMB, acceptsRanges: true,
-            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500)
+            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500,
+            asyncChunkDelivery: true)
 
         let result = await runOffPool([url, "--connections", "1"], config: fastConfig())
 
@@ -133,16 +134,30 @@ struct GohDiagnoseCommandTests {
     @Test func jsonOutputIsDecodable() async throws {
         let url = "https://diagnose-cmd-test.local/\(UUID().uuidString).bin"
         MockURLProtocol.stub(url, body: tenMB, acceptsRanges: true,
-            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500)
+            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500,
+            asyncChunkDelivery: true)
 
         let result = await runOffPool([url, "--json", "--connections", "1"], config: fastConfig())
 
         #expect(result.exitCode == 0)
         let data = try #require(result.standardOutput.data(using: String.Encoding.utf8))
+        // Round-trips to the typed report (the value-level golden lives in DiagnoseTypesTests;
+        // here the timing fields are non-deterministic, so this asserts the wire SHAPE).
         let report = try JSONDecoder().decode(DiagnosisReport.self, from: data)
         #expect(report.reportVersion == 1)
         #expect(report.url == url)
         #expect(report.reachable == true)
+
+        // Wire-format contract: every always-present v1 --json key must be emitted. (Nil
+        // optionals — totalBytes/networkProtocol/multiConnMBps/wholeFileMBps — are omitted
+        // by Codable, so they are intentionally not in this required set.)
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let requiredKeys: Set<String> = [
+            "reportVersion", "url", "reachable", "rangeSupported",
+            "attempted", "accepted", "rejections", "verdict", "verdictText",
+        ]
+        #expect(requiredKeys.isSubset(of: Set(obj.keys)),
+            "missing v1 --json keys: \(requiredKeys.subtracting(Set(obj.keys)).sorted())")
     }
 
     // MARK: - Range ignored → exit 0, rangeUnsupported verdict (AC3)
@@ -150,7 +165,8 @@ struct GohDiagnoseCommandTests {
     @Test func rangeIgnoredExits0WithRangeUnsupportedVerdict() async {
         let url = "https://diagnose-cmd-test.local/\(UUID().uuidString).bin"
         MockURLProtocol.stub(url, body: tenMB, acceptsRanges: false,
-            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500)
+            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500,
+            asyncChunkDelivery: true)
 
         let result = await runOffPool([url], config: fastConfig())
 

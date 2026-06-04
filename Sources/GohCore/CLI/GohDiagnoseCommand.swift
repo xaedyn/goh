@@ -51,12 +51,15 @@ public enum GohDiagnoseCommand {
             return GohCommandLineResult(exitCode: 64, standardError: usageLine)
         }
 
-        // BLOCK 8: single malformed-URL gate — catches non-URL strings that passed the
-        // arg parser (no scheme, no host). The probe is never reached with a malformed URL.
-        guard URL(string: parsed.url) != nil, parsed.url.contains("://") else {
+        // BLOCK 8: single malformed-URL gate — require an http(s) scheme AND a non-empty
+        // host, so non-HTTP schemes and host-less strings exit 64 (usage) here rather than
+        // reaching the probe and failing later as a misleading "unreachable" (exit 2).
+        guard let comps = URLComponents(string: parsed.url),
+              let scheme = comps.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = comps.host, !host.isEmpty else {
             return GohCommandLineResult(
                 exitCode: 64,
-                standardError: "\(usageLine)malformed URL: \(parsed.url)\n")
+                standardError: "\(usageLine)malformed or unsupported URL (need http(s)://host): \(parsed.url)\n")
         }
 
         // Build session with diagnose's own config copy.

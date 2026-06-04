@@ -100,15 +100,12 @@ struct DiagnoseTypesTests {
             .deletingLastPathComponent()
             .appendingPathComponent("Fixtures/diagnose-report-v1.json")
 
-        if !FileManager.default.fileExists(atPath: fixtureURL.path) {
-            // First run: write the fixture so CI can lock it in.
-            try FileManager.default.createDirectory(
-                at: fixtureURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true)
-            try data.write(to: fixtureURL)
-            // Pass on first creation — the file is now the golden baseline.
-            return
-        }
+        // The fixture is an immutable, committed baseline. A missing fixture is a test
+        // failure (e.g. mis-packaged resources), NOT something to silently regenerate —
+        // auto-creating it would let a missing/incorrect baseline pass.
+        try #require(
+            FileManager.default.fileExists(atPath: fixtureURL.path),
+            "Golden fixture missing at \(fixtureURL.path). It is a committed baseline; restore it (or, for an intentional wire change, bump reportVersion and regenerate).")
 
         let fixtureData = try Data(contentsOf: fixtureURL)
         let fixtureJSON = String(decoding: fixtureData, as: UTF8.self)
