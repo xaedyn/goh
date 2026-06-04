@@ -10,6 +10,9 @@ public enum SelectionReason: Sendable, Equatable {
     case explore
     /// The caller supplied an explicit `--connections` count; the bandit was not consulted.
     case explicit
+    /// The governor's converged N seeded this run's N₀ (a trace-only annotation, set in
+    /// CommandDispatcher; `selectN` never returns it).
+    case warmStart
 }
 
 /// Pure epsilon-greedy bandit selector over the fixed candidate set.

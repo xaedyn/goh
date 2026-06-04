@@ -38,45 +38,44 @@ public enum ChunkAssemblerResult: Sendable, Equatable {
     case failed(GohError)
 }
 
-/// Computes the SHA-256 of a range-parallel download in order, while the bytes
-/// arrive out of order (`DESIGN.md` §Hashing).
+/// Computes the SHA-256 of a download in order while bytes may arrive out of order.
 ///
-/// Range writers report progress with ``advance(range:writtenBytes:)``. The
-/// assembler hashes the *contiguous-from-zero frontier* — the largest prefix
-/// every byte of which is on disk — reading those bytes back from the file in
-/// fixed chunks. Memory stays bounded by the chunk size, not the file size.
+/// Interval-set design (P2): workers call `complete(interval:)` when an interval is on disk; the
+/// assembler coalesces intervals (ADDITIVE-MERGE ONLY — never whole-set replace) under a Mutex. The
+/// frontier is the end of the single coalesced interval that starts at byte 0 (or 0 if none). The
+/// hasher advances only when the byte-0 interval extends — out-of-order bytes sit in the set, durable
+/// on disk, unhashed until the frontier reaches them (in-order SHA-256 invariant, single pass, no
+/// re-hash). End condition (when `totalBytes` is known): the coalesced set is exactly one interval
+/// `[0, totalBytes)`. When `totalBytes` is nil (unknown length, no Content-Length), `finish()` ends the
+/// download and the end-condition interval check is skipped — identical to the prior `.max`-range behaviour.
 ///
-/// A monotonic progress snapshot can only *under*-estimate the frontier, never
-/// over, so the assembler never reads an unwritten byte; correctness needs
-/// monotonic counters, not an atomic snapshot. Single-connection is the
-/// one-range case — the final range's `length` may be `.max` when the server
-/// gave no `Content-Length`; ``finish()`` ends the download either way.
+/// `advance(range:writtenBytes:)` is DELETED (not a shim): keeping it alongside `complete(interval:)`
+/// was a dual-writer hazard (both did whole-set replace under the Mutex; concurrent callers clobber).
 public final class ChunkAssembler: Sendable {
-
-    /// The read-back granularity.
     private static let readChunk = 1 << 20
 
     private let file: DownloadFile
-    private let ranges: [ByteRange]
-    private let expectedFixedLength: UInt64?
-    private let written: Mutex<[UInt64]>
+    private let totalBytes: UInt64?                       // nil = unknown length (skip end-condition)
+    private let completedIntervals: Mutex<[ByteInterval]> // sole writer path: complete(interval:), additive-merge
     private let failure = Mutex<GohError?>(nil)
     private let finished = Mutex<Bool>(false)
     private let ticks: AsyncStream<Void>
     private let tick: AsyncStream<Void>.Continuation
 
-    public init(file: DownloadFile, ranges: [ByteRange]) {
+    public init(file: DownloadFile, totalBytes: UInt64?) {
         self.file = file
-        self.ranges = ranges
-        self.expectedFixedLength = Self.fixedLength(of: ranges)
-        self.written = Mutex(Array(repeating: 0, count: ranges.count))
+        self.totalBytes = totalBytes
+        self.completedIntervals = Mutex([])
         (self.ticks, self.tick) = AsyncStream.makeStream(
             of: Void.self, bufferingPolicy: .bufferingNewest(1))
     }
 
-    /// A writer reports that range `index` now has `writtenBytes` bytes on disk.
-    public func advance(range index: Int, writtenBytes: UInt64) {
-        written.withLock { $0[index] = writtenBytes }
+    /// Report that `interval` is fully written. ADDITIVE-MERGE ONLY — insert into the existing set and
+    /// coalesce; never replace the whole set (prevents the dual-writer clobber hazard).
+    public func complete(interval: ByteInterval) {
+        completedIntervals.withLock { existing in
+            existing = Self.coalesce(existing + [interval])
+        }
         tick.yield()
     }
 
@@ -98,9 +97,7 @@ public final class ChunkAssembler: Sendable {
         var hasher = SHA256()
         var hashedUpTo: UInt64 = 0
         for await _ in ticks {
-            if let error = failure.withLock({ $0 }) {
-                return .failed(error)
-            }
+            if let error = failure.withLock({ $0 }) { return .failed(error) }
             let frontier = currentFrontier()
             while hashedUpTo < frontier {
                 let count = Int(min(UInt64(Self.readChunk), frontier - hashedUpTo))
@@ -122,12 +119,24 @@ public final class ChunkAssembler: Sendable {
             }
             let finishedNow = finished.withLock { $0 }
             let finalFrontier = currentFrontier()
-            if finishedNow, let expectedFixedLength, finalFrontier < expectedFixedLength {
+            if finishedNow, let total = totalBytes, finalFrontier < total {
                 return .failed(GohError(
                     code: .connectionFailed,
-                    message: "download ended after \(finalFrontier) of \(expectedFixedLength) expected bytes"))
+                    message: "download ended after \(finalFrontier) of \(total) expected bytes"))
             }
             if finishedNow && hashedUpTo == finalFrontier {
+                if let total = totalBytes {
+                    let coalesced = completedIntervals.withLock { $0 }
+                    let isComplete = (total == 0 && coalesced.isEmpty)
+                        || (coalesced.count == 1
+                            && coalesced[0].start == 0
+                            && coalesced[0].length == total)
+                    if !isComplete {
+                        return .failed(GohError(
+                            code: .connectionFailed,
+                            message: "download ended with gaps in the completed interval set"))
+                    }
+                }
                 let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
                 return .digest(digest)
             }
@@ -135,27 +144,28 @@ public final class ChunkAssembler: Sendable {
         return .failed(GohError(code: .cancelled, message: "the assembler ended early"))
     }
 
-    /// The largest `F` such that every byte in `[0, F)` is written: full ranges
-    /// contribute fully; the first incomplete range contributes its prefix and
-    /// stops the walk.
+    /// Frontier = end of the single coalesced interval that starts at byte 0 (else 0).
     private func currentFrontier() -> UInt64 {
-        let snapshot = written.withLock { $0 }
-        var frontier: UInt64 = 0
-        for index in ranges.indices {
-            frontier += snapshot[index]
-            if snapshot[index] < ranges[index].length { break }
-        }
-        return frontier
+        let intervals = completedIntervals.withLock { $0 }
+        guard let first = intervals.first, first.start == 0 else { return 0 }
+        return first.length
     }
 
-    private static func fixedLength(of ranges: [ByteRange]) -> UInt64? {
-        var total: UInt64 = 0
-        for range in ranges {
-            guard range.length != .max else { return nil }
-            let added = total.addingReportingOverflow(range.length)
-            guard !added.overflow else { return nil }
-            total = added.partialValue
+    /// Merge overlapping/adjacent intervals, sorted by start.
+    static func coalesce(_ intervals: [ByteInterval]) -> [ByteInterval] {
+        let sorted = intervals.sorted { $0.start < $1.start }
+        var merged: [ByteInterval] = []
+        for iv in sorted {
+            guard var last = merged.popLast() else { merged.append(iv); continue }
+            if iv.start <= last.end {
+                let newEnd = max(last.end, iv.end)
+                last.length = newEnd - last.start
+                merged.append(last)
+            } else {
+                merged.append(last)
+                merged.append(iv)
+            }
         }
-        return total
+        return merged
     }
 }

@@ -2,21 +2,26 @@ import Darwin
 import Foundation
 import Synchronization
 
-/// Aggregates per-range byte counts so a job's reported progress reflects every
-/// connection. A reference type, so the range tasks share one instance.
-private final class RangeProgress: Sendable {
-    private let counts: Mutex<[UInt64]>
+/// A shared, monotonic byte counter for the dynamic worker pool. Every worker
+/// adds its per-flush byte delta and reads back the running cumulative total
+/// across ALL workers — independent of how many chunks or workers produced the
+/// bytes. A `Sendable` reference type so the worker tasks share one instance
+/// (a bare `Mutex` is noncopyable and cannot be captured by the sending task
+/// closures). Replaces the per-range-index `RangeProgress`.
+private final class ByteCounter: Sendable {
+    private let total: Mutex<UInt64>
 
-    init(rangeCount: Int) {
-        counts = Mutex(Array(repeating: 0, count: rangeCount))
+    init() { total = Mutex(0) }
+
+    /// Adds `delta` to the running total and returns the new cumulative value.
+    func add(_ delta: UInt64) -> UInt64 {
+        total.withLock { $0 += delta; return $0 }
     }
 
-    /// Records range `index`'s byte count, returning the new overall total.
-    func report(index: Int, written: UInt64) -> UInt64 {
-        counts.withLock { counts in
-            counts[index] = written
-            return counts.reduce(0, +)
-        }
+    /// The current cumulative total across all workers. The control loop reads
+    /// this at each reap to derive the aggregate delivery rate for the governor.
+    var value: UInt64 {
+        total.withLock { $0 }
     }
 }
 
@@ -51,6 +56,18 @@ public struct DownloadEngine: Sendable {
     /// No range is split below this; smaller files download over one connection.
     private static let minChunk: UInt64 = 1 << 20
 
+    /// Daemon kill-switch for the in-flight parallelism governor (spec §10).
+    /// When `false`, `fetchRanged` falls back to a static N (the requested
+    /// connection count) and never runs the governor. Defaults to `true`.
+    static let governorEnabled = true
+
+    /// Minimum wall-clock window over which the control loop measures one
+    /// aggregate delivery-rate sample for the governor. Per-reap intervals are
+    /// far too short (tens of ms) and produce a jitter-swamped rate estimate;
+    /// averaging over ≥0.25 s yields a stable signal the governor can detect a
+    /// modest throughput gain against.
+    static let minGovernorSampleSeconds = 0.25
+
     /// Reports a `JobStore` mutation failure other than the expected
     /// `.jobNotFound` (which the engine ignores because it means the job was
     /// removed under it). The reporter receives the `jobID`, the operation
@@ -59,25 +76,37 @@ public struct DownloadEngine: Sendable {
     /// persistence failure becomes diagnosable.
     public typealias UnexpectedStoreErrorReporter = @Sendable (UInt64, String, any Error) -> Void
 
+    /// Fixed chunk granularity for the dynamic worker pool. Workers pull
+    /// `chunkSize`-byte intervals one at a time (the last takes the remainder),
+    /// so there is always spare unclaimed work for the governor (Task 12) to
+    /// hand a freshly-added worker. Independent of the requested connection
+    /// count `N`. Defaults to 8 MiB; injectable so tests can force many small
+    /// chunks. Must be ≥ `bufferSize`.
+    private let chunkSize: UInt64
+
     private let session: URLSession
     private let checkpointStore: CheckpointStore?
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
     private let sleepAssertionController: SleepAssertionController?
-    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)?
+    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
     private let hostProfileStore: HostProfileStore?
+    private let connectionBudget: ConnectionBudget?
 
     public init(
         session: URLSession,
+        chunkSize: UInt64 = 8 << 20,
         checkpointStore: CheckpointStore? = nil,
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
-        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool) -> Void)? = nil,
+        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)? = nil,
         unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
-        hostProfileStore: HostProfileStore? = nil
+        hostProfileStore: HostProfileStore? = nil,
+        connectionBudget: ConnectionBudget? = nil
     ) {
+        self.chunkSize = chunkSize
         self.session = session
         self.checkpointStore = checkpointStore
         self.control = control
@@ -86,6 +115,7 @@ public struct DownloadEngine: Sendable {
         self.completedDownloadHandler = completedDownloadHandler
         self.unexpectedStoreError = unexpectedStoreError
         self.hostProfileStore = hostProfileStore
+        self.connectionBudget = connectionBudget
     }
 
     /// Routes a `JobStore` mutation error to the reporter, silently dropping
@@ -127,7 +157,10 @@ public struct DownloadEngine: Sendable {
 
     /// Downloads the job with `jobID`, driving it to a terminal state. Never
     /// throws — every failure is recorded on the job as a ``GohError``.
-    public func run(jobID: UInt64, in store: JobStore) async {
+    public func run(
+        jobID: UInt64, in store: JobStore,
+        explicitConnectionCount: UInt8? = nil
+    ) async {
         guard store.job(id: jobID) != nil else { return }
         control?.register(jobID: jobID)
         defer { control?.unregister(jobID: jobID) }
@@ -163,7 +196,9 @@ public struct DownloadEngine: Sendable {
                     job: job, checkpoint: checkpoint, checkpointStore: checkpointStore,
                     store: store, trace: EngineDiagnostics())
             } else {
-                try await download(job: job, store: store, trace: EngineDiagnostics())
+                try await download(
+                    job: job, store: store, trace: EngineDiagnostics(),
+                    explicitConnectionCount: explicitConnectionCount)
             }
             try? checkpointStore?.delete(jobID: jobID)
         } catch let stop as DownloadControlStop {
@@ -192,7 +227,8 @@ public struct DownloadEngine: Sendable {
     }
 
     private func download(
-        job: JobSummary, store: JobStore, trace: EngineDiagnostics
+        job: JobSummary, store: JobStore, trace: EngineDiagnostics,
+        explicitConnectionCount: UInt8? = nil
     ) async throws {
         guard let url = URL(string: job.url) else {
             throw GohError(code: .unsupportedURL, message: "could not parse URL: \(job.url)")
@@ -224,7 +260,8 @@ public struct DownloadEngine: Sendable {
             let total = contentRange.total
             try await fetchRanged(
                 job: job, store: store, url: url, total: total, initialResponse: response,
-                firstRangeStream: stream, cancelFirstRangeStream: cancelStream, trace: trace)
+                firstRangeStream: stream, cancelFirstRangeStream: cancelStream, trace: trace,
+                explicitConnectionCount: explicitConnectionCount)
         case 200..<300:
             try await fetchSingle(
                 job: job, store: store,
@@ -410,9 +447,9 @@ public struct DownloadEngine: Sendable {
     }
 
     private func verifyHash(file: DownloadFile, total: UInt64) async throws {
-        let assembler = ChunkAssembler(file: file, ranges: [ByteRange(start: 0, length: total)])
+        let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
-        assembler.advance(range: 0, writtenBytes: total)
+        assembler.complete(interval: ByteInterval(start: 0, length: total))
         assembler.finish()
         if case .failed(let error) = await assembled {
             throw error
@@ -438,8 +475,7 @@ public struct DownloadEngine: Sendable {
         let total: UInt64? = initialResponse.expectedContentLength >= 0
             ? UInt64(initialResponse.expectedContentLength) : nil
         let file = try DownloadFile(path: job.destination, expectedSize: total)
-        let assembler = ChunkAssembler(
-            file: file, ranges: [ByteRange(start: 0, length: total ?? UInt64.max)])
+        let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
 
         let clock = ContinuousClock()
@@ -450,10 +486,12 @@ public struct DownloadEngine: Sendable {
 
         func flush() throws {
             guard !buffer.isEmpty else { return }
-            try file.write(buffer, at: completed)
-            completed += UInt64(buffer.count)
+            let writeStart = completed
+            let writeLength = UInt64(buffer.count)
+            try file.write(buffer, at: writeStart)
+            completed += writeLength
             buffer.removeAll(keepingCapacity: true)
-            assembler.advance(range: 0, writtenBytes: completed)
+            assembler.complete(interval: ByteInterval(start: writeStart, length: writeLength))
             try control?.stopIfRequested(jobID: job.id)
         }
 
@@ -497,52 +535,296 @@ public struct DownloadEngine: Sendable {
         initialResponse: HTTPURLResponse,
         firstRangeStream: AsyncThrowingStream<Data, Error>,
         cancelFirstRangeStream: @escaping @Sendable () -> Void,
-        trace: EngineDiagnostics
+        trace: EngineDiagnostics,
+        explicitConnectionCount: UInt8? = nil,
+        clock: ContinuousClock = ContinuousClock()   // injected; default keeps callers unchanged
     ) async throws {
-        let ranges = ByteRange.split(
-            total: total, requested: job.requestedConnectionCount, minChunk: Self.minChunk)
-        _ = try store.setActualConnectionCount(id: job.id, UInt8(ranges.count))
-
         let file = try DownloadFile(path: job.destination, expectedSize: total)
-        let assembler = ChunkAssembler(file: file, ranges: ranges)
+        let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
         let checkpointRecorder = makeCheckpointRecorder(
             job: job, total: total, response: initialResponse)
 
-        let progress = RangeProgress(rangeCount: ranges.count)
-        let clock = ContinuousClock()
+        // Byte-based progress: a single shared counter accumulating every
+        // worker's per-flush delta. Monotonic and N-agnostic — the sum of all
+        // per-flush `pieceLength`s equals total bytes written, regardless of how
+        // many chunks or workers produced them. Replaces the per-range-index
+        // `RangeProgress` (which assumed a fixed range count).
+        let bytesWritten = ByteCounter()
         let started = clock.now
 
+        // Seed the dynamic chunk pool with FIXED-size chunks (spec §6.1): a
+        // daemon constant independent of N. The last chunk takes the remainder.
+        // Because there are many more chunks than N (for total > chunkSize), the
+        // queue always holds spare unclaimed work — that is what lets the
+        // governor (Task 12) add a worker live. The first chunk (start 0)
+        // reuses the speculative firstRangeStream; all others open a fresh GET.
+        var chunks: [ByteInterval] = []
+        var offset: UInt64 = 0
+        while offset < total {
+            let len = min(chunkSize, total - offset)
+            chunks.append(ByteInterval(start: offset, length: len))
+            offset += len
+        }
+        let queue = ChunkQueue(intervals: chunks)
+
+        // Governor runs only when no explicit --connections was given AND the
+        // daemon kill-switch is on. An explicit count pins targetN (no probing).
+        let governorEnabled = explicitConnectionCount == nil && Self.governorEnabled
+        // Clamp the seed/pin target to [1, 16]. The slot set is 0..<16, so
+        // targetN must never exceed 16 (closes the 11A advisory).
+        var targetN = min(max(Int(explicitConnectionCount ?? job.requestedConnectionCount), 1), 16)
+        // The governor is a value type mutated ONLY in the synchronous control
+        // loop below (record/decide). Workers never touch it. The sample sink is
+        // the sole worker→control-loop channel (a Mutex).
+        var governor = ParallelismGovernor(config: .default, rng: SystemRandomNumberGenerator())
+
+        // Per-host connection budget gate (spec §8). Computed once; nil when the
+        // host key is unparseable — in that case the gate is skipped entirely.
+        // `connectionBudget` itself may be nil (no enforcement; existing tests
+        // pass no budget and are completely unaffected).
+        let budgetHostKey: String? = connectionBudget != nil ? hostKey(for: job.url) : nil
+
         do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                // Range 0 reuses the open-ended stream that download() already
-                // started; consumeRange truncates it at ranges[0].length.
-                group.addTask {
-                    try await consumeRange(
-                        index: 0, range: ranges[0], file: file,
-                        assembler: assembler, progress: progress,
-                        checkpointRecorder: checkpointRecorder,
-                        job: job, store: store, total: total,
-                        clock: clock, started: started, trace: trace,
-                        stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
-                }
-                for (index, range) in ranges.enumerated().dropFirst() {
-                    group.addTask {
-                        try await downloadRange(
-                            index: index, range: range, url: url, file: file,
-                            assembler: assembler, progress: progress,
-                            checkpointRecorder: checkpointRecorder,
-                            job: job, store: store, total: total,
-                            clock: clock, started: started, trace: trace)
+            // The group element is the connection SLOT the worker held, returned
+            // on completion so the control loop can free it. Slots are a stable
+            // index in 0..<liveWorkers (NOT the unbounded chunk index) so Task
+            // 12's governor can tag each rate sample with a per-worker identity.
+            try await withThrowingTaskGroup(of: Int.self) { group in
+                var liveWorkers = 0
+                var peakWorkers = 0
+                // 16 = the hard worker cap (the governor may grow targetN to 16
+                // in Task 12). The lowest free slot is allocated on spawn and
+                // returned to the set on reap; at fixed targetN ≤ 16 only the low
+                // slots are ever used.
+                var availableSlots = Set(0..<16)
+
+                // The control loop is the SOLE caller of group.addTask. A worker
+                // downloads one captured chunk (the first chunk reuses the
+                // speculative firstRangeStream; others open a fresh ranged GET
+                // via downloadRange) and returns its slot id. Workers never call
+                // addTask and never touch the slot set.
+                //
+                // `spawn` is only called after the budget slot has already been
+                // granted by `fillToTarget` — the worker's defer unconditionally
+                // releases 1 slot on exit (normal return, throw, or cancel).
+                // Capture `budgetHostKey` by value so the closure is independent
+                // of any outer mutation.
+                func spawn(_ chunk: ByteInterval) {
+                    // Crash-proof slot allocation: if somehow no slot is free,
+                    // don't spawn — hold (targetN is clamped ≤ 16, so this should
+                    // never trip, but a force-unwrap here would be a hard crash).
+                    guard let slot = availableSlots.min() else {
+                        // Budget was pre-granted but spawn can't proceed; release it.
+                        if let budget = connectionBudget, let hk = budgetHostKey {
+                            budget.release(slots: 1, hostKey: hk)
+                        }
+                        return
                     }
+                    availableSlots.remove(slot)
+                    let range = ByteRange(start: chunk.start, length: chunk.length)
+                    // Capture budget and key by value for the worker's defer so
+                    // the release is leak-proof on normal return, throw, and cancel.
+                    let capturedBudget = connectionBudget
+                    let capturedBudgetHostKey = budgetHostKey
+                    if chunk.start == 0 {
+                        group.addTask {
+                            defer {
+                                if let budget = capturedBudget, let hk = capturedBudgetHostKey {
+                                    budget.release(slots: 1, hostKey: hk)
+                                }
+                            }
+                            try await consumeRange(
+                                index: slot, range: range, file: file,
+                                assembler: assembler, bytesWritten: bytesWritten,
+                                checkpointRecorder: checkpointRecorder,
+                                job: job, store: store, total: total,
+                                clock: clock, started: started, trace: trace,
+                                stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
+                            return slot
+                        }
+                    } else {
+                        group.addTask {
+                            defer {
+                                if let budget = capturedBudget, let hk = capturedBudgetHostKey {
+                                    budget.release(slots: 1, hostKey: hk)
+                                }
+                            }
+                            try await downloadRange(
+                                index: slot, range: range, url: url, file: file,
+                                assembler: assembler, bytesWritten: bytesWritten,
+                                checkpointRecorder: checkpointRecorder,
+                                job: job, store: store, total: total,
+                                clock: clock, started: started, trace: trace)
+                            return slot
+                        }
+                    }
+                    liveWorkers += 1
+                    peakWorkers = max(peakWorkers, liveWorkers)
                 }
-                for _ in ranges {
+
+                // Admit workers up to the target while the queue has work and the
+                // per-host budget allows. Budget is requested here, before spawn,
+                // so the worker's defer owns the paired release — no double-release
+                // is possible (the control loop never releases; only workers do).
+                // On budget denial the chunk is returned to the front of the queue
+                // and the fill breaks (hold-N), waiting for the next reap to try
+                // again. Returns whether at least one worker was admitted.
+                @discardableResult
+                func fillToTarget(_ target: Int) -> Bool {
+                    var admitted = false
+                    while liveWorkers < target, let chunk = queue.pull() {
+                        if let budget = connectionBudget, let hk = budgetHostKey {
+                            guard budget.request(slots: 1, hostKey: hk) else {
+                                // Budget full — return the chunk and stop filling.
+                                queue.returnToFront(chunk)
+                                break
+                            }
+                        }
+                        spawn(chunk)
+                        admitted = true
+                    }
+                    return admitted
+                }
+
+                // Seed fill. If budget denial blocked ALL workers (liveWorkers == 0
+                // after the fill) yet there's still work queued, force-admit one
+                // worker unconditionally — this guarantees the download always makes
+                // progress even when the global budget is fully consumed by sibling
+                // downloads. Without this safeguard the outer `while liveWorkers > 0`
+                // loop would exit immediately, leaving chunks in the queue.
+                func forceOneIfStalled() {
+                    guard liveWorkers == 0, let chunk = queue.pull() else { return }
+                    // Force: request budget (will be denied if full) but spawn anyway.
+                    // The budget is requested first so the worker's defer can release
+                    // it; if denied, the budget is not incremented so no phantom
+                    // release happens. We DON'T increment the budget here when denied
+                    // — we just skip the request and spawn without a budget slot.
+                    // The worker's defer only releases when budget+key were captured
+                    // as non-nil, so it's safe to capture nil when forcing.
+                    if let budget = connectionBudget, let hk = budgetHostKey {
+                        // Try a normal request first (may succeed if another download
+                        // released between the fill attempt and now).
+                        if !budget.request(slots: 1, hostKey: hk) {
+                            // Denied; spawn without incrementing the budget counter
+                            // so the forced worker will NOT release on exit.
+                            let slot: Int
+                            guard let s = availableSlots.min() else { return }
+                            slot = s
+                            availableSlots.remove(slot)
+                            let range = ByteRange(start: chunk.start, length: chunk.length)
+                            if chunk.start == 0 {
+                                group.addTask {
+                                    // No defer release — this is the un-budgeted forced slot.
+                                    try await consumeRange(
+                                        index: slot, range: range, file: file,
+                                        assembler: assembler, bytesWritten: bytesWritten,
+                                        checkpointRecorder: checkpointRecorder,
+                                        job: job, store: store, total: total,
+                                        clock: clock, started: started, trace: trace,
+                                        stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
+                                    return slot
+                                }
+                            } else {
+                                group.addTask {
+                                    // No defer release — this is the un-budgeted forced slot.
+                                    try await downloadRange(
+                                        index: slot, range: range, url: url, file: file,
+                                        assembler: assembler, bytesWritten: bytesWritten,
+                                        checkpointRecorder: checkpointRecorder,
+                                        job: job, store: store, total: total,
+                                        clock: clock, started: started, trace: trace)
+                                    return slot
+                                }
+                            }
+                            liveWorkers += 1
+                            peakWorkers = max(peakWorkers, liveWorkers)
+                            return
+                        }
+                    }
+                    // Budget either nil (no enforcement), key nil (no enforcement),
+                    // or request succeeded — normal spawn path.
+                    spawn(chunk)
+                }
+
+                fillToTarget(targetN)
+                forceOneIfStalled()
+                // Record peak concurrent workers (== min(targetN, chunkCount) at
+                // fixed N) for goh top / ls.
+                _ = try store.setActualConnectionCount(id: job.id, UInt8(peakWorkers))
+
+                // Aggregate delivery-rate sampling for the governor: at each reap
+                // we measure total bytes/sec across ALL connections over the
+                // interval since the last reap. This is the BBR-style signal the
+                // governor hill-climbs on — robust to the per-connection jitter
+                // that made the old per-worker steady-state detector inert.
+                var lastSampledTotal: UInt64 = 0
+                var lastSampledAt = started
+
+                while liveWorkers > 0 {
+                    let freedSlot: Int?
                     do {
-                        _ = try await group.next()
+                        freedSlot = try await group.next()
                     } catch {
                         group.cancelAll()
                         throw error
                     }
+                    liveWorkers -= 1
+                    if let s = freedSlot { availableSlots.insert(s) }
+
+                    // Governor step (governor-on only). Measure the aggregate
+                    // delivery rate over the interval since the last reap (total
+                    // bytes across ALL connections), feed it to the governor, ask
+                    // for a decision, and apply it to the OPERATING target N (not
+                    // the just-decremented liveWorkers — the governor reasons
+                    // about the intended connection count). Mutating `governor`
+                    // here is safe — this is the sole synchronous mutator.
+                    if governorEnabled {
+                        let nowTotal = bytesWritten.value
+                        let nowInstant = clock.now
+                        let interval = nowInstant - lastSampledAt
+                        let dSeconds = Double(interval.components.seconds)
+                            + Double(interval.components.attoseconds) / 1e18
+                        // Only record once the window is long enough to be a
+                        // low-noise rate estimate; otherwise keep accumulating.
+                        if dSeconds >= Self.minGovernorSampleSeconds {
+                            let bps = Double(nowTotal - lastSampledTotal) / dSeconds
+                            governor.record(aggregateBytesPerSecond: bps)
+                            lastSampledTotal = nowTotal
+                            lastSampledAt = nowInstant
+                        }
+                        let decision = governor.decide(
+                            operatingN: targetN, remainingBytes: queue.remainingBytes)
+                        let decisionLabel: String
+                        switch decision {
+                        case .hold: decisionLabel = "hold"
+                        case .addWorkers(let k): targetN = min(targetN + k, 16); decisionLabel = "addWorkers(\(k))"
+                        case .dropWorkers(let k): targetN = max(targetN - k, 1); decisionLabel = "dropWorkers(\(k))"
+                        case .commit(let n): targetN = min(max(n, 1), 16); decisionLabel = "commit(\(n))"
+                        case .backOffPinLow: targetN = 1; decisionLabel = "backOffPinLow"
+                        }
+                        trace.recordGovernorDecision(
+                            phase: governor.phaseLabel, decision: decisionLabel,
+                            currentN: targetN, hostKey: hostKey(for: job.url))
+                    }
+
+                    // Re-admit chunk(s) up to the (possibly governor-updated)
+                    // target onto freed slots. When targetN dropped, this simply
+                    // doesn't re-admit — running workers finish their current
+                    // chunk and aren't replaced (cooperative drop, no cancel).
+                    fillToTarget(targetN)
+                    // No need to call forceOneIfStalled here: liveWorkers was > 0
+                    // when we entered this iteration (the while condition), so
+                    // after decrement it may be 0. But if it's 0 and budget denied
+                    // the fill, the while condition fails and we exit. However we
+                    // JUST reaped a worker whose defer released a budget slot, so
+                    // another download's released slot also means budget may now be
+                    // free. Re-check: if liveWorkers == 0 after fill, force one.
+                    forceOneIfStalled()
+                    // The governor may have grown N — re-record the peak. The
+                    // store method is peak-max, so repeated calls keep the
+                    // high-water mark.
+                    _ = try store.setActualConnectionCount(id: job.id, UInt8(peakWorkers))
                 }
             }
         } catch {
@@ -563,18 +845,21 @@ public struct DownloadEngine: Sendable {
         _ = try store.recordProgress(
             id: job.id,
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
+        let governorOutcome = governorEnabled ? governor.outcome : .governorOff
         try complete(
             jobID: job.id, in: store,
-            transferDuration: clock.now - started, isResume: false)
+            transferDuration: clock.now - started, isResume: false,
+            governorOutcome: governorOutcome)
         trace.summary()
     }
 
     private func complete(
         jobID: UInt64, in store: JobStore,
-        transferDuration: Duration, isResume: Bool
+        transferDuration: Duration, isResume: Bool,
+        governorOutcome: GovernorOutcome = .governorOff
     ) throws {
         let completed = try store.complete(id: jobID)
-        completedDownloadHandler?(completed, transferDuration, isResume)
+        completedDownloadHandler?(completed, transferDuration, isResume, governorOutcome)
     }
 
     /// Issues a fresh ranged `GET` for `range` and feeds its body into
@@ -582,7 +867,7 @@ public struct DownloadEngine: Sendable {
     /// open-ended stream that ``download(job:store:trace:)`` already started.
     private func downloadRange(
         index: Int, range: ByteRange, url: URL, file: DownloadFile,
-        assembler: ChunkAssembler, progress: RangeProgress,
+        assembler: ChunkAssembler, bytesWritten: ByteCounter,
         checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
@@ -603,7 +888,7 @@ public struct DownloadEngine: Sendable {
         try Self.validateContentRange(http, matches: range, total: total)
         try await consumeRange(
             index: index, range: range, file: file,
-            assembler: assembler, progress: progress,
+            assembler: assembler, bytesWritten: bytesWritten,
             checkpointRecorder: checkpointRecorder,
             job: job, store: store, total: total,
             clock: clock, started: started, trace: trace,
@@ -617,7 +902,7 @@ public struct DownloadEngine: Sendable {
     /// break is benign for them.
     private func consumeRange(
         index: Int, range: ByteRange, file: DownloadFile,
-        assembler: ChunkAssembler, progress: RangeProgress,
+        assembler: ChunkAssembler, bytesWritten: ByteCounter,
         checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
@@ -646,8 +931,11 @@ public struct DownloadEngine: Sendable {
             written += pieceLength
             buffer.removeAll(keepingCapacity: true)
             trace.timed(index, .report) {
-                assembler.advance(range: index, writtenBytes: written)
-                let overall = progress.report(index: index, written: written)
+                assembler.complete(interval: ByteInterval(start: pieceStart, length: pieceLength))
+                // Add this flush's byte delta to the shared cumulative counter;
+                // `overall` is the running total across ALL workers — monotonic
+                // and independent of chunk/worker count.
+                let overall = bytesWritten.add(pieceLength)
                 recordProgress(
                     store: store, jobID: job.id,
                     Self.progress(completed: overall, total: total,

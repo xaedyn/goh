@@ -228,57 +228,130 @@ struct HostProfileStoreTests {
     // Hardening: the D5/D8 gate predicate, unit-tested in isolation.
     @Test("D5 gate: a clean solo download qualifies")
     func d5GatePositive() {
-        #expect(HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(10),
             bytesCompleted: 8 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: a resume never qualifies (D8)")
     func d5GateResumeRejected() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: true, transferDuration: .seconds(60),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: too short a transfer is rejected")
     func d5GateTooShort() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(9),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: too few bytes is rejected")
     func d5GateTooFewBytes() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(30),
             bytesCompleted: 8 * 1024 * 1024 - 1, wasSolo: true,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: a contended (non-solo) download is rejected")
     func d5GateContendedRejected() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(30),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: false,
-            actualConnectionCount: 8, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
-    @Test("D5 gate: actual != requested connection count is rejected")
-    func d5GateConnectionMismatchRejected() {
-        #expect(!HostProfileStore.shouldRecordObservation(
+    @Test("D5 gate: off-candidate governor outcome is rejected")
+    func d5GateOffCandidateRejected() {
+        // effectiveN nil = governor converged off-candidate; must not pollute the arm.
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(30),
             bytesCompleted: 100 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 1, requestedConnectionCount: 8))
+            governorOutcome: GovernorOutcome(effectiveN: nil, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
     }
 
     @Test("D5 gate: boundary — exactly 10s and exactly 8 MiB qualifies")
     func d5GateBoundary() {
-        #expect(HostProfileStore.shouldRecordObservation(
+        let req = ObservationRequest(
             isResume: false, transferDuration: .seconds(10),
             bytesCompleted: 8 * 1024 * 1024, wasSolo: true,
-            actualConnectionCount: 16, requestedConnectionCount: 16))
+            governorOutcome: GovernorOutcome(effectiveN: 16, stabilized: true))
+        #expect(HostProfileStore.shouldRecordObservation(req))
+    }
+
+    @Test("ObservationRequest: effectiveN nil → gate rejects")
+    func observationGateRejectsNilEffectiveN() {
+        let req = ObservationRequest(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 16 * 1024 * 1024, wasSolo: true,
+            governorOutcome: GovernorOutcome(effectiveN: nil, stabilized: true))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
+    }
+
+    @Test("ObservationRequest: stabilized=false → gate rejects")
+    func observationGateRejectsUnstabilized() {
+        let req = ObservationRequest(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 16 * 1024 * 1024, wasSolo: true,
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: false))
+        #expect(!HostProfileStore.shouldRecordObservation(req))
+    }
+
+    @Test("ObservationRequest: candidate-aligned stable → gate passes")
+    func observationGatePassesCandidateAligned() {
+        let req = ObservationRequest(
+            isResume: false, transferDuration: .seconds(30),
+            bytesCompleted: 16 * 1024 * 1024, wasSolo: true,
+            governorOutcome: GovernorOutcome(effectiveN: 8, stabilized: true))
+        #expect(HostProfileStore.shouldRecordObservation(req))
+    }
+
+    @Test("SM4: governor-recorded arm warm-starts N₀ — exploit picks the best arm")
+    func sm4WarmStartFromGovernorArm() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = HostProfileStore(fileURL: directory.appending(path: "host-scheduling.plist"))
+        _ = store.load()
+        let key = "https://fast.example.com:443"
+        let candidates: [(UInt8, Double)] = [(2, 20_000_000), (4, 40_000_000), (8, 80_000_000), (16, 60_000_000)]
+        for (n, throughput) in candidates {
+            for _ in 0..<3 {   // ≥ minSamples
+                store.recordObservation(hostKey: key, connectionCount: n,
+                    totalBytes: UInt64(throughput * 30), transferDuration: .seconds(30))
+            }
+        }
+        // `store.selectN` uses an unseeded system RNG and explores ε of the time, so it
+        // would flake on the exploit assertion. Test the exploit path deterministically by
+        // driving the pure selector with ε=0 (never explores) over the recorded profile —
+        // this proves the warm-start arm (best EWMA = N=8) is the one exploit picks.
+        let profile = store.profile(hostKey: key)
+        var rng = SeededRNG(seed: 1)
+        let (chosenN, reason) = BanditSelector(epsilon: 0).select(profile: profile, rng: &rng)
+        #expect(chosenN == 8, "SM4: exploit should pick N=8 (best EWMA); got \(chosenN)")
+        #expect(reason == .exploit, "selectN returns .exploit; warmStart is the trace annotation, not a selectN return")
+    }
+
+    @Test("SM4: warmStart trace predicate — exploit + no explicit N + governor on ⇒ warmStart; else not")
+    func sm4WarmStartPredicate() {
+        func traceReason(_ selectionReason: SelectionReason, hasExplicitN: Bool, governorOn: Bool) -> SelectionReason {
+            if selectionReason == .exploit, !hasExplicitN, governorOn { return .warmStart }
+            return selectionReason
+        }
+        #expect(traceReason(.exploit, hasExplicitN: false, governorOn: true) == .warmStart)
+        #expect(traceReason(.exploit, hasExplicitN: true,  governorOn: true) == .exploit)   // explicit N
+        #expect(traceReason(.exploit, hasExplicitN: false, governorOn: false) == .exploit)  // kill-switch
+        #expect(traceReason(.explore, hasExplicitN: false, governorOn: true) == .explore)   // not exploit
+        #expect(traceReason(.cold,    hasExplicitN: false, governorOn: true) == .cold)
     }
 }

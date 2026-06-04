@@ -30,10 +30,17 @@ func warn(_ message: String) {
 
 func makeScheduleJob(
     engine: DownloadEngine,
-    store: JobStore
+    store: JobStore,
+    explicitConnectionCounts: ExplicitConnectionCounts
 ) -> @Sendable (UInt64) -> Void {
     { jobID in
-        Task { await engine.run(jobID: jobID, in: store) }
+        // Consume the daemon-internal explicit-N entry (set at admission for a
+        // user-supplied --connections). Removing it means a later resume of the
+        // same job has no entry → the governor may run on the resume path, which
+        // is fine (resume excludes observations via D8 and never hits the
+        // fetchRanged governor anyway).
+        let explicitN = explicitConnectionCounts.consume(jobID: jobID)
+        Task { await engine.run(jobID: jobID, in: store, explicitConnectionCount: explicitN) }
     }
 }
 
@@ -113,6 +120,14 @@ do {
     }
 
     let downloadControl = DownloadControl()
+    // Daemon-global per-host connection budget (spec §8). One shared instance
+    // spans all concurrent downloads — that's the point: the 16-connection cap
+    // is per-host across ALL jobs, not per-job.
+    let connectionBudget = ConnectionBudget(maxPerHost: 16)
+    // Daemon-internal explicit-`--connections` channel (NOT on the wire). The
+    // dispatcher records a job's user-supplied N here at admission; makeScheduleJob
+    // consumes it to run that job's governor in "off" mode (static pinned N).
+    let explicitConnectionCounts = ExplicitConnectionCounts()
     let importedCookies = ImportedCookieStore()
     let metadataTagger = SpotlightMetadataTagger()
     let sleepAssertions = SleepAssertionController()
@@ -126,23 +141,26 @@ do {
             importedCookies.header(forJobID: jobID)
         },
         sleepAssertionController: sleepAssertions,
-        completedDownloadHandler: { completed, transferDuration, isResume in
+        completedDownloadHandler: { completed, transferDuration, isResume, governorOutcome in
             // D5/D8 gates — all must hold to record a valid observation.
             // wasSolo is checked BEFORE end() runs (end() is in a defer in
             // run(), which fires after this handler returns) — so the
             // whole-duration solo answer is correct here.
             let observationKey = hostKey(for: completed.url)
-            if let key = observationKey,
-               HostProfileStore.shouldRecordObservation(
-                   isResume: isResume,
-                   transferDuration: transferDuration,
-                   bytesCompleted: completed.progress.bytesCompleted,
-                   wasSolo: hostProfileStore.wasSolo(jobID: completed.id),
-                   actualConnectionCount: completed.actualConnectionCount,
-                   requestedConnectionCount: completed.requestedConnectionCount) {
-                hostProfileStore.recordObservation(
+            if let key = observationKey {
+                // The bandit records an observation only when the governor
+                // converged to a candidate-aligned, stabilized N. Governor-off
+                // paths (explicit --connections, tiny files, kill-switch) carry
+                // .governorOff (effectiveN nil) so the gate rejects them.
+                let req = ObservationRequest(
+                    isResume: isResume,
+                    transferDuration: transferDuration,
+                    bytesCompleted: completed.progress.bytesCompleted,
+                    wasSolo: hostProfileStore.wasSolo(jobID: completed.id),
+                    governorOutcome: governorOutcome)
+                hostProfileStore.recordObservationIfEligible(
+                    req,
                     hostKey: key,
-                    connectionCount: completed.actualConnectionCount,
                     totalBytes: completed.progress.bytesCompleted,
                     transferDuration: transferDuration)
             }
@@ -158,8 +176,11 @@ do {
         unexpectedStoreError: { jobID, operation, error in
             warn("job \(jobID) store.\(operation) failed unexpectedly: \(error)")
         },
-        hostProfileStore: hostProfileStore)
-    let scheduleJob = makeScheduleJob(engine: engine, store: store)
+        hostProfileStore: hostProfileStore,
+        connectionBudget: connectionBudget)
+    let scheduleJob = makeScheduleJob(
+        engine: engine, store: store,
+        explicitConnectionCounts: explicitConnectionCounts)
     let networkCoordinator = NetworkPauseCoordinator(
         store: store, control: downloadControl, scheduleJob: scheduleJob)
     let dispatcher = CommandDispatcher(
@@ -167,6 +188,7 @@ do {
         checkpointStore: checkpointStore,
         hostProfileStore: hostProfileStore,
         importedCookies: importedCookies,
+        explicitConnectionCounts: explicitConnectionCounts,
         queuedJobAdmission: { networkCoordinator.jobBecameQueued($0) })
     let authImportHandler = SafariAuthImportHandler(importedCookies: importedCookies)
     let service = CommandService(

@@ -17,6 +17,15 @@ struct EngineDiagnosticsSchedulingTests {
         #expect(diag.peakActive == 0)
     }
 
+    @Test("SM1 prerequisite: recordGovernorDecision exists and is a no-op when disabled")
+    func governorTraceExists() {
+        let diag = EngineDiagnostics(enabled: false)
+        diag.recordGovernorDecision(phase: "probe", decision: "addWorkers(2)", currentN: 2,
+            hostKey: "https://example.com:443")
+        // No assertion on output (disabled → no emit); this is a compile + no-crash guard.
+        #expect(Bool(true))
+    }
+
     @Test("AC: recordSchedulingDecision with enabled trace does not crash")
     func ac12EnabledDoesNotCrash() {
         let diag = EngineDiagnostics(enabled: true)
