@@ -205,6 +205,32 @@ The downside is a small bandwidth waste at cancellation time — bytes already
 in flight on the open-ended stream when it's truncated, typically ≤ one TCP
 window. The upside compounds: one RTT saved on every download.
 
+### `streamingResponse` cancellation-race fix
+
+`URLSession.streamingResponse(for:onMetrics:)` in `StreamingDataTask.swift`
+bridges `URLSession` delegate callbacks into a `CheckedContinuation` +
+`AsyncThrowingStream`. The cancellation handler registered via
+`withTaskCancellationHandler` is documented to fire *immediately* — even before
+the handler body runs — when the calling `Task` is already cancelled at the
+point of entry. In that case `taskBox` holds `nil` (the delegate closure has not
+run yet, so `taskBox.set(_:)` has not been called), and the `onCancel` closure's
+`taskBox.cancel()` call is a no-op. The URLSession data task that the body
+subsequently creates would then run to completion unreachably — a live task leak.
+
+The fix is a single guard at the end of the `withCheckedThrowingContinuation`
+body, after `task.resume()`:
+
+```swift
+if Task.isCancelled { taskBox.cancel() }
+```
+
+At that point `taskBox` is guaranteed to be set, so the cancel call reaches the
+real `URLSessionDataTask`. This guard closes the already-cancelled-on-entry
+window and is safe to run redundantly (cancelling an already-cancelled task is
+idempotent). The fix benefits all callers of `streamingResponse`, including the
+download engine's range-parallel drain loop and `goh diagnose`'s probe
+connections.
+
 ### HTTP/3 — tried and reverted for v0.1
 
 `URLRequest.assumesHTTP3Capable = true` was tried as a per-request opt-in
@@ -1906,6 +1932,50 @@ doctor prints `[ok]`, `[warn]`, and `[fail]` findings plus exact recovery
 commands; failures exit `1`, warning-only runs exit `0`. Keeping this logic
 CLI-local avoids a new wire contract and lets a broken daemon still be diagnosed
 from filesystem and launchd state.
+
+### `goh diagnose`
+
+`goh diagnose <url>` is a standalone probe that characterises a server's
+download-suitability without initiating a real download job. Two design choices
+are non-obvious and worth recording.
+
+**Probe-without-abort.** The download engine's range-parallel path aborts
+aggressively when it sees a non-`206` response: a connection that returns `200`
+or an error is treated as a fatal signal and the whole job is cancelled. The
+diagnose probe deliberately does *not* reuse that path. It opens each connection,
+records the HTTP status and body throughput, and continues regardless. A
+connection that is rejected (non-`206`) is logged in `report.rejections` and
+counted in `report.attempted`; the probe only sets `ProbeTermination.unreachable`
+when even the Phase 0 speculative `GET` fails at the transport layer. This
+"record and continue" design is what makes the probe useful as a diagnostic: a
+server that rejects connection 3 of 8 while accepting the rest is valuable
+information a user needs to see — an abort-on-non-206 probe would surface only
+"connection 3 failed."
+
+**Protocol-gated bottleneck verdict.** The pure `verdict(_:config:)` function
+selects exactly one of seven `Verdict` cases in priority order:
+`insufficientData` (no measurable single-connection sample), `rangeUnsupported`
+(server ignored `Range`), `rangeSupportedSizeUnknown` (`206` but no parseable
+`Content-Range`, so parallelism could not be tested), `rateLimited`
+(`accepted < attempted` — the server rejected some parallel range requests),
+`scaled` (`Tₙ ≥ scalingFactor·T₁` — throughput grew with connections, so the
+source/path was the limit and parallelism helps), and — when throughput did *not*
+scale — one of two protocol-gated cases. This split is the load-bearing honesty
+mechanism. `didNotScaleHTTP1` fires only when `networkProtocol == "http/1.1"`
+*exactly* (an allow-list): over HTTP/1.1 `URLSession` opens separate TCP
+connections, so a flat Tₙ/T₁ genuinely means either the client link or a
+server-side per-client cap is the limit — and the verdict says exactly that,
+hedged ("can't be told apart without a faster reference"). For every other
+protocol value — `h2`, `h3`, an unexpected ALPN string, or `nil`/unknown (common
+under `MockURLProtocol` in tests, and possible when
+`URLSessionTaskTransactionMetrics` is absent) — the conservative
+`didNotScaleMultiplexed` case fires instead: over a multiplexed protocol the N
+range requests share one transport connection, so a flat ratio is expected
+regardless of link or source, and asserting a link-vs-server cause would be a
+confidently-wrong verdict. There is no `isHedged` flag; the honesty is encoded in
+*which* case is selected and in each case's fixed `verdictText`. The seven
+`Verdict` raw values are part of the frozen v1 `--json` contract;
+`verdictText` is a display string and is not frozen.
 
 ## Progress Subscription Contract
 

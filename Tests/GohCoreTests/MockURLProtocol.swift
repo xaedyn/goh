@@ -5,7 +5,11 @@ import Synchronization
 /// no network. It answers `HEAD` capability probes and `Range` requests, so the
 /// range-parallel path is exercised end-to-end. Each test stubs a unique URL;
 /// stubs accumulate harmlessly across a run, so there is no shared teardown.
-final class MockURLProtocol: URLProtocol {
+// `@unchecked Sendable`: all mutable state (`stubs`, `stopped`) is guarded by
+// `Mutex`; `deliveryQueue` is a serial `DispatchQueue`. The class is safe for
+// concurrent use by construction; the unchecked annotation silences the capture
+// warning from `scheduleNextChunk`'s `[weak self]` closure on `deliveryQueue`.
+final class MockURLProtocol: URLProtocol, @unchecked Sendable {
 
     struct Stub: Sendable {
         var statusCode: Int = 200
@@ -32,6 +36,17 @@ final class MockURLProtocol: URLProtocol {
         /// in-flight downloads deterministically.
         var bodyChunkSize: Int?
         var bodyChunkDelayMicroseconds: useconds_t = 0
+        /// Test-only: when true, a successful ranged request delivers the 206
+        /// headers (with a positive Content-Length) but then finishes WITHOUT
+        /// delivering any body bytes — simulating a server that returns 206 then
+        /// never sends a payload byte. Exercises the diagnose no-first-byte path.
+        var emptyBodyOn206: Bool = false
+        /// Test-only: when true, chunk delivery uses `DispatchQueue.asyncAfter`
+        /// instead of blocking the URL loading thread with `usleep`. This frees
+        /// the URL loading thread immediately so it can be reused by concurrent
+        /// or sequential tests. Default `false` preserves existing behaviour;
+        /// set `true` for tests that cancel mid-delivery and need the thread free.
+        var asyncChunkDelivery: Bool = false
     }
 
     private static let stubs = Mutex<[String: Stub]>([:])
@@ -47,7 +62,9 @@ final class MockURLProtocol: URLProtocol {
         requiredCookieHeader: String? = nil,
         requiredIfRange: String? = nil,
         bodyChunkSize: Int? = nil,
-        bodyChunkDelayMicroseconds: useconds_t = 0
+        bodyChunkDelayMicroseconds: useconds_t = 0,
+        emptyBodyOn206: Bool = false,
+        asyncChunkDelivery: Bool = false
     ) {
         stubs.withLock {
             $0[url] = Stub(
@@ -58,7 +75,9 @@ final class MockURLProtocol: URLProtocol {
                 headers: headers, requiredCookieHeader: requiredCookieHeader,
                 requiredIfRange: requiredIfRange,
                 bodyChunkSize: bodyChunkSize,
-                bodyChunkDelayMicroseconds: bodyChunkDelayMicroseconds)
+                bodyChunkDelayMicroseconds: bodyChunkDelayMicroseconds,
+                emptyBodyOn206: emptyBodyOn206,
+                asyncChunkDelivery: asyncChunkDelivery)
         }
     }
 
@@ -86,13 +105,13 @@ final class MockURLProtocol: URLProtocol {
             return
         }
         if request.httpMethod == "HEAD" {
-            deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: nil)
+            deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: nil, asyncDelivery: false)
             return
         }
         if let requiredCookieHeader = stub.requiredCookieHeader,
            request.value(forHTTPHeaderField: "Cookie") != requiredCookieHeader
         {
-            deliver(url: url, status: 401, headers: headers(for: stub), body: nil)
+            deliver(url: url, status: 401, headers: headers(for: stub), body: nil, asyncDelivery: false)
             return
         }
         if let header = request.value(forHTTPHeaderField: "Range"),
@@ -106,13 +125,14 @@ final class MockURLProtocol: URLProtocol {
                request.value(forHTTPHeaderField: "If-Range") != requiredIfRange
             {
                 deliver(
-                    url: url, status: 200, headers: headers(for: stub), body: stub.body)
+                    url: url, status: 200, headers: headers(for: stub), body: stub.body,
+                    asyncDelivery: stub.asyncChunkDelivery)
                 return
             }
             guard start >= 0, start < stub.body.count, end >= start else {
                 deliver(url: url, status: 416, headers: [
                     "Content-Range": "bytes */\(stub.body.count)",
-                ], body: nil)
+                ], body: nil, asyncDelivery: false)
                 return
             }
             let upper = min(end, stub.body.count - 1)
@@ -120,13 +140,22 @@ final class MockURLProtocol: URLProtocol {
                 ? min(upper, start + max(0, (upper - start) / 2)) : upper
             let slice = Data(stub.body[start...actualUpper])
             var headers = headers(for: stub)
-            headers["Content-Length"] = "\(slice.count)"
             headers["Content-Range"] = stub.contentRangeOverride[start]
                 ?? "bytes \(start)-\(upper)/\(stub.body.count)"
-            deliver(url: url, status: 206, headers: headers, body: slice)
+            if stub.emptyBodyOn206 {
+                // Deliver 206 headers (advertising a positive size) but no body bytes,
+                // then finish — simulating a server that 206s then never sends a payload.
+                headers["Content-Length"] = "\(slice.count)"
+                deliver(url: url, status: 206, headers: headers, body: nil, asyncDelivery: false)
+                return
+            }
+            headers["Content-Length"] = "\(slice.count)"
+            deliver(url: url, status: 206, headers: headers, body: slice,
+                    asyncDelivery: stub.asyncChunkDelivery)
             return
         }
-        deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: stub.body)
+        deliver(url: url, status: stub.statusCode, headers: headers(for: stub), body: stub.body,
+                asyncDelivery: stub.asyncChunkDelivery)
     }
 
     private func headers(for stub: Stub) -> [String: String] {
@@ -140,7 +169,10 @@ final class MockURLProtocol: URLProtocol {
         return headers
     }
 
-    private func deliver(url: URL, status: Int, headers: [String: String], body: Data?) {
+    private func deliver(
+        url: URL, status: Int, headers: [String: String], body: Data?,
+        asyncDelivery: Bool
+    ) {
         guard let response = HTTPURLResponse(
             url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)
         else {
@@ -150,15 +182,27 @@ final class MockURLProtocol: URLProtocol {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if let body, !body.isEmpty {
             if let chunkSize = stubChunkSize(headers: headers), chunkSize > 0 {
-                var offset = body.startIndex
-                while offset < body.endIndex {
-                    guard !isStopped else { return }
-                    let end = body.index(offset, offsetBy: chunkSize, limitedBy: body.endIndex)
-                        ?? body.endIndex
-                    client?.urlProtocol(self, didLoad: body[offset..<end])
-                    offset = end
-                    if let delay = stubDelay(headers: headers), delay > 0 {
-                        usleep(delay)
+                let delay = stubDelay(headers: headers) ?? 0
+                if asyncDelivery && delay > 0 {
+                    // Async delivery: schedule chunks on a background queue WITHOUT blocking
+                    // the URL loading system thread. This allows the thread to return
+                    // immediately so it can be reused by concurrent or sequential tests.
+                    // The `stopped` flag is checked before each chunk so `stopLoading()`
+                    // cancels delivery within one chunk interval.
+                    deliverChunksAsync(body: body, chunkSize: chunkSize, delayMicros: delay)
+                    return  // startLoading returns; delivery continues on deliveryQueue
+                } else {
+                    // Synchronous delivery: block the URL loading thread with usleep (original path).
+                    var offset = body.startIndex
+                    while offset < body.endIndex {
+                        guard !isStopped else { return }
+                        let end = body.index(offset, offsetBy: chunkSize, limitedBy: body.endIndex)
+                            ?? body.endIndex
+                        client?.urlProtocol(self, didLoad: body[offset..<end])
+                        offset = end
+                        if delay > 0 {
+                            usleep(delay)
+                        }
                     }
                 }
             } else {
@@ -168,6 +212,45 @@ final class MockURLProtocol: URLProtocol {
         }
         guard !isStopped else { return }
         client?.urlProtocolDidFinishLoading(self)
+    }
+
+    /// Private serial queue for async chunk delivery. Keeps the URL loading thread free.
+    /// Each MockURLProtocol instance creates its own queue so concurrent requests are
+    /// independent.
+    private lazy var deliveryQueue = DispatchQueue(
+        label: "MockURLProtocol.delivery.\(ObjectIdentifier(self))",
+        qos: .default)
+
+    /// Delivers `body` in `chunkSize`-byte pieces with `delayMicros` µs between them,
+    /// running entirely on `deliveryQueue`. The URL loading thread is freed immediately.
+    private func deliverChunksAsync(body: Data, chunkSize: Int, delayMicros: useconds_t) {
+        let delayNanos = UInt64(delayMicros) * 1_000
+        scheduleNextChunk(body: body, chunkSize: chunkSize, delayNanos: delayNanos, offset: body.startIndex)
+    }
+
+    private func scheduleNextChunk(
+        body: Data,
+        chunkSize: Int,
+        delayNanos: UInt64,
+        offset: Data.Index
+    ) {
+        if isStopped { return }
+        if offset >= body.endIndex {
+            guard !isStopped else { return }
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let end = body.index(offset, offsetBy: chunkSize, limitedBy: body.endIndex) ?? body.endIndex
+        guard !isStopped else { return }
+        client?.urlProtocol(self, didLoad: body[offset..<end])
+        let nextOffset = end
+        deliveryQueue.asyncAfter(
+            deadline: .now() + .nanoseconds(Int(delayNanos)),
+            execute: { [weak self] in
+                self?.scheduleNextChunk(
+                    body: body, chunkSize: chunkSize,
+                    delayNanos: delayNanos, offset: nextOffset)
+            })
     }
 
     private var isStopped: Bool {

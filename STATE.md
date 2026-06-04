@@ -5,6 +5,60 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-04 (session) — `goh diagnose` **BUILT + PR #81 open**; governor PR #80 also open (headline dropped)
+
+**Two PRs now open against `main`, independent (zero file overlap):**
+
+**1. PR #81 — `goh diagnose <url>` — COMPLETE, on branch `feat/diagnose` (off `main`).** A self-contained
+CLI-local diagnostics verb (mirrors `goh verify`/`which`; no daemon, no XPC, no new wire/on-disk format —
+purely additive, `protocolVersion` 3 / `JobCatalog.version` 1 / `JobSummary` / lockfile/manifest all unchanged).
+Probes a URL → plain-English report: reachability, Range support, negotiated protocol (h2/h3/1.1), parallel
+connections attempted vs accepted (catches 429), throughput at 1-vs-N connections, and a hedged bottleneck
+verdict. `--full` / `--json` / `--connections N|-c N` (1–16). **528 tests pass, `-warnings-as-errors` clean.**
+  - **Built via the full `enterprise-pipeline`** (CCB → ACs → research → approaches → spec → 2-round adversarial
+    spec review → `custom-writing-plans` → 2-round adversarial plan review → user gate) then
+    `subagent-driven-development` (9 tasks, per-task two-stage review, a dedicated **Opus concurrency review** on
+    the sampler, and a **final cross-cutting review**). Artifacts under `docs/superpowers/{research,specs,
+    progress,retrospectives}/2026-06-03-goh-diagnose-*` and `docs/plans/2026-06-03-goh-diagnose-plan.md`.
+  - **Chosen approach: Comparative Probe** — measures T₁ (1 conn) vs Tₙ (ramp to N) and reports whether
+    parallelism helped. **THE BET:** a single hedged 1-vs-N comparison is enough for a useful verdict, and
+    "can't tell" is an acceptable honest answer for the ambiguous case.
+  - **Load-bearing design decisions (frozen in the code + DESIGN.md):** (a) **probe-without-abort** — diagnose
+    does NOT reuse the engine's abort-on-non-206 path; it records each connection's outcome and continues, so
+    "accepted 6 of 8" is observable. (b) **Protocol-gated verdict honesty** — 7 `Verdict` cases (a **frozen v1
+    `--json` contract**); over h2/h3/unknown, parallel range requests multiplex onto one connection, so the
+    verdict takes the conservative `didNotScaleMultiplexed` branch and does NOT claim a link-vs-server cause —
+    only exact `http/1.1` (separate TCP conns) yields the `didNotScaleHTTP1` dichotomy, hedged. (c) **sync CLI +
+    async probe** bridged via `DispatchSemaphore` *inside* `GohDiagnoseCommand` (the CLI/`main.swift` stay
+    synchronous, doctor-pattern). (d) exit codes derive from a typed `ProbeTermination` (0/2/3/4), never from
+    `verdictText`; 64 at the arg-parse layer.
+  - **Engine change that rode along (benefits ALL callers incl. real downloads):** closed an
+    already-cancelled-on-entry race in `StreamingDataTask.streamingResponse` (`if Task.isCancelled {
+    taskBox.cancel() }`) that could leak a `URLSession` task when `withTaskCancellationHandler` fires `onCancel`
+    before `taskBox` is set. Documented in DESIGN.md §Transport.
+  - **Review-caught defects fixed during build (don't re-introduce):** spec round-2 — the verdict was
+    confidently-wrong over h2/h3 multiplexing (→ the protocol-gated split); plan round-2 — the deadline bounded
+    only Phase 1 (→ a single task-group whose deadline child bounds the whole probe), `--full` stopped at the
+    window, Tₙ used a constant divisor + excluded conn-0 (→ boundary snapshots across all conns); Task-5
+    concurrency review — a UInt64 underflow **crash** on tiny ranged files and a `--full` **hang** on a
+    206-no-body server (both fixed + regression-tested); final review — a DESIGN.md paragraph described a
+    non-existent `.bottleneck`/`isHedged` design (corrected to the shipped 7-case verdict).
+  - **NEXT for #81:** CodeRabbit + CI auto-running (do NOT poll — wait for the user). When green + reviewed,
+    merge to `main`. Optional real-network smoke (not in CI): `goh diagnose` against an h2 host, an http/1.1
+    host, a 429-rate-limiting host, and a no-Range host.
+
+**2. PR #80 — in-flight adaptive parallelism (P1–P4), branch `design/in-flight-parallelism`.** Reframed as
+"correct + adaptive + no-regression governor; SM5a headline benchmark deferred (environment-limited — the user's
+last-mile saturates at 8 conns, not a code limit)." Still open; CodeRabbit/CI running. P5 (NWConnection
+multi-edge) is a separate future PR. NOTE: that branch's STATE.md has the detailed 2026-06-03 governor entry;
+it is NOT on `main` (or on `feat/diagnose`) until #80 merges.
+
+**Session-end housekeeping for next time:** both PRs (#80 governor, #81 diagnose) are open and independent —
+merge order doesn't matter (no file overlap; diagnose branched off `main` and only *inlines* engine privates,
+doesn't modify the engine except the additive StreamingDataTask cancel guard). The trust-layer wedge
+(vendor-neutral offline lockfile, `docs/vision/VISION-2026-06-03.md`) remains the strategic moat — next
+self-contained slice candidates live there.
+
 ### 2026-06-03 (session) — Governor **REDESIGNED + fixed** (was inert/regressing); LFN headline unprovable on this link; strategic **pivot to the trust layer**; `goh diagnose` scoped next
 
 **Branch `design/in-flight-parallelism`. Commit `38be1b0` (`fix(governor): redesign convergence around aggregate delivery rate`). 507 tests pass, `-warnings-as-errors` clean. NOT pushed yet.**

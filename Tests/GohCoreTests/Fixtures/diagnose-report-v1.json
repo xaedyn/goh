@@ -1,0 +1,17 @@
+{
+  "accepted" : 8,
+  "attempted" : 8,
+  "multiConnMBps" : 89.1,
+  "networkProtocol" : "h2",
+  "rangeSupported" : true,
+  "reachable" : true,
+  "rejections" : {
+
+  },
+  "reportVersion" : 1,
+  "singleConnMBps" : 45.2,
+  "totalBytes" : 1000000000,
+  "url" : "https:\/\/cdn.example.com\/file.bin",
+  "verdict" : "scaled",
+  "verdictText" : "Throughput scaled with more connections."
+}

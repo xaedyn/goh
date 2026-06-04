@@ -282,6 +282,13 @@ let result = GohCommandLine(
             validationMode: validationMode,
             environment: environment))
             .run()
+    },
+    diagnose: { url, full, json, connections in
+        var args = [url]
+        if full { args.append("--full") }
+        if json { args.append("--json") }
+        if let c = connections { args += ["--connections", "\(c)"] }
+        return GohDiagnoseCommand.run(arguments: args)
     }
 ) { request in
     try sendOneShot(request, validationMode: validationMode)
