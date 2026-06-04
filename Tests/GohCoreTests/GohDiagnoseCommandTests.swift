@@ -108,7 +108,7 @@ struct GohDiagnoseCommandTests {
             config: fastConfig())
 
         #expect(result.exitCode == 0)
-        #expect(result.standardOutput.contains("reachable"))
+        #expect(result.standardOutput.contains("Reachable:"))
         #expect(result.standardOutput.contains("Range support"))
         #expect(result.standardOutput.contains("supported"))
         // Verdict line must be present (AC5).

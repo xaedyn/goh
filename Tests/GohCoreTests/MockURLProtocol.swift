@@ -5,7 +5,11 @@ import Synchronization
 /// no network. It answers `HEAD` capability probes and `Range` requests, so the
 /// range-parallel path is exercised end-to-end. Each test stubs a unique URL;
 /// stubs accumulate harmlessly across a run, so there is no shared teardown.
-final class MockURLProtocol: URLProtocol {
+// `@unchecked Sendable`: all mutable state (`stubs`, `stopped`) is guarded by
+// `Mutex`; `deliveryQueue` is a serial `DispatchQueue`. The class is safe for
+// concurrent use by construction; the unchecked annotation silences the capture
+// warning from `scheduleNextChunk`'s `[weak self]` closure on `deliveryQueue`.
+final class MockURLProtocol: URLProtocol, @unchecked Sendable {
 
     struct Stub: Sendable {
         var statusCode: Int = 200

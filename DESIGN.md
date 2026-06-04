@@ -205,6 +205,32 @@ The downside is a small bandwidth waste at cancellation time — bytes already
 in flight on the open-ended stream when it's truncated, typically ≤ one TCP
 window. The upside compounds: one RTT saved on every download.
 
+### `streamingResponse` cancellation-race fix
+
+`URLSession.streamingResponse(for:onMetrics:)` in `StreamingDataTask.swift`
+bridges `URLSession` delegate callbacks into a `CheckedContinuation` +
+`AsyncThrowingStream`. The cancellation handler registered via
+`withTaskCancellationHandler` is documented to fire *immediately* — even before
+the handler body runs — when the calling `Task` is already cancelled at the
+point of entry. In that case `taskBox` holds `nil` (the delegate closure has not
+run yet, so `taskBox.set(_:)` has not been called), and the `onCancel` closure's
+`taskBox.cancel()` call is a no-op. The URLSession data task that the body
+subsequently creates would then run to completion unreachably — a live task leak.
+
+The fix is a single guard at the end of the `withCheckedThrowingContinuation`
+body, after `task.resume()`:
+
+```swift
+if Task.isCancelled { taskBox.cancel() }
+```
+
+At that point `taskBox` is guaranteed to be set, so the cancel call reaches the
+real `URLSessionDataTask`. This guard closes the already-cancelled-on-entry
+window and is safe to run redundantly (cancelling an already-cancelled task is
+idempotent). The fix benefits all callers of `streamingResponse`, including the
+download engine's range-parallel drain loop and `goh diagnose`'s probe
+connections.
+
 ### HTTP/3 — tried and reverted for v0.1
 
 `URLRequest.assumesHTTP3Capable = true` was tried as a per-request opt-in
@@ -1855,6 +1881,38 @@ doctor prints `[ok]`, `[warn]`, and `[fail]` findings plus exact recovery
 commands; failures exit `1`, warning-only runs exit `0`. Keeping this logic
 CLI-local avoids a new wire contract and lets a broken daemon still be diagnosed
 from filesystem and launchd state.
+
+### `goh diagnose`
+
+`goh diagnose <url>` is a standalone probe that characterises a server's
+download-suitability without initiating a real download job. Two design choices
+are non-obvious and worth recording.
+
+**Probe-without-abort.** The download engine's range-parallel path aborts
+aggressively when it sees a non-`206` response: a connection that returns `200`
+or an error is treated as a fatal signal and the whole job is cancelled. The
+diagnose probe deliberately does *not* reuse that path. It opens each connection,
+records the HTTP status and body throughput, and continues regardless. A
+connection that is rejected (non-`206`) is logged in `report.rejections` and
+counted in `report.attempted`; the probe only sets `ProbeTermination.unreachable`
+when even the Phase 0 speculative `GET` fails at the transport layer. This
+"record and continue" design is what makes the probe useful as a diagnostic: a
+server that rejects connection 3 of 8 while accepting the rest is valuable
+information a user needs to see — an abort-on-non-206 probe would surface only
+"connection 3 failed."
+
+**Bottleneck verdict hedging.** The `bottleneck` verdict branch in `verdict()`
+fires when `Tₙ / T₁` falls short of a linear-scaling threshold, suggesting the
+server is the bottleneck rather than the client connection. However, when
+`networkProtocol` is `nil` (unknown — the common case under `MockURLProtocol` in
+tests, and possible in practice when `URLSessionTaskTransactionMetrics` is
+absent), or when the protocol is `h2` / `h3`, multiple connections may be
+multiplexed onto a single transport stream. In that case true per-connection
+parallelism was never exercised, so a sub-linear Tₙ/T₁ ratio is ambiguous — it
+may reflect HTTP multiplexing overhead rather than a server-side bottleneck. The
+verdict is honestly hedged: the `.bottleneck` case carries an `isHedged` flag,
+and `verdictText` surfaces the qualifier ("may reflect HTTP multiplexing") when
+it is set, so users are not misled by an artefact of the transport layer.
 
 ## Progress Subscription Contract
 

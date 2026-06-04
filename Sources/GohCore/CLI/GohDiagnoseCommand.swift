@@ -140,7 +140,7 @@ public enum GohDiagnoseCommand {
     private static func humanOutput(_ report: DiagnosisReport, url: String) -> String {
         var lines: [String] = []
         lines.append("URL:          \(url)")
-        lines.append("reachable:    \(report.reachable ? "yes" : "no")")
+        lines.append("Reachable:    \(report.reachable ? "yes" : "no")")
         lines.append("Range support: \(report.rangeSupported ? "supported" : "not supported")")
         if let total = report.totalBytes {
             let mb = Double(total) / 1_000_000
