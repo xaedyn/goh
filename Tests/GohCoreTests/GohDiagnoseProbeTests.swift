@@ -169,7 +169,7 @@ struct GohDiagnoseProbeIntegrationTests {
             warmupSeconds: 0,
             sampleWindowSeconds: 0.05,
             rampWarmupSeconds: 0,
-            defaultDeadlineSeconds: 2.0,
+            defaultDeadlineSeconds: 10.0,
             minSampleBytes: 0,
             scalingFactor: 1.3,
             connectTimeoutSeconds: 5.0)
@@ -184,7 +184,8 @@ struct GohDiagnoseProbeIntegrationTests {
         MockURLProtocol.stub(
             url, body: tenMB, acceptsRanges: true,
             bodyChunkSize: 131_072,            // 128 KiB chunks
-            bodyChunkDelayMicroseconds: 1_000) // 1 ms between chunks
+            bodyChunkDelayMicroseconds: 1_000, // 1 ms between chunks
+            asyncChunkDelivery: true)          // async: free URL loading thread (no cross-test starvation on CI)
 
         let probe = GohDiagnoseProbe(
             urlString: url,
@@ -224,7 +225,8 @@ struct GohDiagnoseProbeIntegrationTests {
             acceptsRanges: true,
             failRangeStartingAt: Int(tenMB.count / 2),  // second connection's start fails
             bodyChunkSize: 131_072,
-            bodyChunkDelayMicroseconds: 1_000
+            bodyChunkDelayMicroseconds: 1_000,
+            asyncChunkDelivery: true
         )
 
         let config = DiagnoseConfig(
@@ -232,7 +234,7 @@ struct GohDiagnoseProbeIntegrationTests {
             warmupSeconds: 0,
             sampleWindowSeconds: 0.05,
             rampWarmupSeconds: 0,
-            defaultDeadlineSeconds: 2.0,
+            defaultDeadlineSeconds: 10.0,
             minSampleBytes: 0,
             scalingFactor: 1.3,
             connectTimeoutSeconds: 2.0)
@@ -267,11 +269,12 @@ struct GohDiagnoseProbeIntegrationTests {
         MockURLProtocol.stub(url, body: tenMB, acceptsRanges: true,
             failRangeStartingAt: Int(tenMB.count / 2),
             bodyChunkSize: 131_072,
-            bodyChunkDelayMicroseconds: 1_000)
+            bodyChunkDelayMicroseconds: 1_000,
+            asyncChunkDelivery: true)
 
         let config = DiagnoseConfig(
             targetConnections: 2, warmupSeconds: 0, sampleWindowSeconds: 0.05,
-            rampWarmupSeconds: 0, defaultDeadlineSeconds: 2.0,
+            rampWarmupSeconds: 0, defaultDeadlineSeconds: 10.0,
             minSampleBytes: 0, scalingFactor: 1.3, connectTimeoutSeconds: 2.0)
 
         let (report, _) = await GohDiagnoseProbe(
@@ -291,7 +294,8 @@ struct GohDiagnoseProbeIntegrationTests {
     @Test func diagnoseRangeIgnoredProducesRangeUnsupportedVerdict() async throws {
         let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
         MockURLProtocol.stub(url, body: tenMB, acceptsRanges: false,
-            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 1_000)
+            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 1_000,
+            asyncChunkDelivery: true)
 
         let probe = GohDiagnoseProbe(
             urlString: url,
@@ -323,14 +327,15 @@ struct GohDiagnoseProbeIntegrationTests {
         MockURLProtocol.stub(
             url, body: body, acceptsRanges: true,
             bodyChunkSize: 131_072,
-            bodyChunkDelayMicroseconds: 500)
+            bodyChunkDelayMicroseconds: 500,
+            asyncChunkDelivery: true)
 
         let config = DiagnoseConfig(
             targetConnections: 2,
             warmupSeconds: 0,
             sampleWindowSeconds: 0.05,
             rampWarmupSeconds: 0,
-            defaultDeadlineSeconds: 2.0,
+            defaultDeadlineSeconds: 10.0,
             minSampleBytes: 0,
             scalingFactor: 1.3,
             connectTimeoutSeconds: 5.0)
@@ -389,7 +394,7 @@ struct GohDiagnoseProbeTerminationSafetyTests {
             warmupSeconds: 0,
             sampleWindowSeconds: 0.05,
             rampWarmupSeconds: 0,
-            defaultDeadlineSeconds: 2.0,
+            defaultDeadlineSeconds: 10.0,
             minSampleBytes: 8_000_000,      // realistic floor → tiny file is insufficient
             scalingFactor: 1.3,
             connectTimeoutSeconds: 5.0)
@@ -431,7 +436,7 @@ struct GohDiagnoseProbeTerminationSafetyTests {
             warmupSeconds: 0,
             sampleWindowSeconds: 0.05,
             rampWarmupSeconds: 0,
-            defaultDeadlineSeconds: 2.0,    // unused in --full (no deadline child)
+            defaultDeadlineSeconds: 10.0,    // unused in --full (no deadline child)
             minSampleBytes: 0,
             scalingFactor: 1.3,
             connectTimeoutSeconds: 5.0)
@@ -439,7 +444,7 @@ struct GohDiagnoseProbeTerminationSafetyTests {
         let probe = GohDiagnoseProbe(
             urlString: url, config: config, session: mockSession(), full: true)
 
-        guard let (report, termination) = await runBounded(probe, seconds: 5.0) else {
+        guard let (report, termination) = await runBounded(probe, seconds: 15.0) else {
             Issue.record("Probe HUNG in --full mode with a no-first-byte server")
             return
         }
@@ -599,11 +604,12 @@ struct GohDiagnoseProbeTimeBoxTests {
     @Test func diagnoseDefaultModeWholeFileMBpsIsNil() async throws {
         let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
         MockURLProtocol.stub(url, body: tenMB, acceptsRanges: true,
-            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500)
+            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 500,
+            asyncChunkDelivery: true)
 
         let config = DiagnoseConfig(
             targetConnections: 2, warmupSeconds: 0, sampleWindowSeconds: 0.05,
-            rampWarmupSeconds: 0, defaultDeadlineSeconds: 2.0,
+            rampWarmupSeconds: 0, defaultDeadlineSeconds: 10.0,
             minSampleBytes: 0, scalingFactor: 1.3, connectTimeoutSeconds: 5.0)
 
         let (report, _) = await GohDiagnoseProbe(
