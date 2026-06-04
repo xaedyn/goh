@@ -217,6 +217,9 @@ extension DiagnoseTypesTests {
         let (v, text) = verdict(r, config: DiagnoseConfig())
         #expect(v == .didNotScaleMultiplexed)
         #expect(!text.lowercased().contains("your connection"))
+        // Positive invariant: honest-uncertainty phrase must be present so a future
+        // over-claiming edit is caught immediately.
+        #expect(text.lowercased().contains("can't tell"))
     }
 
     @Test func verdictDidNotScaleMultiplexedForH3() {
@@ -286,4 +289,58 @@ extension DiagnoseTypesTests {
     // `verdictDidNotScaleMultiplexedForH2`). The AC table references those real tests.
     // Duplicate stubs that only re-assert the same verdict with a different name provide
     // no additional coverage and have been removed to keep the suite DRY.
+}
+
+// MARK: - rate() unit tests (AC1 load-bearing math)
+
+extension DiagnoseTypesTests {
+
+    @Test func rateComputesDecimalMegabytesPerSecond() {
+        // AC1: throughput is in decimal MB/s (bytes / 1_000_000 / seconds).
+        // 10_000_000 bytes in 2.0 seconds = 5.0 MB/s
+        let result = rate(byteDelta: 10_000_000, over: 2.0)
+        #expect(abs(result - 5.0) < 0.0001)
+    }
+
+    @Test func rateDecimalMBNotMiB() {
+        // Decimal-correctness: 1_000_000 bytes / 1.0 second = exactly 1.0 MB/s.
+        // If the implementation mistakenly used 2^20 (1_048_576) this would produce ~0.954.
+        let result = rate(byteDelta: 1_000_000, over: 1.0)
+        #expect(abs(result - 1.0) < 0.0001)
+    }
+
+    @Test func rateHandlesSingleByte() {
+        // 1 byte in 1.0 second = 0.000001 MB/s (not zero)
+        let result = rate(byteDelta: 1, over: 1.0)
+        #expect(result > 0)
+        #expect(result < 0.01)
+    }
+
+    @Test func rateIsZeroForZeroSeconds() {
+        // Guard against divide-by-zero.
+        let result = rate(byteDelta: 1_000_000, over: 0)
+        #expect(result == 0)
+    }
+
+    @Test func rateIsZeroForNegativeSeconds() {
+        let result = rate(byteDelta: 1_000_000, over: -1.0)
+        #expect(result == 0)
+    }
+
+    @Test func rateIsZeroForZeroBytes() {
+        let result = rate(byteDelta: 0, over: 1.0)
+        #expect(result == 0)
+    }
+
+    @Test func rateIsZeroForNegativeBytes() {
+        // Defensive: negative byte delta is nonsense; guard returns 0.
+        let result = rate(byteDelta: -1_000_000, over: 1.0)
+        #expect(result == 0)
+    }
+
+    @Test func rate8MBInOneSec() {
+        // 8_000_000 bytes / 1_000_000 / 1.0 = 8.0 MB/s (minSampleBytes boundary)
+        let result = rate(byteDelta: 8_000_000, over: 1.0)
+        #expect(abs(result - 8.0) < 0.0001)
+    }
 }
