@@ -15,9 +15,10 @@ Status: COMPLETE — Tasks 7, 8, 9 implemented and passing.
 
 - **Task 8:** `GohCommandLine` + `main.swift` wiring — `diagnose` sub-command
   routed through `GohCommandLine.run(arguments:)`, session factory injected for
-  tests. `main.swift` unchanged (remains synchronous). `GohCommandLine` dispatches
-  to `GohDiagnoseCommand.run` for the `diagnose` verb. Integration smoke-test
-  confirms the routing reaches the probe.
+  tests. `main.swift` adds the `diagnose` closure wiring (and stays synchronous —
+  the async probe is bridged to sync inside `GohDiagnoseCommand`). `GohCommandLine`
+  dispatches to `GohDiagnoseCommand.run` for the `diagnose` verb. Integration
+  smoke-test confirms the routing reaches the probe.
 
 - **Task 9:** Full suite pass, `-warnings-as-errors` clean, cleanups:
   - `MockURLProtocol` marked `@unchecked Sendable` (all state Mutex-guarded;
@@ -31,7 +32,7 @@ Status: COMPLETE — Tasks 7, 8, 9 implemented and passing.
 
 ## Suite results
 
-```
+```text
 Test run with 528 tests in 75 suites passed after ~15.6 seconds.
 ```
 

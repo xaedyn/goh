@@ -9,7 +9,7 @@ type: approach-decision-memos
 All three approaches share the same skeleton: a standalone probe in `GohCore/CLI/GohDiagnoseCommand.swift`
 that builds its own ephemeral `URLSession` (via `downloadSessionConfiguration()`), reuses the module-internal
 `streamingResponse`, records each ranged-GET outcome **without aborting on non-206**, captures the negotiated
-protocol post-hoc, discards all bytes, time-boxes to ~10s (`--full` runs to completion), and prints a labeled
+protocol post-hoc, discards all bytes, time-boxes to ~12s (`defaultDeadlineSeconds`; `--full` runs to completion), and prints a labeled
 plain-English report ending in one verdict line. They differ ONLY in **how the throughput sample is taken and
 therefore how strong a bottleneck verdict can be made.**
 
@@ -24,7 +24,7 @@ the whole sample window and report what was observed — no comparison.
 MECHANISM
 Issue a `Range: bytes=0-` GET, inspect status (206 ⇒ range supported, extract total from `Content-Range`;
 200 ⇒ ignored). Then fire N concurrent ranged GETs (N = default 8) at distinct offsets, count how many return
-206 vs 429/4xx (the accept/reject signal), drain+discard bytes for ~10s while a `ByteCounter` accumulates,
+206 vs 429/4xx (the accept/reject signal), drain+discard bytes for ~12s while a `ByteCounter` accumulates,
 exclude a 1–2s warm-up, and report aggregate MB/s. Verdict is descriptive: "range supported, h2, ~52 MB/s over
 8/8 connections" or "server accepted 6/8 connections — rate-limiting" or "range not supported — single stream."
 
@@ -120,7 +120,7 @@ none. Stack alignment: fits (closest to the governor) but most code.
 
 TRADEOFFS
 Strong at: richest data; shows exactly where returns diminish; best "10-star" answer. Sacrifices: longest
-runtime (4 warm-up exclusions eat the budget — hard to fit in ~10s; realistically 20–30s or `--full`-only for
+runtime (4 warm-up exclusions eat the budget — hard to fit in ~12s; realistically 20–30s or `--full`-only for
 the full curve); most complexity and test surface for a feature whose job is a quick answer; risk of presenting
 a noisy curve as precise.
 
@@ -148,7 +148,7 @@ None for a download CLI [UNVERIFIED]. Conceptually adjacent to the in-flight gov
 | AC1 range/protocol/throughput report | STRONG — full-window N-conn number is the most stable | STRONG — same report, slightly noisier number | STRONG — richest, but per-rung noise |
 | AC2 accept/reject without abort | STRONG — counts 206 vs 429 across N | STRONG — counts during ramp | STRONG — counts per rung |
 | AC3 no-range → single-stream verdict | STRONG | STRONG | STRONG |
-| AC4 ~10s default / `--full` | STRONG — clean single window | PARTIAL — needs ~12–15s for two honest phases | WEAK — full curve hard to fit in ~10s |
+| AC4 ~12s default / `--full` | STRONG — clean single window | PARTIAL — needs the full ~12s for two honest phases | WEAK — full curve hard to fit in ~12s |
 | AC5 grounded bottleneck verdict | WEAK — descriptive only, no link-vs-source | STRONG — sound 1-vs-N heuristic, hedged | STRONG — curve + knee, but over-precise risk |
 | Scale fit | STRONG | STRONG | PARTIAL — overengineered for a quick verb |
 | Team fit | STRONG | STRONG | PARTIAL — more test surface |
@@ -158,5 +158,5 @@ None for a download CLI [UNVERIFIED]. Conceptually adjacent to the in-flight gov
 **Recommendation: Approach 2 (Comparative).** It's the one that earns the name `diagnose` — it answers the
 user's actual question ("is it me or the source?") with a sound, sourced heuristic, while staying honest where
 the signal is ambiguous. A1 is descriptive-only (under-delivers on AC5); A3 over-delivers at the cost of fitting
-the ~10s budget and materially more complexity. A2 is a strict superset of A1 and a clean subset of A3, so the
+the ~12s budget and materially more complexity. A2 is a strict superset of A1 and a clean subset of A3, so the
 reversal cost in either direction is low.

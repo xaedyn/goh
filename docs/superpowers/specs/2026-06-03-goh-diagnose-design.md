@@ -159,7 +159,7 @@ negotiated protocol beside the connection counts.
 
 ### 2.4 CLI surface
 
-```
+```text
 goh diagnose <url> [--full] [--json] [--connections N | -c N]
 ```
 - `<url>` — required; malformed → exit 64.

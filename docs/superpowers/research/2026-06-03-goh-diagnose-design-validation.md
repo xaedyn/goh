@@ -15,8 +15,8 @@ type: design-validation
   non-206.
 - **AC3:** Against a server that ignores Range (200, not 206), output reports range unsupported, gives a
   single-connection throughput estimate, and the verdict states parallel connections won't help.
-- **AC4:** Default mode samples a bounded window (~10–15s) and returns regardless of file size; `--full` runs to
-  completion. Observable by comparing wall-clock on a large file.
+- **AC4:** Default mode samples a bounded window (~12s, `defaultDeadlineSeconds`) and returns regardless of file
+  size; `--full` runs to completion. Observable by comparing wall-clock on a large file.
 - **AC5:** Output always ends with one hedged plain-English verdict naming the most likely limiting factor from
   the measured signals; never claims "last-mile-limited" unless throughput failed to scale with added accepted
   connections.
@@ -52,7 +52,7 @@ a new `ParsedCommand` case + `usage()` line in `GohCommandLine.swift`, and a new
   with a distinct non-zero exit. Diagnose cannot take anything else down — it's an isolated CLI process.
 
 ### Simplest Attack
-- **Cheapest abuse:** diagnose opens up to N connections for ~10–15s against a user-chosen URL, discarding
+- **Cheapest abuse:** diagnose opens up to N connections for ~12s against a user-chosen URL, discarding
   bytes — identical trust posture to `curl`/`goh add`, run as the user, no new auth path, no daemon/XPC surface.
 - **Credentials:** diagnose does NOT send cookies/credentials by default (it's a throwaway probe; auto-sending
   the user's auth cookies to a diagnostic is surprising and a needless leak risk). An auth-required URL returns
@@ -72,7 +72,7 @@ a new `ParsedCommand` case + `usage()` line in `GohCommandLine.swift`, and a new
 
 ## Fixes Applied (folded into spec requirements)
 
-1. **Spec must define:** a global default time-box (~10–15s), a per-connection idle/connect timeout, and a
+1. **Spec must define:** a global default time-box (~12s, `defaultDeadlineSeconds`), a per-connection idle/connect timeout, and a
    mandatory terminal report-or-clear-error guarantee (the probe never hangs/crashes; on partial failure it
    prints what it learned plus a clear incomplete note).
 2. **Spec must define** a minimum-sampled-bytes threshold below which throughput is reported as "insufficient
