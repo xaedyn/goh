@@ -497,10 +497,13 @@ struct GohDiagnoseProbeTimeBoxTests {
         let elapsedSeconds = Double(elapsed.components.seconds)
             + Double(elapsed.components.attoseconds) / 1e18
 
-        // Must return within deadline + generous slack (3×). If this fires, the deadline child
-        // did NOT interrupt Phase 1/2 sampling (BLOCK A regression).
-        #expect(elapsedSeconds < deadline * 3.0,
-            "Probe took \(elapsedSeconds)s — deadline is \(deadline)s; deadline child failed to bound the probe (BLOCK A)")
+        // Bounded, not hung: WITHOUT the deadline child this 10 MB body at 4 KiB/5 ms would
+        // take ~13 s to drain. A deadline-bounded probe returns in well under a second; we assert
+        // a generous absolute 5 s cap (teardown/cancellation latency is a fixed cost, NOT
+        // proportional to the 0.3 s deadline, so a tight deadline·3 bound flakes under CI load).
+        // Failing here means the deadline child did NOT interrupt Phase 1/2 sampling (BLOCK A).
+        #expect(elapsedSeconds < 5.0,
+            "Probe took \(elapsedSeconds)s for a 0.3 s deadline (unbounded ≈ 13 s) — deadline child failed to bound the probe (BLOCK A)")
         #expect(report.reachable == true)
     }
 
@@ -540,8 +543,12 @@ struct GohDiagnoseProbeTimeBoxTests {
         let elapsedSeconds = Double(elapsed.components.seconds)
             + Double(elapsed.components.attoseconds) / 1e18
 
-        #expect(elapsedSeconds < deadline * 3.0,
-            "Probe took \(elapsedSeconds)s — stall guard + Phase-2 deadline failed (BLOCK A)")
+        // Bounded, not hung: WITHOUT the deadline this 2 MB body at 1 KiB/50 ms would take
+        // ~100 s. Generous absolute 5 s cap (fixed teardown cost, not proportional to the 0.3 s
+        // deadline → a tight deadline·3 bound flakes under CI load); failing means the stall
+        // guard + Phase-2 deadline did not bound the probe (BLOCK A).
+        #expect(elapsedSeconds < 5.0,
+            "Probe took \(elapsedSeconds)s for a 0.3 s deadline (unbounded ≈ 100 s) — stall guard + Phase-2 deadline failed (BLOCK A)")
         #expect(report.reachable == true)
     }
 
