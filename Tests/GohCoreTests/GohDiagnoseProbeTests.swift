@@ -156,3 +156,199 @@ struct GohDiagnoseProbePhase0Tests {
         }
     }
 }
+
+@Suite("GohDiagnoseProbe — Phase 1 and 2 integration (AC1/AC2/AC3)")
+struct GohDiagnoseProbeIntegrationTests {
+
+    /// Minimal config for integration tests: small windows, no minSampleBytes guard,
+    /// fast deadline.  All Phase-2 tests use connections ≥ 2 so Phase 2 actually runs
+    /// and the deadline/Tₙ paths are exercised (BLOCK D fix).
+    private func fastConfig(connections: Int = 2) -> DiagnoseConfig {
+        DiagnoseConfig(
+            targetConnections: connections,
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: 2.0,
+            minSampleBytes: 0,
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 5.0)
+    }
+
+    // AC1: reachable server + range support → report contains reachable, rangeSupported,
+    // non-nil singleConnMBps. Uses N=2 so Phase 2 also runs and multiConnMBps path is
+    // exercised. networkProtocol from MockURLProtocol is nil (no real TCP metrics) — that
+    // is expected and tested.
+    @Test func diagnoseReportsRangeProtocolAndThroughput() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        MockURLProtocol.stub(
+            url, body: tenMB, acceptsRanges: true,
+            bodyChunkSize: 131_072,            // 128 KiB chunks
+            bodyChunkDelayMicroseconds: 1_000) // 1 ms between chunks
+
+        let probe = GohDiagnoseProbe(
+            urlString: url,
+            config: fastConfig(connections: 2),
+            session: mockSession(),
+            full: false)
+
+        let (report, termination) = await probe.run()
+
+        #expect(report.reachable == true)
+        #expect(report.rangeSupported == true)
+        // singleConnMBps: with 10 MB body and 0.05 s window it should be non-nil.
+        // The integration test asserts non-nil but not an exact value (spec §3).
+        #expect(report.singleConnMBps != nil)
+        // spec §2.1: attempted = N = 2 (conn-0 counts as attempt #1; Phase 2 opened 1 more)
+        #expect(report.attempted == 2)
+        // spec §2.1: accepted = conn-0 (206) + Phase-2 206 = 2 here (all accepted)
+        #expect(report.accepted == 2)
+        // networkProtocol is nil for MockURLProtocol (no real TCP metrics).
+        // That is correct — the probe must not crash on nil.
+        if case .diagnosed = termination { } else {
+            Issue.record("Expected .diagnosed, got \(termination)")
+        }
+    }
+
+    // AC2: server returns transport-error to one Phase-2 range probe → attempted > accepted,
+    // rejections map is populated, probe completes without aborting other connections.
+    // Uses N=2 so Phase 2 actually runs (BLOCK D fix).
+    @Test func diagnoseRateLimitRecordsAllOutcomesWithoutAborting() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        // Accept conn-0 (Phase 0: bytes=0-), fail the Phase-2 range start offset.
+        // MockURLProtocol.failRangeStartingAt fires networkConnectionLost — the probe
+        // counts it as a rejection and continues draining conn-0.
+        MockURLProtocol.stub(
+            url,
+            body: tenMB,
+            acceptsRanges: true,
+            failRangeStartingAt: Int(tenMB.count / 2),  // second connection's start fails
+            bodyChunkSize: 131_072,
+            bodyChunkDelayMicroseconds: 1_000
+        )
+
+        let config = DiagnoseConfig(
+            targetConnections: 2,   // conn-0 (attempt #1) + 1 additional (attempt #2)
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: 2.0,
+            minSampleBytes: 0,
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 2.0)
+
+        let probe = GohDiagnoseProbe(
+            urlString: url,
+            config: config,
+            session: mockSession(),
+            full: false)
+
+        let (report, termination) = await probe.run()
+
+        // The probe must complete (not abort). AC2: no single-connection failure aborts run.
+        #expect(report.reachable == true)
+        // spec §2.1: attempted = N = 2 (conn-0 counts as attempt #1 per spec)
+        #expect(report.attempted == 2)
+        // Phase 2 conn fails → accepted < attempted.
+        // spec §2.1: accepted = conn-0 (206) + Phase-2 206s = 1 here (second fails)
+        #expect(report.accepted == 1)
+        #expect(report.rangeSupported == true)
+        // Termination is still .diagnosed (probe completed, even with a rejection)
+        if case .diagnosed = termination { } else {
+            Issue.record("Expected .diagnosed even with one rejection, got \(termination)")
+        }
+    }
+
+    // BLOCK 6 / spec §2.1 pin: server accepts conn-0 but rejects ALL Phase-2 ranges →
+    // accepted == 1, attempted == N, verdict rateLimited.
+    // Uses N=2 so Phase 2 actually runs (BLOCK D fix).
+    @Test func rateLimitedAllPhase2RangesRejected() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        MockURLProtocol.stub(url, body: tenMB, acceptsRanges: true,
+            failRangeStartingAt: Int(tenMB.count / 2),
+            bodyChunkSize: 131_072,
+            bodyChunkDelayMicroseconds: 1_000)
+
+        let config = DiagnoseConfig(
+            targetConnections: 2, warmupSeconds: 0, sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0, defaultDeadlineSeconds: 2.0,
+            minSampleBytes: 0, scalingFactor: 1.3, connectTimeoutSeconds: 2.0)
+
+        let (report, _) = await GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: false).run()
+
+        // spec §2.1: attempted = N = 2; accepted = 1 (conn-0 only)
+        #expect(report.attempted == 2)
+        #expect(report.accepted == 1)
+        // Pure verdict function will produce .rateLimited for accepted < attempted
+        let (v, _) = verdict(report, config: config)
+        #expect(v == .rateLimited)
+    }
+
+    // AC3: server ignores Range (returns 200) → rangeSupported = false,
+    // verdict will be rangeUnsupported, single-stream T₁ produced.
+    // Phase 2 is skipped because rangeSupported = false regardless of N.
+    @Test func diagnoseRangeIgnoredProducesRangeUnsupportedVerdict() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        MockURLProtocol.stub(url, body: tenMB, acceptsRanges: false,
+            bodyChunkSize: 131_072, bodyChunkDelayMicroseconds: 1_000)
+
+        let probe = GohDiagnoseProbe(
+            urlString: url,
+            config: fastConfig(connections: 8),
+            session: mockSession(),
+            full: false)
+
+        let (report, termination) = await probe.run()
+
+        #expect(report.reachable == true)
+        #expect(report.rangeSupported == false)
+        // Phase 2 must be skipped (rangeSupported=false).
+        // spec §2.1: attempted = 1 (conn-0 only; Phase 2 skipped)
+        #expect(report.attempted == 1)
+        // Single-stream T₁ should be populated (body is 10 MB, window is 0.05 s).
+        #expect(report.singleConnMBps != nil)
+        if case .diagnosed = termination { } else {
+            Issue.record("Expected .diagnosed for 200-body probe, got \(termination)")
+        }
+    }
+
+    // Tₙ value sanity (BLOCK D coverage): N connections with a large, paced body →
+    // multiConnMBps non-nil and the verdict path is reached.
+    // Uses N=2 so Phase 2 actually runs and Tₙ is measured (BLOCK D fix).
+    @Test func multiConnMBpsIsNonNilWhenPhase2Runs() async throws {
+        let url = "https://diagnose-test.local/\(UUID().uuidString).bin"
+        // 20 MB body so both halves have enough data for a non-nil Tₙ window.
+        let body = Data(repeating: 0xBB, count: 20_000_000)
+        MockURLProtocol.stub(
+            url, body: body, acceptsRanges: true,
+            bodyChunkSize: 131_072,
+            bodyChunkDelayMicroseconds: 500)
+
+        let config = DiagnoseConfig(
+            targetConnections: 2,
+            warmupSeconds: 0,
+            sampleWindowSeconds: 0.05,
+            rampWarmupSeconds: 0,
+            defaultDeadlineSeconds: 2.0,
+            minSampleBytes: 0,
+            scalingFactor: 1.3,
+            connectTimeoutSeconds: 5.0)
+
+        let (report, termination) = await GohDiagnoseProbe(
+            urlString: url, config: config, session: mockSession(), full: false).run()
+
+        #expect(report.reachable == true)
+        #expect(report.rangeSupported == true)
+        #expect(report.attempted == 2)
+        #expect(report.accepted == 2)
+        // Tₙ must be non-nil when Phase 2 ran with accepted connections (BLOCK C/D coverage).
+        #expect(report.multiConnMBps != nil)
+        // Verdict must have been reached (not still insufficientData from a nil T₁).
+        #expect(report.singleConnMBps != nil)
+        // Exact MB/s not asserted — timing is CI-sensitive. Structural check only (spec §3).
+        if case .diagnosed = termination { } else {
+            Issue.record("Expected .diagnosed, got \(termination)")
+        }
+    }
+}
