@@ -5,6 +5,47 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-04 (merge session) — **#80 (governor) + #81 (`goh diagnose`) BOTH MERGED to `main`**
+
+**Both feature PRs are squash-merged to `main`; no open PRs. Local `main` synced; feature branches deleted.**
+
+- **PR #80 — in-flight adaptive parallelism (P1–P4) governor** → squash `147156f`. Ships the BBR-style
+  aggregate-delivery-rate governor + dynamic chunk pool + interval-set assembler + per-host connection budget.
+  Framed as **correct + adaptive + no-regression**; the SM5a headline benchmark stays **deferred**
+  (environment-limited — the user's last-mile saturates at 8 conns; needs a far/high-ceiling VPS to prove).
+  P5 (NWConnection multi-edge) remains a separate future PR behind a feasibility spike + dedicated security review.
+- **PR #81 — `goh diagnose <url>`** → squash `3e923ac`. Self-contained CLI-local diagnostics verb (no daemon,
+  no XPC, purely additive). Built via the full `enterprise-pipeline` → `subagent-driven-development`. Design +
+  decisions captured in the 2026-06-04 build entry below and DESIGN.md (§Transport cancellation-race fix, §CLI
+  `goh diagnose`).
+- **CI + review:** both green at merge (Build & test + Package; signed-PKG skipped — needs Dev ID). All
+  CodeRabbit findings on both PRs addressed. One #81 suggestion (`conn0Ended` on every conn-0 terminal path)
+  was **declined with reasoning and CodeRabbit conceded** ("My suggestion was wrong… withdrawn") — it would have
+  reintroduced the `accepted<N` flake; the no-first-byte gating is intentional.
+- **Two CI bugs found + fixed on #81 during review (both CI-only, passed locally):** (1) a 6-hour **deadlock** —
+  the synchronous `DispatchSemaphore` async→sync bridge in `GohDiagnoseCommand` was called from Swift Testing
+  `@Test` bodies (which run *on* the cooperative pool); under CI's narrow pool it starved all pool threads.
+  Fixed by invoking the bridge off-pool (detached thread) in tests; production (main-thread) is safe. See
+  [[swift-sync-async-bridge-cooperative-pool-deadlock]]. (2) Phase-2 sampling **flakes** (`accepted=1`,
+  `multiConnMBps=nil`, `--full` hang) from synchronous `usleep` stub delivery blocking URLSession threads →
+  migrated those stubs to `asyncChunkDelivery` + generous test deadlines.
+- **Merge mechanics for the record:** #80 and #81 had **zero code-file overlap but both edited STATE.md +
+  DESIGN.md**, so #81 conflicted once #80 landed. Resolved by merging `main` into `feat/diagnose` (STATE.md
+  kept both session entries; DESIGN.md auto-merged), verifying the union (567 tests pass, clean build), then
+  squash-merging. Squash chosen for both (clean single commit per feature; the TDD/CI-fix/CodeRabbit iteration
+  commits stay in the PRs — matches the #77 precedent).
+
+**NEXT-SESSION HANDOFF — both v0.2 slices are on `main`; pick the next move:**
+1. **Trust-layer wedge (the strategic moat).** Per the ROADMAP + `docs/vision/VISION-2026-06-03.md`: the
+   vendor-neutral **offline lockfile** ("is this still exactly what I downloaded?") is the defensible,
+   self-contained direction the user favors ([[goh-prefers-self-contained]]). Best candidate for the next slice.
+2. **Public launch (Phase 3)** — gated on **Apple Developer ID credentials** (the one blocker outside the code):
+   sign+notarize the PKG (PR #36 workflow), open the `xaedyn/homebrew-goh` tap, add SECURITY/CONTRIBUTING/
+   CODE_OF_CONDUCT, launch post. `goh diagnose` + the governor are now real launch talking points.
+3. **Deferred speed proof** — the SM5a governor headline still needs a high-ceiling proving ground (far VPS,
+   ~1¢/hr Vultr Tokyo researched) or a faster link; the user declined the VPS for now.
+4. **P5 (NWConnection multi-edge)** — separate future PR behind a feasibility spike + dedicated security review.
+
 ### 2026-06-04 (session) — `goh diagnose` **BUILT + PR #81 open**; governor PR #80 also open (headline dropped)
 
 **Two PRs now open against `main`, independent (zero file overlap):**
