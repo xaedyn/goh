@@ -75,7 +75,7 @@ All blockers resolved: YES / NO
 
 ### FULL TEST SUITE STATUS
 
-```
+```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 # Result: _(fill in)_
 ```

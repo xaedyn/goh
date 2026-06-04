@@ -109,9 +109,13 @@ Interfaces the governor modifies, and what breaks (from Agent B):
 ## Fixes Applied (design decisions carried into the spec — none narrow the A3 contract)
 
 - **G1** → Geometric probing stays on candidate-set doublings (2→4→8→16, all candidates). The
-  value fed back to the bandit is **snapped to the nearest candidate arm**; warm-start reads the
-  best arm as N₀. (Spec resolves the seed's "observation vs curve" as: record the *representative
-  steady-state arm*, one observation, snapped to the candidate set.)
+  governor climbs the candidate ladder, so the converged operating N is itself a candidate. The
+  value fed back to the bandit is **candidate-only**: `GovernorOutcome.effectiveN` is non-nil ONLY
+  when the converged N is a bandit candidate {2,4,8,16}; an off-candidate convergence records **no**
+  observation (`effectiveN = nil`) rather than snapping to the nearest arm — so it cannot bias the
+  per-host EWMA. Warm-start reads the best arm as N₀ only from actually-recorded observations.
+  (Spec resolves the seed's "observation vs curve" as: record the *representative steady-state
+  candidate N*, one observation, candidate-aligned; an off-candidate result records nothing.)
 - **G2** → Spec adds a daemon-global per-host active-connection budget, enforced where the engine
   acquires connections; the per-download 16 ceiling remains.
 - **G3** → A failed edge is a dropped worker; its unclaimed byte intervals return to the pool and

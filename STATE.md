@@ -1021,15 +1021,17 @@ remaining adaptive host scheduling work to v0.2.
 
 ## Next-session handoff
 
-**MOST RECENT (design session): in-flight adaptive parallelism — four-round design APPROVED, no
-code.** The spec (`docs/superpowers/specs/2026-05-31-in-flight-adaptive-parallelism-design.md`)
-passed 2 adversarial Opus rounds; approach is **A3 (continuous governor + multi-edge fan-out)**,
-with multi-edge built on **NWConnection** because URLSession can't override SNI for IP connections
-(verified). Benchmark-sourcing plan is spec §12. **Pick-up options:** (a) generate the
-implementation plan (`custom-writing-plans` → adversarial plan review) then build **P1 first**; or
-(b) the Phase-3 public-launch track below (credential-gated). The design artifacts are
-**uncommitted on `main`** — cut `design/in-flight-parallelism` and commit them before any further
-work. See the top "Current state" entry dated *2026-05-31 (design session)* for the full breakdown.
+**MOST RECENT: see the top "Current state" entry (dated 2026-06-03).** The in-flight adaptive
+parallelism governor has since been **redesigned + fixed and P1–P4 are functionally complete** on
+`design/in-flight-parallelism` (now **PR #80**, CI green, headline-benchmark deferred). This
+2026-05-31 design-session note is **historical**: the four-round design (spec
+`docs/superpowers/specs/2026-05-31-in-flight-adaptive-parallelism-design.md`, approach **A3 —
+continuous governor + NWConnection multi-edge** because URLSession can't override SNI for IP
+connections) was approved over 2 adversarial Opus rounds and has been implemented through P4; the
+branch is cut, committed, and pushed (no longer "uncommitted on `main`"). **Pick-up options:**
+(a) review/merge PR #80, then **P5** (NWConnection multi-edge) behind its feasibility spike +
+dedicated security review; or (b) the Phase-3 public-launch track below (credential-gated). The
+detailed breakdown is the top "Current state" entry dated *2026-06-03*.
 
 ---
 

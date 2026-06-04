@@ -12,7 +12,7 @@ only; nothing is wired to the engine yet.
 `dnctl` (`/usr/sbin/dnctl`) + `pfctl` (`/sbin/pfctl`) present and functional on **macOS 26.5 /
 arm64**. Live pipe-creation test passed:
 
-```
+```bash
 sudo sh -c 'dnctl pipe 1 config bw 50Mbit/s delay 150 plr 0.005 && dnctl list && dnctl pipe 1 delete'
 # 00001:  50.000 Mbit/s  150 ms  50 sl.plr 0.005000 0 queues (1 buckets) droptail
 # DUMMYNET_OK

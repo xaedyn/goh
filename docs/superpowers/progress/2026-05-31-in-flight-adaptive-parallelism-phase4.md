@@ -45,7 +45,7 @@ If FAIL: investigation notes and rollback action _(fill in)_
 ### SM1 TRACE CONFIRMATION
 
 `GOH_ENGINE_TRACE=1` output excerpt showing probe→knee→cruise:
-```
+```text
 _(fill in: actual trace output)_
 ```
 
@@ -67,7 +67,7 @@ _(fill in at end of P4)_
 
 ### FULL TEST SUITE STATUS
 
-```
+```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 # Result: _(fill in)_
 ```
