@@ -25,6 +25,8 @@ final class FakeSyncDaemon: @unchecked Sendable {
     var onAdd: (AddRequest, UInt64) throws -> JobSummary
     /// Optional override for `ls`. When nil, returns all jobs added so far.
     var onLs: (() throws -> [JobSummary])?
+    /// Optional handler invoked for each `recordVerifiedProvenance` command.
+    var onRecordVerified: ((RecordVerifiedProvenanceRequest) throws -> Void)?
 
     private(set) var addCount = 0
     private(set) var lsCount = 0
@@ -69,6 +71,10 @@ final class FakeSyncDaemon: @unchecked Sendable {
             lsCount += 1
             let listed = try (onLs?() ?? jobs)
             return try reply(requestID: requestID, payload: LsReply(jobs: listed))
+
+        case .recordVerifiedProvenance(let request):
+            try onRecordVerified?(request)
+            return try reply(requestID: requestID, payload: AckReply())
 
         default:
             throw FakeError.badCommand
@@ -413,5 +419,183 @@ struct GohSyncCommandTests {
         defer { close(fd) }
         #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
         flock(fd, LOCK_UN)
+    }
+}
+
+// MARK: - GohSyncProvenanceBatch tests (Task 6 AC1/AC2/AC4)
+
+@Suite("GohSyncProvenanceBatch")
+struct GohSyncProvenanceBatchTests {
+
+    // MARK: AC1/AC2 — two already-present files; entries reach a real ProvenanceStore
+
+    @Test("allPresentSendsVerifiedEntries — two on-disk files, no downloads, store has 2 entries")
+    func allPresentSendsVerifiedEntries() throws {
+        let dir = try SyncTestSupport.makeDir()
+
+        // Stage two files and compute their real on-disk digests.
+        let bodyA = Data("file-alpha".utf8)
+        let bodyB = Data("file-bravo".utf8)
+        let pathA = dir + "/a.bin"
+        let pathB = dir + "/b.bin"
+        try SyncTestSupport.stage(bodyA, at: pathA)
+        try SyncTestSupport.stage(bodyB, at: pathB)
+        let pinA = try SyncTestSupport.digest(bodyA)
+        let pinB = try SyncTestSupport.digest(bodyB)
+
+        // Write a manifest that pins the real digests — so process() takes the
+        // upToDate(pin-match) path for both, zero downloads.
+        let manifestText = """
+        version = 1
+
+        [[asset]]
+        url = "https://example.com/a.bin"
+        path = "a.bin"
+        sha256 = "\(pinA)"
+
+        [[asset]]
+        url = "https://example.com/b.bin"
+        path = "b.bin"
+        sha256 = "\(pinB)"
+        """
+        let manifestPath = dir + "/gohfile.toml"
+        try manifestText.write(toFile: manifestPath, atomically: true, encoding: .utf8)
+
+        // A real ProvenanceStore backed by a temp file.
+        let storeURL = URL(fileURLWithPath: dir + "/provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+
+        // Wire the daemon so recordVerifiedProvenance drives the real store.
+        let daemon = FakeSyncDaemon { _, id in
+            // onAdd should never be called — if it is, the test will fail because
+            // destination is nil (no real download happening).
+            SyncTestSupport.completedJob(id: id, url: "", dest: "", bytes: 0)
+        }
+        var capturedRequest: RecordVerifiedProvenanceRequest?
+        daemon.onRecordVerified = { req in
+            capturedRequest = req
+            try store.recordVerified(entries: req.entries)
+        }
+
+        let result = GohSyncCommand.run(
+            manifestPath: manifestPath, base: nil, acceptChanged: false,
+            send: daemon.sender(), watchdogSeconds: 1)
+
+        // Exit 0 — all present, no downloads.
+        #expect(result.exitCode == 0)
+        // No downloads were issued.
+        #expect(daemon.addCount == 0)
+        // Exactly one batch was sent with 2 entries.
+        let req = try #require(capturedRequest, "expected recordVerifiedProvenance to be called")
+        #expect(req.entries.count == 2)
+        // The store now has 2 entries.
+        #expect(store.allEntries().count == 2)
+        // Every stored sha256 must have exactly one "sha256:" prefix — never doubled.
+        for entry in store.allEntries() {
+            #expect(entry.sha256.hasPrefix("sha256:"), "missing prefix: \(entry.sha256)")
+            #expect(!entry.sha256.hasPrefix("sha256:sha256:"), "double prefix: \(entry.sha256)")
+        }
+    }
+
+    // MARK: AC4 — daemon unreachable; best-effort send must not alter exit 0
+
+    @Test("daemonDownExits0 — recording failure is non-fatal, sync still exits 0")
+    func daemonDownExits0() throws {
+        let dir = try SyncTestSupport.makeDir()
+
+        let body = Data("present-file".utf8)
+        let filePath = dir + "/p.bin"
+        try SyncTestSupport.stage(body, at: filePath)
+        let pin = try SyncTestSupport.digest(body)
+
+        let manifestText = """
+        version = 1
+
+        [[asset]]
+        url = "https://example.com/p.bin"
+        path = "p.bin"
+        sha256 = "\(pin)"
+        """
+        let manifestPath = dir + "/gohfile.toml"
+        try manifestText.write(toFile: manifestPath, atomically: true, encoding: .utf8)
+
+        // A sender that always throws — simulates daemon unreachable for every
+        // command including recordVerifiedProvenance.
+        enum AlwaysDown: Error { case unreachable }
+        let alwaysDownSender: GohCommandLine.Sender = { _ in throw AlwaysDown.unreachable }
+
+        let result = GohSyncCommand.run(
+            manifestPath: manifestPath, base: nil, acceptChanged: false,
+            send: alwaysDownSender, watchdogSeconds: 1)
+
+        // Recording failure must never change exit 0 for an all-present run.
+        #expect(result.exitCode == 0)
+    }
+
+    // MARK: rejected tofuChange — exit 3 and NO batch sent
+
+    @Test("rejectedTofuChangeNoVerifiedEntry — exit 3 and recordVerifiedProvenance not called")
+    func rejectedTofuChangeNoVerifiedEntry() throws {
+        let dir = try SyncTestSupport.makeDir()
+
+        // Unpinned asset — creates a TOFU drift scenario.
+        // We need: on-disk bytes whose sha DIFFERS from the lock's recorded sha,
+        // and the prior lock must cover the SAME manifest (matching manifestHash).
+
+        // The manifest has no sha256 pin (unpinned / TOFU).
+        let manifestText = """
+        version = 1
+
+        [[asset]]
+        url = "https://example.com/drifted.bin"
+        path = "drifted.bin"
+        """
+        let manifestPath = dir + "/gohfile.toml"
+        try manifestText.write(toFile: manifestPath, atomically: true, encoding: .utf8)
+
+        // Compute the manifest's hash so the prior lock is authoritative.
+        let parsedManifest = try ManifestCodec.parse(manifestText)
+
+        // Prior lock records an OLD sha for the same path.
+        let oldBody = Data("old-bytes".utf8)
+        let newBody = Data("new-bytes-different".utf8)
+        let oldPin = try SyncTestSupport.digest(oldBody)
+
+        // Stage the NEW bytes on disk — sha differs from what the lock records.
+        try SyncTestSupport.stage(newBody, at: dir + "/drifted.bin")
+
+        // Write the prior lock with the OLD sha and the correct manifestHash so
+        // loadPriorLock() treats it as authoritative.
+        let priorLock = LockfileCodec.Lockfile(
+            manifestHash: parsedManifest.manifestHash,
+            entries: [
+                LockfileCodec.LockEntry(
+                    url: "https://example.com/drifted.bin",
+                    path: "drifted.bin",
+                    sha256: oldPin,
+                    size: oldBody.count,
+                    downloadedAt: "2025-01-01T00:00:00Z")
+            ])
+        let lockPath = dir + "/gohfile.lock"
+        try GohSyncCommand.writeLockAtomically(priorLock, to: lockPath)
+
+        // Daemon — no add calls expected; track whether recordVerifiedProvenance fires.
+        let daemon = FakeSyncDaemon { _, id in
+            SyncTestSupport.completedJob(id: id, url: "", dest: "", bytes: 0)
+        }
+        var batchWasSent = false
+        daemon.onRecordVerified = { _ in batchWasSent = true }
+
+        // acceptChanged: false → tofuChange is REJECTED → exitContribution 3
+        let result = GohSyncCommand.run(
+            manifestPath: manifestPath, base: nil, acceptChanged: false,
+            send: daemon.sender(), watchdogSeconds: 1)
+
+        // Rejected tofuChange → exit 3.
+        #expect(result.exitCode == 3)
+        // No downloads were issued.
+        #expect(daemon.addCount == 0)
+        // No batch should have been sent for a rejected change.
+        #expect(!batchWasSent, "recordVerifiedProvenance must not be called for a rejected tofuChange")
     }
 }
