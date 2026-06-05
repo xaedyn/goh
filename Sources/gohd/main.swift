@@ -12,18 +12,6 @@ import GohCore
 // Single-connection downloads in this slice; range-parallel orchestration is
 // slice 3b.
 
-/// The daemon's support directory —
-/// `~/Library/Application Support/dev.goh.daemon`. Created if absent.
-func supportDirectoryURL() throws -> URL {
-    let support = try FileManager.default.url(
-        for: .applicationSupportDirectory, in: .userDomainMask,
-        appropriateFor: nil, create: true)
-    let directory = support.appending(
-        path: GohXPCService.machServiceName, directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    return directory
-}
-
 func warn(_ message: String) {
     FileHandle.standardError.write(Data("gohd: \(message)\n".utf8))
 }
@@ -87,7 +75,7 @@ private extension NetworkPathState {
 }
 
 do {
-    let supportDirectory = try supportDirectoryURL()
+    let supportDirectory = try ProvenanceStoreLocation.supportDirectoryURL(create: true)
     let catalogStore = CatalogStore(fileURL: supportDirectory.appending(path: "catalog.plist"))
     let loaded = catalogStore.load()
     if let sidecar = loaded.corruptionSidecar {
@@ -109,6 +97,13 @@ do {
     let hostProfileLoadResult = hostProfileStore.load()
     if let sidecar = hostProfileLoadResult.corruptionSidecar {
         warn("the host-scheduling file was unreadable and has been reset; "
+            + "the damaged file was kept at \(sidecar.path)")
+    }
+    let provenanceStore = ProvenanceStore(
+        fileURL: try ProvenanceStoreLocation.defaultURL(create: true))
+    let provenanceLoad = provenanceStore.load()
+    if let sidecar = provenanceLoad.corruptionSidecar {
+        warn("the provenance ledger was unreadable and has been reset; "
             + "the damaged file was kept at \(sidecar.path)")
     }
     let reconciliation = store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore)
@@ -141,7 +136,7 @@ do {
             importedCookies.header(forJobID: jobID)
         },
         sleepAssertionController: sleepAssertions,
-        completedDownloadHandler: { completed, transferDuration, isResume, governorOutcome in
+        completedDownloadHandler: { completed, transferDuration, isResume, sha256, governorOutcome in
             // D5/D8 gates — all must hold to record a valid observation.
             // wasSolo is checked BEFORE end() runs (end() is in a defer in
             // run(), which fires after this handler returns) — so the
@@ -171,6 +166,21 @@ do {
                     downloadedAt: completed.completedAt ?? Date())
             } catch {
                 warn("job \(completed.id) completed but Spotlight metadata tagging failed: \(error)")
+            }
+            if let sha256 {
+                do {
+                    try provenanceStore.record(
+                        entry: ProvenanceEntry(
+                            url: completed.url,
+                            sha256: "sha256:" + sha256,          // stored WITH prefix (spec §6.2)
+                            size: Int(completed.progress.bytesCompleted),
+                            downloadedAt: completed.completedAt ?? Date(),
+                            // THE one canonicalization (spec §5.3, BLOCK-1)
+                            destinationPath: URL(fileURLWithPath: completed.destination)
+                                .standardizedFileURL.path))
+                } catch {
+                    warn("job \(completed.id) completed but provenance recording failed: \(error)")
+                }
             }
         },
         unexpectedStoreError: { jobID, operation, error in

@@ -251,4 +251,41 @@ struct ProvenanceStoreTests {
         // The directory was NOT created.
         #expect(!FileManager.default.fileExists(atPath: missingDir.path))
     }
+
+    // AC5/T4: Best-effort non-fatal — a store whose write path throws must NOT propagate.
+    // This tests the store's behavior with a broken write path. The daemon handler's
+    // do/catch wrapping is tested structurally (the handler is wired correctly if
+    // the compilation succeeds and the wiring test passes).
+    @Test("AC5/T4: record() on an unwritable directory throws but the call site can catch-and-log without failing the download")
+    func recordThrowsOnUnwritableDirectory() throws {
+        // A2: root bypasses POSIX mode bits — a 0o555 directory is still writable as root,
+        // so rename(2) would succeed and the test would pass WITHOUT asserting anything.
+        // Skip under root so the test never silently no-ops. (`getuid` from `Darwin`.)
+        try #require(getuid() != 0, "skipped as root: 0o555 does not block writes for uid 0")
+
+        let dir = try tempDir()
+        defer {
+            // Re-enable permissions for cleanup.
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: dir.path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+
+        let store = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = store.load()  // succeeds (file absent → empty)
+
+        // Make the directory unwritable so rename(2) fails.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555], ofItemAtPath: dir.path)
+
+        // record() must throw (it cannot write the file).
+        var threw = false
+        do {
+            try store.record(entry: fixedEntry())
+        } catch {
+            threw = true
+            // Caller can log this without propagating — the download is still successful.
+        }
+        #expect(threw)
+    }
 }
