@@ -19,6 +19,7 @@ public struct GohCommandLine {
     public typealias Top = () throws -> GohCommandLineResult
     public typealias Doctor = () throws -> GohCommandLineResult
     public typealias Diagnose = (_ url: String, _ full: Bool, _ json: Bool, _ connections: Int?) throws -> GohCommandLineResult
+    public typealias ProvenanceStorePathResolver = () -> String?
 
     private let arguments: [String]
     private let homeDirectory: URL
@@ -26,6 +27,7 @@ public struct GohCommandLine {
     private let top: Top?
     private let doctor: Doctor?
     private let diagnose: Diagnose?
+    private let provenanceStorePathResolver: ProvenanceStorePathResolver
     private let send: Sender
 
     public init(
@@ -35,6 +37,9 @@ public struct GohCommandLine {
         top: Top? = nil,
         doctor: Doctor? = nil,
         diagnose: Diagnose? = nil,
+        provenanceStorePathResolver: @escaping ProvenanceStorePathResolver = {
+            try? ProvenanceStoreLocation.defaultURL(create: false).path
+        },
         send: @escaping Sender
     ) {
         self.arguments = arguments
@@ -43,6 +48,7 @@ public struct GohCommandLine {
         self.top = top
         self.doctor = doctor
         self.diagnose = diagnose
+        self.provenanceStorePathResolver = provenanceStorePathResolver
         self.send = send
     }
 
@@ -106,10 +112,21 @@ public struct GohCommandLine {
                 let lockPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                     .appendingPathComponent("gohfile.lock")
                     .path
-                return GohWhichCommand.run(filePath: path, lockPath: lockPath)
+                // BLOCK-1: same resolver seam as verifyAll. Production resolves the real
+                // default read-only (create:false — never creates the dir); a nil/missing
+                // path resolves to nil → ledger branch skipped silently. Tests inject a temp path.
+                let provenanceStorePath = provenanceStorePathResolver()
+                return GohWhichCommand.run(
+                    filePath: path, lockPath: lockPath,
+                    provenanceStorePath: provenanceStorePath)
 
             case .verify(let lockPath, let strictUntracked):
                 return GohVerifyCommand.run(lockPath: lockPath, strictUntracked: strictUntracked)
+
+            case .verifyAll:
+                // BLOCK-1: resolve at dispatch via the injected resolver (create:false in production).
+                return GohVerifyAllCommand.run(
+                    provenanceStorePath: provenanceStorePathResolver() ?? "")
 
             case .sync(let manifestPath, let base, let acceptChanged):
                 return GohSyncCommand.run(
@@ -208,6 +225,7 @@ private enum ParsedCommand: Equatable {
     case diagnose(url: String, full: Bool, json: Bool, connections: Int?)
     case which(path: String)
     case verify(lockPath: String, strictUntracked: Bool)
+    case verifyAll
     case sync(manifestPath: String, base: String?, acceptChanged: Bool)
     case ls(OutputFormat)
     case pause(UInt64)
@@ -264,6 +282,25 @@ extension GohCommandLine {
         }
         if arguments.first == "verify" {
             let rest = Array(arguments.dropFirst())
+
+            // --all is parsed to a distinct case; it is incompatible with --strict-untracked
+            // and a positional lockfile path (which are lock-directory concepts with no
+            // analogue for the global ledger).
+            if rest.first == "--all" {
+                // Reject any additional flags or positional arguments after --all.
+                let after = Array(rest.dropFirst())
+                if !after.isEmpty {
+                    throw ParseError(
+                        message: "--all is incompatible with \(after.joined(separator: " "))")
+                }
+                // BLOCK-1: do NOT resolve the store path here. `parse()` is static and the
+                // resolver is not in scope; resolving the real default at parse time would make
+                // every parse test read the user's real provenance ledger. The path is resolved
+                // at DISPATCH (run()) via the injected `provenanceStorePathResolver`.
+                return .verifyAll
+            }
+
+            // Frozen path: --all is not present; parse exactly as before.
             var lockPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("gohfile.lock")
                 .path
@@ -526,6 +563,7 @@ extension GohCommandLine {
           goh which <path>
           goh sync [<manifest>] [--base <dir>] [--accept-changed]   (--base is cwd-relative)
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
+          goh verify --all
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
