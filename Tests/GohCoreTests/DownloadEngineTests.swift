@@ -1167,39 +1167,59 @@ struct DownloadEngineTests {
         #expect("sha256:" + sha256 == independent)
     }
 
-    // AC1/T9: resume path also captures the digest.
-    @Test("AC1/T5/T9: resumed download's completedDownloadHandler receives non-nil sha256")
-    func resumePathHandlerReceivesSha256() async throws {
-        // This test uses the existing resume test infrastructure to confirm the digest
-        // is threaded through verifyHash → complete → handler on the resume path.
-        // The simplest proxy: a single-connection download where isResume=true reaches
-        // the handler with a non-nil sha256.
-        // Full resume test requires a checkpoint fixture; use the existing resume test's
-        // approach of asserting the 5-parameter handler compiles and the param is non-nil
-        // for a normal download (resume path coverage is structural — verifyHash must return
-        // the digest; this is confirmed by the -warnings-as-errors build).
-        // This test instead verifies the handler arity compiles with 5 params.
+    // AC1/T5/T9: the resume path threads the digest through verifyHash → complete → handler.
+    // Drives the REAL resume path (interrupted ranged download + checkpoint) so that
+    // `isResume == true` reaches the handler, and asserts the delivered bare-hex digest
+    // matches an independent FileDigest hash of the completed file.
+    @Test("AC1/T5/T9: a resumed download delivers its sha256 through completedDownloadHandler")
+    func resumedDownloadRecordsSha256ThroughHandler() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let url = "https://test.local/\(UUID().uuidString).bin"
-        let payload = Data(repeating: 0xAB, count: 512)
-        MockURLProtocol.stub(url, body: payload)
+        let validator = "\"resume-digest-validator\""
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            failRangeStartingAt: 0,
+            headers: ["ETag": validator],
+            requiredIfRange: validator)
 
         let store = JobStore()
-        let destination = directory.appending(path: "resume-probe.bin").path
-        let job = store.create(url: url, destination: destination, requestedConnectionCount: 1)
+        let destination = directory.appending(path: "out.bin")
+        let job = store.create(
+            url: url, destination: destination.path, requestedConnectionCount: 8)
+        #expect(try store.start(id: job.id))
 
-        let capturedSha256 = Mutex<String?>(nil)
+        let checkpointedBytes = 2 << 20
+        try payload.prefix(checkpointedBytes).write(to: destination)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        try checkpointStore.save(DownloadCheckpoint(
+            jobID: job.id,
+            url: url,
+            destination: destination.path,
+            partialFileSize: UInt64(checkpointedBytes),
+            totalBytes: UInt64(payload.count),
+            strongETag: validator,
+            completedPieces: [CheckpointPiece(start: 0, length: UInt64(checkpointedBytes))]))
+        #expect(store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore).requeuedJobIDs == [job.id])
+
+        let captured = Mutex<(isResume: Bool, sha256: String?)?>(nil)
         await DownloadEngine(
             session: mockSession(),
-            completedDownloadHandler: { _, _, _, sha256, _ in
-                capturedSha256.withLock { $0 = sha256 }
+            checkpointStore: checkpointStore,
+            completedDownloadHandler: { _, _, isResume, sha256, _ in
+                captured.withLock { $0 = (isResume, sha256) }
             }
         ).run(jobID: job.id, in: store)
 
-        // Non-nil sha256 confirms the 5-param handler wiring is complete.
-        let sha256 = capturedSha256.withLock { $0 }
-        #expect(sha256 != nil)
+        #expect(store.job(id: job.id)?.state == .completed)
+        let result = try #require(captured.withLock { $0 })
+        #expect(result.isResume == true)
+        let sha256 = try #require(result.sha256)
+        // Engine streams bare hex; FileDigest returns the "sha256:"-prefixed form.
+        let (independent, _) = try FileDigest.sha256WithSize(path: destination.path)
+        #expect("sha256:" + sha256 == independent)
     }
 }
