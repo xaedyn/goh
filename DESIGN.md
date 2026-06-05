@@ -646,6 +646,76 @@ removes only the catalog row.
   leaks checkpoint internals into the v1 IPC surface before there is a proven
   need.
 
+## Provenance-everywhere (v0.1)
+
+A daemon-owned provenance ledger (`provenance.plist`) auto-records
+`{url, sha256, size, downloadedAt, destinationPath}` for every successful
+download — manifest, ad-hoc, and resume — into a versioned binary-plist store
+at `~/Library/Application Support/dev.goh.daemon/provenance.plist`.
+
+### Architecture decision: The Native Ledger (Approach A)
+
+A fourth `Sendable`-class-over-`Mutex` store, a carbon copy of `HostProfileStore`,
+minus TTL eviction. Approach B (reuse `gohfile.lock` TOML as a global auto-lock)
+was rejected because it forfeits an independent version field (inherits frozen
+`lockfileVersion = 1`), welds a machine-local record to a portable committed
+contract, and pays TOML-reparse cost on the hot completion path. See
+`docs/superpowers/research/2026-06-04-provenance-everywhere-approaches.md`.
+
+THE BET: personal-scale download counts never reach the point where an O(n)
+full-plist rewrite per completion becomes user-perceptible. The escape hatch
+(append-log behind the same `record`/`lookup`/`allEntries()` surface) is a
+one-file re-implementation when the bet fails.
+
+### Digest capture
+
+`ChunkAssembler.hashToCompletion()` already computes SHA-256 during download.
+This feature threads it through all three completion paths (`fetchSingle`,
+`fetchRanged`, resume via `verifyHash() -> String`) via a widened daemon-internal
+`completedDownloadHandler` closure (`sha256: String?` as 4th param). `sha256` is
+stored with the `"sha256:"` prefix (matching `FileDigest.sha256WithSize` output).
+
+### Direct CLI read (no new XPC)
+
+`goh which` and `goh verify --all` read `provenance.plist` directly (read-only,
+0600, same-user). No new XPC endpoint — both commands work with the daemon down.
+A shared `ProvenanceStoreLocation` resolver (`GohCore`) prevents writer/reader
+path divergence. CLI read paths call `ProvenanceStoreLocation.defaultURL(create: false)`
+(never create the dir); the daemon calls `create: true`.
+
+### Frozen-contract invariant
+
+`protocolVersion = 3`, `JobCatalog.currentVersion = 1`, `JobSummary` wire shape,
+`gohfile.lock lockfileVersion = 1`, `DownloadCheckpoint` v1, `HostScheduling` v1
+are all unchanged. The provenance ledger carries its own `ProvenanceRecord.currentVersion = 1`,
+independent of every other contract. A golden round-trip fixture
+(`Tests/GohCoreTests/Fixtures/provenance-v1.plist`) locks the format.
+
+### Canonicalization rule (BLOCK-1)
+
+One rule, applied identically at write and read:
+`URL(fileURLWithPath: rawPath).standardizedFileURL.path`
+Purely lexical (no symlink resolution). `ProvenanceStore.lookup(destinationPath:)`
+canonicalizes its argument internally — callers pass raw paths.
+
+**Accepted boundary — relative `--destination` is unindexable by `which` (A1).** A
+user-supplied RELATIVE `--destination` is canonicalized against the DAEMON's launchd
+working directory at write time, but against the SHELL's cwd at `goh which` time. The
+two cwds differ, so the canonical key the daemon stored will not match the canonical
+key `which` computes — a download saved to a relative destination is effectively
+unindexable by `goh which`. This is verify-only impact (the file is still downloaded
+and hash-recorded correctly; only the offline `which` lookup misses). The realistic
+path is absolute or default destinations (which the daemon resolves to absolute paths),
+so this is an accepted limitation for v0.1, NOT fixed here. Closing it would require the
+daemon to resolve relative destinations to absolute against a cwd the CLI can reproduce.
+
+### TTL eviction deliberately absent
+
+Unlike `HostProfileStore` (90-day TTL), `ProvenanceStore` performs NO TTL eviction.
+Evicting entries would silently lose the user's own provenance record. A source-level
+comment in `ProvenanceStore.load()` records this intentional divergence for future
+maintainers.
+
 ## IPC
 
 The `goh` ↔ `gohd` contract runs over the modern low-level Swift XPC API
