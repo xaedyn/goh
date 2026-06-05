@@ -71,7 +71,7 @@ struct DownloadEngineTests {
         await DownloadEngine(
             session: mockSession(),
             sleepAssertionController: sleepAssertionController,
-            completedDownloadHandler: { completed, _, _, _ in
+            completedDownloadHandler: { completed, _, _, _, _ in
                 completedJob.withLock { $0 = completed }
             }
         ).run(jobID: job.id, in: store)
@@ -104,7 +104,7 @@ struct DownloadEngineTests {
 
         await DownloadEngine(
             session: mockSession(),
-            completedDownloadHandler: { _, duration, isResume, _ in
+            completedDownloadHandler: { _, duration, isResume, _, _ in
                 observed.withLock { $0 = (duration, isResume) }
             }
         ).run(jobID: job.id, in: store)
@@ -1107,7 +1107,7 @@ struct DownloadEngineTests {
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 2)
         let captured = Mutex<GovernorOutcome?>(nil)
         await DownloadEngine(session: mockSession(), chunkSize: 1 << 20,
-            completedDownloadHandler: { _, _, _, outcome in captured.withLock { $0 = outcome } }
+            completedDownloadHandler: { _, _, _, _, outcome in captured.withLock { $0 = outcome } }
         ).run(jobID: job.id, in: store)
         #expect(store.job(id: job.id)?.state == .completed)
         #expect(captured.withLock { $0 } != nil)
@@ -1126,12 +1126,100 @@ struct DownloadEngineTests {
         let captured = Mutex<GovernorOutcome?>(nil)
         // Small chunkSize → 8 chunks so 4 workers actually run concurrently (peak 4).
         await DownloadEngine(session: mockSession(), chunkSize: 1 << 20,
-            completedDownloadHandler: { _, _, _, outcome in captured.withLock { $0 = outcome } }
+            completedDownloadHandler: { _, _, _, _, outcome in captured.withLock { $0 = outcome } }
         ).run(jobID: job.id, in: store, explicitConnectionCount: 4)
         #expect(store.job(id: job.id)?.state == .completed)
         let outcome = captured.withLock { $0 }!
         #expect(outcome.effectiveN == nil)            // governor off → no bandit observation
         #expect(!outcome.stabilized)
         #expect(store.job(id: job.id)?.actualConnectionCount == 4)  // pinned peak; governor never probed
+    }
+
+    // AC1/T9: Digest captured and passed through completedDownloadHandler.
+    @Test("AC1/T9: completedDownloadHandler receives non-nil sha256 matching the file's independent hash")
+    func handlerReceivesSha256() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<200_000).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(url, body: payload)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 1)
+
+        let capturedSha256 = Mutex<String?>(nil)
+        await DownloadEngine(
+            session: mockSession(),
+            completedDownloadHandler: { _, _, _, sha256, _ in
+                capturedSha256.withLock { $0 = sha256 }
+            }
+        ).run(jobID: job.id, in: store)
+
+        #expect(store.job(id: job.id)?.state == .completed)
+        let sha256 = try #require(capturedSha256.withLock { $0 })
+        // The handler-received digest must match an independent FileDigest hash of the file.
+        let (independent, _) = try FileDigest.sha256WithSize(path: destination)
+        // Engine streams bare hex; handler receives it bare. FileDigest returns "sha256:<hex>".
+        // The handler in gohd prepends "sha256:" when writing to the store, but the handler
+        // closure in the engine receives the BARE hex. Confirm bare hex matches.
+        #expect("sha256:" + sha256 == independent)
+    }
+
+    // AC1/T5/T9: the resume path threads the digest through verifyHash → complete → handler.
+    // Drives the REAL resume path (interrupted ranged download + checkpoint) so that
+    // `isResume == true` reaches the handler, and asserts the delivered bare-hex digest
+    // matches an independent FileDigest hash of the completed file.
+    @Test("AC1/T5/T9: a resumed download delivers its sha256 through completedDownloadHandler")
+    func resumedDownloadRecordsSha256ThroughHandler() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let validator = "\"resume-digest-validator\""
+        let payload = Data((0..<(4 << 20)).map { UInt8($0 & 0xff) })
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            failRangeStartingAt: 0,
+            headers: ["ETag": validator],
+            requiredIfRange: validator)
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin")
+        let job = store.create(
+            url: url, destination: destination.path, requestedConnectionCount: 8)
+        #expect(try store.start(id: job.id))
+
+        let checkpointedBytes = 2 << 20
+        try payload.prefix(checkpointedBytes).write(to: destination)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        try checkpointStore.save(DownloadCheckpoint(
+            jobID: job.id,
+            url: url,
+            destination: destination.path,
+            partialFileSize: UInt64(checkpointedBytes),
+            totalBytes: UInt64(payload.count),
+            strongETag: validator,
+            completedPieces: [CheckpointPiece(start: 0, length: UInt64(checkpointedBytes))]))
+        #expect(store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore).requeuedJobIDs == [job.id])
+
+        let captured = Mutex<(isResume: Bool, sha256: String?)?>(nil)
+        await DownloadEngine(
+            session: mockSession(),
+            checkpointStore: checkpointStore,
+            completedDownloadHandler: { _, _, isResume, sha256, _ in
+                captured.withLock { $0 = (isResume, sha256) }
+            }
+        ).run(jobID: job.id, in: store)
+
+        #expect(store.job(id: job.id)?.state == .completed)
+        let result = try #require(captured.withLock { $0 })
+        #expect(result.isResume == true)
+        let sha256 = try #require(result.sha256)
+        // Engine streams bare hex; FileDigest returns the "sha256:"-prefixed form.
+        let (independent, _) = try FileDigest.sha256WithSize(path: destination.path)
+        #expect("sha256:" + sha256 == independent)
     }
 }

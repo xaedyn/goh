@@ -89,7 +89,7 @@ public struct DownloadEngine: Sendable {
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
     private let sleepAssertionController: SleepAssertionController?
-    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)?
+    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, String?, GovernorOutcome) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
     private let hostProfileStore: HostProfileStore?
     private let connectionBudget: ConnectionBudget?
@@ -101,7 +101,7 @@ public struct DownloadEngine: Sendable {
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
-        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, GovernorOutcome) -> Void)? = nil,
+        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, String?, GovernorOutcome) -> Void)? = nil,
         unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
         hostProfileStore: HostProfileStore? = nil,
         connectionBudget: ConnectionBudget? = nil
@@ -359,6 +359,7 @@ public struct DownloadEngine: Sendable {
         let clock = ContinuousClock()
         let started = clock.now
 
+        let resumeDigest: String
         do {
             for range in missingRanges {
                 completed += try await downloadResumeRange(
@@ -367,7 +368,7 @@ public struct DownloadEngine: Sendable {
                     completedBeforeRange: completed, clock: clock, started: started)
             }
 
-            try await verifyHash(file: file, total: total)
+            resumeDigest = try await verifyHash(file: file, total: total)
             try file.finish()
         } catch {
             try? file.finish()
@@ -378,7 +379,8 @@ public struct DownloadEngine: Sendable {
             Self.progress(completed: total, total: total, elapsed: clock.now - started))
         try complete(
             jobID: job.id, in: store,
-            transferDuration: clock.now - started, isResume: true)
+            transferDuration: clock.now - started, isResume: true,
+            sha256: resumeDigest)
         trace.summary()
     }
 
@@ -446,14 +448,19 @@ public struct DownloadEngine: Sendable {
         return written
     }
 
-    private func verifyHash(file: DownloadFile, total: UInt64) async throws {
+    private func verifyHash(file: DownloadFile, total: UInt64) async throws -> String {
         let assembler = ChunkAssembler(file: file, totalBytes: total)
         async let assembled = assembler.hashToCompletion()
         assembler.complete(interval: ByteInterval(start: 0, length: total))
         assembler.finish()
-        if case .failed(let error) = await assembled {
-            throw error
+        let outcome = await assembled                              // the ONE await
+        guard case .digest(let hex) = outcome else {
+            guard case .failed(let err) = outcome else {
+                fatalError("unreachable: ChunkAssemblerResult has only .digest/.failed")
+            }
+            throw err
         }
+        return hex
     }
 
     // MARK: Single connection
@@ -515,9 +522,17 @@ public struct DownloadEngine: Sendable {
         }
 
         assembler.finish()
-        if case .failed(let assemblerError) = await assembled {
+        let assemblerOutcome = await assembled                         // the ONE await
+        if case .failed(let assemblerError) = assemblerOutcome {
             try? file.finish()
             throw assemblerError
+        }
+        // assemblerOutcome is .digest(hex) — extract the hex for provenance recording.
+        let fetchSingleDigest: String?
+        if case .digest(let hex) = assemblerOutcome {
+            fetchSingleDigest = hex
+        } else {
+            fatalError("unreachable: ChunkAssemblerResult has only .digest/.failed")
         }
         try file.finish()
         _ = try store.recordProgress(
@@ -525,7 +540,8 @@ public struct DownloadEngine: Sendable {
             Self.progress(completed: completed, total: total, elapsed: clock.now - started))
         try complete(
             jobID: job.id, in: store,
-            transferDuration: clock.now - started, isResume: false)
+            transferDuration: clock.now - started, isResume: false,
+            sha256: fetchSingleDigest)
     }
 
     // MARK: Range-parallel
@@ -837,9 +853,16 @@ public struct DownloadEngine: Sendable {
         }
 
         assembler.finish()
-        if case .failed(let assemblerError) = await assembled {
+        let rangedOutcome = await assembled                            // the ONE await
+        if case .failed(let assemblerError) = rangedOutcome {
             try? file.finish()
             throw assemblerError
+        }
+        let fetchRangedDigest: String?
+        if case .digest(let hex) = rangedOutcome {
+            fetchRangedDigest = hex
+        } else {
+            fatalError("unreachable: ChunkAssemblerResult has only .digest/.failed")
         }
         try file.finish()
         _ = try store.recordProgress(
@@ -849,6 +872,7 @@ public struct DownloadEngine: Sendable {
         try complete(
             jobID: job.id, in: store,
             transferDuration: clock.now - started, isResume: false,
+            sha256: fetchRangedDigest,
             governorOutcome: governorOutcome)
         trace.summary()
     }
@@ -856,10 +880,11 @@ public struct DownloadEngine: Sendable {
     private func complete(
         jobID: UInt64, in store: JobStore,
         transferDuration: Duration, isResume: Bool,
+        sha256: String?,                          // lowercase hex, no prefix; nil if unavailable
         governorOutcome: GovernorOutcome = .governorOff
     ) throws {
         let completed = try store.complete(id: jobID)
-        completedDownloadHandler?(completed, transferDuration, isResume, governorOutcome)
+        completedDownloadHandler?(completed, transferDuration, isResume, sha256, governorOutcome)
     }
 
     /// Issues a fresh ranged `GET` for `range` and feeds its body into
