@@ -1,17 +1,36 @@
 # Phase 3 Progress — provenance-everywhere
 
-Status: NOT STARTED — requires Phase 2 complete
+Status: COMPLETE — Tasks 6–10 implemented and passing.
 
-## Tasks in this phase
+## WHAT WAS BUILT
 
-- Task 6: goh which ledger branch
-- Task 7: GohVerifyAllCommand (goh verify --all)
-- Task 8: GohCommandLine parse/dispatch/usage
-- Task 9: Full test verification pass
-- Task 10: DESIGN.md reconciliation
+- `Sources/GohCore/CLI/GohWhichCommand.swift` — `run(filePath:lockPath:provenanceStorePath:)`
+  gains a defaulted `provenanceStorePath: String? = nil`. New `lookupInLedger` private method routes
+  through the shared `ProvenanceStore.loadReadOnly()` + `lookup(destinationPath:)` (BLOCK-3 — no inline
+  string compare). The existing `GohWhichCommandTests` tests are unmodified and still pass.
+- `Tests/GohCoreTests/GohWhichLedgerTests.swift` — T6 (ledger read), T6b (canonical-path match),
+  nil-skip, missing-ledger, lock-precedence.
+- `Sources/GohCore/CLI/GohVerifyAllCommand.swift` — `run(provenanceStorePath:) -> GohCommandLineResult`.
+  Exit codes 0/2/6/9; precedence 9>2; CLI never copies sidecar or resets store.
+- `Tests/GohCoreTests/GohVerifyAllCommandTests.swift` — T7 (OK/FAILED/MISSING), exit 2, exit 0,
+  T8 (absent → 0, corrupt → 6 no sidecar), T7b (frozen signature check).
+- `Sources/GohCore/CLI/GohCommandLine.swift` — `ParsedCommand.verifyAll` (carries no path; resolution
+  deferred to dispatch); injectable `provenanceStorePathResolver` test seam (BLOCK-1, mirrors the
+  `foreground`/`top`/`doctor`/`diagnose` injection idiom); `verify --all` parse arm; `which` and
+  `verifyAll` dispatch resolve the store path via the resolver; usage updated.
+- `Tests/GohCoreTests/GohVerifyAllParseTests.swift` — T7b parse routing, frozen verify, parse errors, usage.
+- `DESIGN.md` — provenance-everywhere section added.
 
-## Completion instructions
+## CURRENT STATE
 
-When all five tasks are complete, replace this file with the Phase 3 Artifact from the plan.
-See `/Users/shane/claude/goh/docs/plans/2026-06-04-provenance-everywhere-plan.md` for the
-exact artifact text to paste here.
+All acceptance criteria satisfied:
+- AC1: Engine threads digest; daemon records with "sha256:" prefix at write site.
+- AC2: `goh which` reads from ledger (T6/T6b). Offline — no URLSession on path.
+- AC3: `goh verify --all` re-hashes via FileDigest, OK/FAILED/MISSING, exit 0/2/9 (T7/T8).
+- AC4: All pre-existing golden fixtures unchanged; `provenance-v1.plist` golden round-trip passes;
+  `-warnings-as-errors` clean; test count strictly higher.
+- AC5: In-place update (T3); corrupt→sidecar (T2); best-effort non-fatal (T4); CLI no-sidecar (T8).
+
+## OPEN ITEMS
+
+None. Feature complete. Proceed to PR creation and CodeRabbit review.
