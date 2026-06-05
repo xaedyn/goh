@@ -19,6 +19,7 @@ public struct CommandDispatcher: Sendable {
     private let checkpointStore: CheckpointStore?
     private let hostProfileStore: HostProfileStore?
     private let importedCookies: ImportedCookieStore?
+    private let provenanceStore: ProvenanceStore?
     /// Daemon-internal explicit-`--connections` channel (NOT on the wire). When a
     /// job is admitted with a user-supplied connection count, the dispatcher
     /// records `job.id → cappedConnectionCount` here so the scheduler can run that
@@ -39,6 +40,7 @@ public struct CommandDispatcher: Sendable {
         checkpointStore: CheckpointStore? = nil,
         hostProfileStore: HostProfileStore? = nil,
         importedCookies: ImportedCookieStore? = nil,
+        provenanceStore: ProvenanceStore? = nil,
         explicitConnectionCounts: ExplicitConnectionCounts? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil,
         queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil
@@ -48,6 +50,7 @@ public struct CommandDispatcher: Sendable {
         self.checkpointStore = checkpointStore
         self.hostProfileStore = hostProfileStore
         self.importedCookies = importedCookies
+        self.provenanceStore = provenanceStore
         self.explicitConnectionCounts = explicitConnectionCounts
         self.onJobQueued = onJobQueued
         self.queuedJobAdmission = queuedJobAdmission
@@ -208,9 +211,14 @@ public struct CommandDispatcher: Sendable {
                     code: .invalidArgument,
                     message: "subscribe requires a progress subscription handler"))
 
-            case .recordVerifiedProvenance:
-                // Handled by CommandService (best-effort batch — no job-store mutation).
-                // Dispatcher is not invoked for this command; arm exists for exhaustiveness.
+            case .recordVerifiedProvenance(let request):
+                do {
+                    try provenanceStore?.recordVerified(entries: request.entries)
+                } catch {
+                    // Best-effort: a store write failure is non-fatal for the daemon
+                    // (mirrors the download completion handler). The reply is still .ack;
+                    // the CLI's best-effort path does not depend on a structured error here.
+                }
                 return .ack
             }
         } catch let error as GohError {

@@ -198,6 +198,7 @@ do {
         checkpointStore: checkpointStore,
         hostProfileStore: hostProfileStore,
         importedCookies: importedCookies,
+        provenanceStore: provenanceStore,
         explicitConnectionCounts: explicitConnectionCounts,
         queuedJobAdmission: { networkCoordinator.jobBecameQueued($0) })
     let authImportHandler = SafariAuthImportHandler(importedCookies: importedCookies)

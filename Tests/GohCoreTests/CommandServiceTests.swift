@@ -410,6 +410,40 @@ struct CommandServiceTests {
         #expect(reply.payload.code == .protocolVersionMismatch)
     }
 
+    @Test("recordVerifiedProvenance returns AckReply over real XPC and records to the store")
+    func recordVerifiedProvenanceReturnsAck() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("goh-dispatcher-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let pStore = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = pStore.load()
+
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: JobStore(), provenanceStore: pStore))
+        let listener = GohXPCListener(anonymousHandler: { service.handle($0) })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { listener.cancel(); client.cancel() }
+
+        let t = Date(timeIntervalSince1970: 1_750_000_000)
+        let entry = VerifiedProvenanceEntry(
+            url: "https://example.com/f.bin",
+            sha256: "sha256:" + String(repeating: "d", count: 64),
+            size: 256, destinationPath: "/tmp/test-dispatcher-f.bin", verifiedAt: t)
+        let command = Command.recordVerifiedProvenance(
+            request: RecordVerifiedProvenanceRequest(entries: [entry]))
+
+        let reply = try send(command, expecting: AckReply.self, over: client)
+        #expect(reply.messageType == .reply)
+        #expect(reply.payload == AckReply())
+
+        let canonical = URL(fileURLWithPath: "/tmp/test-dispatcher-f.bin").standardizedFileURL.path
+        let found = pStore.lookup(destinationPath: canonical)
+        #expect(found != nil)
+        #expect(found?.verifiedAt == t)
+    }
+
     @Test("a non-request envelope replies with invalidArgument")
     func nonRequestEnvelopeRepliesWithError() throws {
         let (listener, client) = try makeChannel()
