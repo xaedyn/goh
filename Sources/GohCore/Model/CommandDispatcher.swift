@@ -27,6 +27,7 @@ public struct CommandDispatcher: Sendable {
     private let explicitConnectionCounts: ExplicitConnectionCounts?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
     private let queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)?
+    private let warn: (@Sendable (String) -> Void)?
 
     /// Creates a dispatcher over `store`. `onJobQueued`, when provided, is called
     /// with a job's id whenever a command leaves that job `queued` — after
@@ -43,7 +44,8 @@ public struct CommandDispatcher: Sendable {
         provenanceStore: ProvenanceStore? = nil,
         explicitConnectionCounts: ExplicitConnectionCounts? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil,
-        queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil
+        queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil,
+        warn: (@Sendable (String) -> Void)? = nil
     ) {
         self.store = store
         self.control = control
@@ -54,6 +56,7 @@ public struct CommandDispatcher: Sendable {
         self.explicitConnectionCounts = explicitConnectionCounts
         self.onJobQueued = onJobQueued
         self.queuedJobAdmission = queuedJobAdmission
+        self.warn = warn
     }
 
     /// Handles `command`, mutating the job store, and returns the outcome.
@@ -218,6 +221,7 @@ public struct CommandDispatcher: Sendable {
                     // Best-effort: a store write failure is non-fatal for the daemon
                     // (mirrors the download completion handler). The reply is still .ack;
                     // the CLI's best-effort path does not depend on a structured error here.
+                    warn?("recordVerifiedProvenance: provenance store write failed for \(request.entries.count) entr\(request.entries.count == 1 ? "y" : "ies"): \(error)")
                 }
                 return .ack
             }
