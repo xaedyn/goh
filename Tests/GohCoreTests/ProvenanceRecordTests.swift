@@ -1,0 +1,80 @@
+import Foundation
+import Testing
+
+@testable import GohCore
+
+@Suite("ProvenanceRecord")
+struct ProvenanceRecordTests {
+
+    // MARK: - AC4: golden fixture round-trip (T1)
+
+    // AC4: New store has its own version field; golden round-trip passes.
+    @Test("AC4/T1: golden fixture decodes to known value; round-trip encode/decode is stable")
+    func goldenFixtureRoundTrip() throws {
+        let fixtureURL = Bundle.module.url(
+            forResource: "provenance-v1", withExtension: "plist",
+            subdirectory: "Fixtures")
+        let fixtureData = try Data(contentsOf: #require(fixtureURL))
+
+        let decoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: fixtureData)
+
+        // Version sentinel
+        #expect(decoded.version == 1)
+        #expect(decoded.version == ProvenanceRecord.currentVersion)
+
+        // Two entries: one normal, one zero-size
+        #expect(decoded.entries.count == 2)
+
+        let first = decoded.entries[0]
+        #expect(first.url == "https://dl.example.com/a.bin")
+        #expect(first.sha256 == "sha256:aabbccdd" + String(repeating: "0", count: 56))
+        #expect(first.size == 1_048_576)
+        #expect(first.destinationPath == "/Users/testuser/Downloads/a.bin")
+
+        let second = decoded.entries[1]
+        #expect(second.url == "https://cdn.example.net/empty.bin")
+        #expect(second.sha256 == "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        #expect(second.size == 0)
+        #expect(second.destinationPath == "/Users/testuser/Downloads/empty.bin")
+
+        // Round-trip: re-encode the decoded value, then decode again — the two decoded
+        // values must be equal. We do NOT assert byte-identity vs the fixture because
+        // binary-plist encoding is not guaranteed bit-stable across SDK versions (the
+        // cross-SDK-skew gotcha). This mirrors the host-scheduling golden test pattern.
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let reencoded = try encoder.encode(decoded)
+        let redecoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: reencoded)
+        #expect(redecoded == decoded)
+    }
+
+    // AC4: empty is the correct zero value.
+    @Test("AC4/T1: ProvenanceRecord.empty has version == currentVersion and no entries")
+    func emptyIsCorrect() {
+        let empty = ProvenanceRecord.empty
+        #expect(empty.version == ProvenanceRecord.currentVersion)
+        #expect(empty.entries.isEmpty)
+    }
+
+    // Codable round-trip (encode then decode — separate from the golden fixture).
+    @Test("T1: encode/decode round-trip is lossless")
+    func encodeDecodeRoundTrip() throws {
+        let fixedDate = Date(timeIntervalSince1970: 1_748_000_000)
+        let record = ProvenanceRecord(
+            version: ProvenanceRecord.currentVersion,
+            entries: [
+                ProvenanceEntry(
+                    url: "https://example.com/f.bin",
+                    sha256: "sha256:" + String(repeating: "a", count: 64),
+                    size: 512,
+                    downloadedAt: fixedDate,
+                    destinationPath: "/tmp/f.bin")
+            ])
+
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let data = try encoder.encode(record)
+        let decoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: data)
+        #expect(decoded == record)
+    }
+}
