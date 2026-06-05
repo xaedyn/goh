@@ -102,6 +102,36 @@ struct EnvelopeCodecTests {
             snapshot: []))
     }
 
+    @Test("decodes the protocolVersion=4 recordVerifiedProvenance request fixture")
+    func decodesV4RecordVerifiedProvenanceRequestFixture() throws {
+        let envelope = try CommandCoding.decoder.decode(
+            GohEnvelope<Command>.self,
+            from: fixtureData("envelope-v4-record-verified-provenance-request"))
+        #expect(envelope.protocolVersion == 4)
+        #expect(envelope.requestID == UUID(uuidString: "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"))
+        #expect(envelope.messageType == .request)
+        if case .recordVerifiedProvenance(let req) = envelope.payload {
+            #expect(req.entries.count == 1)
+            #expect(req.entries[0].url == "https://example.com/f.bin")
+            #expect(req.entries[0].sha256 == "sha256:" + String(repeating: "a", count: 64))
+            #expect(req.entries[0].size == 1024)
+            #expect(req.entries[0].destinationPath == "/Users/testuser/Downloads/f.bin")
+            #expect(req.entries[0].verifiedAt == Date(timeIntervalSince1970: 1_714_262_400))
+        } else {
+            Issue.record("expected .recordVerifiedProvenance payload")
+        }
+    }
+
+    @Test("decodes the protocolVersion=4 recordVerifiedProvenance reply fixture")
+    func decodesV4RecordVerifiedProvenanceReplyFixture() throws {
+        let envelope = try CommandCoding.decoder.decode(
+            GohEnvelope<AckReply>.self,
+            from: fixtureData("envelope-v4-record-verified-provenance-reply"))
+        #expect(envelope.protocolVersion == 4)
+        #expect(envelope.messageType == .reply)
+        #expect(envelope.payload == AckReply())
+    }
+
     @Test("an envelope round-trips through encode then decode unchanged")
     func roundTripsUnchanged() throws {
         let original = try JSONDecoder().decode(
