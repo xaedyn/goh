@@ -92,9 +92,7 @@ Modified interfaces and their consumers (from Agent B, `[VERIFIED]`):
 
 1. **Hash-keyed merge** (daemon-side, atomic under the store Mutex): `existing && existing.sha256
    == request.sha256` → preserve `downloadedAt`, set `verifiedAt`, refresh `url/size`; else →
-   new entry with `downloadedAt = verifiedAt` and `verifiedAt` set. The request carries the raw
-   hex digest; the daemon prepends `"sha256:"` (single prefixing site, matches the completion
-   handler). The daemon canonicalizes the request path identically to the download path.
+   new entry with `downloadedAt = verifiedAt` and `verifiedAt` set. The request carries the ALREADY-`"sha256:"`-prefixed digest (from `FileDigest.sha256WithSize`); the daemon stores it verbatim without re-prefixing. The daemon canonicalizes the request path identically to the download path.
 2. **Batch command** `recordVerifiedProvenance(entries: [VerifiedProvenanceEntry])` → one
    daemon read-modify-write. Add `ProvenanceStore.recordVerified(entries:)` doing the merge for
    all entries inside one `withLock`.

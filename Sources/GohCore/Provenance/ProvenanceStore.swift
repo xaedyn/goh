@@ -116,7 +116,7 @@ public final class ProvenanceStore: Sendable {
     /// (thousands to tens-of-thousands of downloads), this is imperceptible — see
     /// Approach A "THE BET" in the approach decision memo.
     public func record(entry: ProvenanceEntry) throws {
-        var snapshot: ProvenanceRecord = inner.withLock { inner in
+        try inner.withLock { inner in
             if let idx = inner.record.entries.firstIndex(where: {
                 $0.destinationPath == entry.destinationPath
             }) {
@@ -124,9 +124,8 @@ public final class ProvenanceStore: Sendable {
             } else {
                 inner.record.entries.append(entry)
             }
-            return inner.record
+            try writeAtomically(&inner.record)
         }
-        try writeAtomically(&snapshot)
     }
 
     /// Merges a batch of sync-verified entries into the ledger in a single
@@ -139,7 +138,7 @@ public final class ProvenanceStore: Sendable {
     /// Empty `entries` is a no-op (no lock acquired, no disk write).
     public func recordVerified(entries: [VerifiedProvenanceEntry]) throws {
         guard !entries.isEmpty else { return }
-        var snapshot: ProvenanceRecord = inner.withLock { inner in
+        try inner.withLock { inner in
             for entry in entries {
                 let canonical = URL(fileURLWithPath: entry.destinationPath).standardizedFileURL.path
                 if let idx = inner.record.entries.firstIndex(where: { $0.destinationPath == canonical }) {
@@ -164,9 +163,8 @@ public final class ProvenanceStore: Sendable {
                         verifiedAt: entry.verifiedAt))
                 }
             }
-            return inner.record
+            try writeAtomically(&inner.record)
         }
-        try writeAtomically(&snapshot)
     }
 
     // MARK: — Read

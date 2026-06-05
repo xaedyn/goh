@@ -90,10 +90,13 @@ public enum GohWhichCommand {
             if entry.downloadedAt == verifiedAt {
                 // Sync-only entry: goh never downloaded these bytes.
                 out += "verified present \(formatter.string(from: verifiedAt))\n"
-            } else {
+            } else if entry.downloadedAt < verifiedAt {
                 // Downloaded and later re-verified by sync.
                 out += "downloaded       \(formatter.string(from: entry.downloadedAt))\n"
                 out += "last verified    \(formatter.string(from: verifiedAt))\n"
+            } else {
+                // Non-monotonic: verifiedAt < downloadedAt — defensive fallback, show download only.
+                out += "downloaded       \(formatter.string(from: entry.downloadedAt))\n"
             }
         } else {
             // Download-only entry: no sync verification recorded.

@@ -18,6 +18,9 @@ struct ProvenanceRecordTests {
 
         let decoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: fixtureData)
 
+        // AC5: v1 fixture has no verifiedAt key — must decode with verifiedAt == nil.
+        #expect(decoded.entries.allSatisfy { $0.verifiedAt == nil })
+
         // Version sentinel
         #expect(decoded.version == 1)
         #expect(decoded.version == ProvenanceRecord.currentVersion)

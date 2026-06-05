@@ -1,6 +1,6 @@
 # Phase 1 Progress — provenance-sync-skip-fold
 
-Status: NOT STARTED
+Status: COMPLETED — merged into PR #85 (feat/provenance-sync-skip-fold)
 
 ## Goal
 

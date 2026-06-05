@@ -215,13 +215,24 @@ public struct CommandDispatcher: Sendable {
                     message: "subscribe requires a progress subscription handler"))
 
             case .recordVerifiedProvenance(let request):
+                guard let provenanceStore else {
+                    warn?("recordVerifiedProvenance: provenance store unavailable; skipped \(request.entries.count) entr\(request.entries.count == 1 ? "y" : "ies")")
+                    return .ack
+                }
+                let validEntries = request.entries.filter {
+                    $0.sha256.hasPrefix("sha256:") && !$0.destinationPath.isEmpty
+                }
+                if validEntries.count != request.entries.count {
+                    let dropped = request.entries.count - validEntries.count
+                    warn?("recordVerifiedProvenance: dropped \(dropped) invalid entr\(dropped == 1 ? "y" : "ies")")
+                }
                 do {
-                    try provenanceStore?.recordVerified(entries: request.entries)
+                    try provenanceStore.recordVerified(entries: validEntries)
                 } catch {
                     // Best-effort: a store write failure is non-fatal for the daemon
                     // (mirrors the download completion handler). The reply is still .ack;
                     // the CLI's best-effort path does not depend on a structured error here.
-                    warn?("recordVerifiedProvenance: provenance store write failed for \(request.entries.count) entr\(request.entries.count == 1 ? "y" : "ies"): \(error)")
+                    warn?("recordVerifiedProvenance: provenance store write failed for \(validEntries.count) entr\(validEntries.count == 1 ? "y" : "ies"): \(error)")
                 }
                 return .ack
             }
