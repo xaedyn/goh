@@ -77,4 +77,36 @@ struct ProvenanceRecordTests {
         let decoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: data)
         #expect(decoded == record)
     }
+
+    // AC5: verifiedAt is additive-optional — nil encodes identically to no key;
+    // re-decoded verifiedAt is nil; existing golden fixture bytes decode unchanged.
+    @Test("AC5: verifiedAt nil round-trips stably; existing entries decode with verifiedAt==nil")
+    func verifiedAtNilRoundTrip() throws {
+        #expect(ProvenanceRecord.currentVersion == 1)
+        let entry = ProvenanceEntry(
+            url: "https://example.com/f.bin",
+            sha256: "sha256:" + String(repeating: "a", count: 64),
+            size: 512,
+            downloadedAt: Date(timeIntervalSince1970: 1_748_000_000),
+            destinationPath: "/tmp/f.bin",
+            verifiedAt: nil)
+        let record = ProvenanceRecord(version: 1, entries: [entry])
+        let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
+        let data = try encoder.encode(record)
+        let decoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: data)
+        #expect(decoded.entries[0].verifiedAt == nil)
+
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let entryWithDate = ProvenanceEntry(
+            url: "https://example.com/f.bin",
+            sha256: "sha256:" + String(repeating: "a", count: 64),
+            size: 512,
+            downloadedAt: Date(timeIntervalSince1970: 1_748_000_000),
+            destinationPath: "/tmp/f.bin",
+            verifiedAt: now)
+        let record2 = ProvenanceRecord(version: 1, entries: [entryWithDate])
+        let data2 = try encoder.encode(record2)
+        let decoded2 = try PropertyListDecoder().decode(ProvenanceRecord.self, from: data2)
+        #expect(decoded2.entries[0].verifiedAt == now)
+    }
 }

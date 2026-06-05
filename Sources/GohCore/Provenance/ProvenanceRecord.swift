@@ -47,17 +47,27 @@ public struct ProvenanceEntry: Codable, Sendable, Equatable {
     /// else appends. Always stored in canonical form.
     public var destinationPath: String
 
+    /// When `goh sync` confirmed these exact bytes present WITHOUT downloading them.
+    /// `nil` for entries recorded by the download engine (download-only entries).
+    /// When non-nil and `downloadedAt == verifiedAt`, goh never downloaded these bytes —
+    /// `downloadedAt` is the best "first observed" time.
+    /// Additive-optional: absent from old records (decodes to nil); nil entries
+    /// serialize without this key. `ProvenanceRecord.currentVersion` stays 1 — no format bump.
+    public var verifiedAt: Date?
+
     public init(
         url: String,
         sha256: String,
         size: Int,
         downloadedAt: Date,
-        destinationPath: String
+        destinationPath: String,
+        verifiedAt: Date? = nil
     ) {
         self.url = url
         self.sha256 = sha256
         self.size = size
         self.downloadedAt = downloadedAt
         self.destinationPath = destinationPath
+        self.verifiedAt = verifiedAt
     }
 }
