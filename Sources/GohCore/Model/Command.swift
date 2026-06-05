@@ -1,3 +1,5 @@
+import Foundation
+
 /// A request from `goh` to `gohd` — the payload of a `request`-kind envelope
 /// (`DESIGN.md` §3). The daemon decodes a `Command` and routes it to the job
 /// model.
@@ -9,6 +11,7 @@ public enum Command: Codable, Sendable, Equatable {
     case rm(request: RmRequest)
     case authImportSafari(request: AuthImportSafariRequest)
     case subscribe(request: SubscribeRequest)
+    case recordVerifiedProvenance(request: RecordVerifiedProvenanceRequest)
 }
 
 /// The `add` command's request payload (`DESIGN.md` §3.1).
@@ -64,5 +67,31 @@ public struct AuthImportSafariReply: Codable, Sendable, Equatable {
 
     public init(importedCookieCount: UInt32) {
         self.importedCookieCount = importedCookieCount
+    }
+}
+
+/// The `recordVerifiedProvenance` command's request payload.
+/// Carries all sync-verified-skip entries for one `goh sync` run as a single batch.
+/// `sha256` values carry the ALREADY-"sha256:"-prefixed form from `FileDigest.sha256WithSize`.
+/// The daemon stores them verbatim — it must NOT add the "sha256:" prefix again.
+public struct RecordVerifiedProvenanceRequest: Codable, Sendable, Equatable {
+    public var entries: [VerifiedProvenanceEntry]
+    public init(entries: [VerifiedProvenanceEntry]) { self.entries = entries }
+}
+
+/// One entry in a `recordVerifiedProvenance` batch.
+public struct VerifiedProvenanceEntry: Codable, Sendable, Equatable {
+    public var url: String
+    /// ALREADY "sha256:"-prefixed — exactly as `FileDigest.sha256WithSize` returns it.
+    /// The daemon stores this verbatim. Never re-prefix.
+    public var sha256: String
+    public var size: Int
+    /// Raw destination path (CLI-resolved); the daemon canonicalizes via
+    /// `URL(fileURLWithPath:).standardizedFileURL.path`.
+    public var destinationPath: String
+    public var verifiedAt: Date
+    public init(url: String, sha256: String, size: Int, destinationPath: String, verifiedAt: Date) {
+        self.url = url; self.sha256 = sha256; self.size = size
+        self.destinationPath = destinationPath; self.verifiedAt = verifiedAt
     }
 }

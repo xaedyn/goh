@@ -214,6 +214,8 @@ public struct CommandService: Sendable {
             return try replyEnvelope(requestID: requestID, payload: removed)
         case .authImported(let reply):
             return try replyEnvelope(requestID: requestID, payload: reply)
+        case .ack:
+            return try replyEnvelope(requestID: requestID, payload: AckReply())
         case .failure(let error):
             return try envelope(
                 requestID: requestID, messageType: .error, payload: error)

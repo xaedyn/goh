@@ -102,10 +102,32 @@ struct CommandTests {
             .rm(request: RmRequest(jobID: 3)),
             .authImportSafari(request: AuthImportSafariRequest()),
             .subscribe(request: SubscribeRequest(scope: .job, jobID: 3)),
+            .recordVerifiedProvenance(request: RecordVerifiedProvenanceRequest(entries: [
+                VerifiedProvenanceEntry(
+                    url: "https://example.com/f.bin",
+                    sha256: "sha256:" + String(repeating: "c", count: 64),
+                    size: 512,
+                    destinationPath: "/tmp/f.bin",
+                    verifiedAt: Date(timeIntervalSince1970: 1_750_000_000)),
+            ])),
         ]
         for command in commands {
             #expect(try roundTrip(command) == command)
         }
+    }
+
+    @Test("RecordVerifiedProvenanceRequest and VerifiedProvenanceEntry round-trip")
+    func recordVerifiedProvenancePayloadRoundTrip() throws {
+        let entry = VerifiedProvenanceEntry(
+            url: "https://example.com/f.bin",
+            sha256: "sha256:" + String(repeating: "a", count: 64),
+            size: 1024,
+            destinationPath: "/Users/u/Downloads/f.bin",
+            verifiedAt: Date(timeIntervalSince1970: 1_750_000_000))
+        let request = RecordVerifiedProvenanceRequest(entries: [entry])
+        #expect(try roundTrip(request) == request)
+        let reply = AckReply()
+        #expect(try roundTrip(reply) == reply)
     }
 
     @Test("LsReply and RmReply round-trip")

@@ -207,6 +207,11 @@ public struct CommandDispatcher: Sendable {
                 return .failure(GohError(
                     code: .invalidArgument,
                     message: "subscribe requires a progress subscription handler"))
+
+            case .recordVerifiedProvenance:
+                // Handled by CommandService (best-effort batch — no job-store mutation).
+                // Dispatcher is not invoked for this command; arm exists for exhaustiveness.
+                return .ack
             }
         } catch let error as GohError {
             return .failure(error)
