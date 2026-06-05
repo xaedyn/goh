@@ -310,6 +310,98 @@ struct ProvenanceStoreTests {
         #expect(store.lookup(destinationPath: "/Users/u/Downloads/a.bin") == nil)
     }
 
+    // MARK: — recordVerified tests
+
+    @Test("AC3/M2: recordVerified with same sha256 preserves downloadedAt and sets verifiedAt")
+    func recordVerifiedSameHashPreservesDownloadedAt() throws {
+        let dir = try tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = store.load()
+        let originalDate = Date(timeIntervalSince1970: 1_740_000_000)
+        let path = "/Users/u/Downloads/match.bin"
+        let sha = "sha256:" + String(repeating: "a", count: 64)
+        try store.record(entry: ProvenanceEntry(
+            url: "https://old.example.com/match.bin", sha256: sha, size: 100,
+            downloadedAt: originalDate,
+            destinationPath: URL(fileURLWithPath: path).standardizedFileURL.path))
+        let verifyTime = Date(timeIntervalSince1970: 1_750_000_000)
+        try store.recordVerified(entries: [VerifiedProvenanceEntry(
+            url: "https://new.example.com/match.bin", sha256: sha, size: 100,
+            destinationPath: path, verifiedAt: verifyTime)])
+        let all = store.allEntries()
+        #expect(all.count == 1)
+        #expect(all[0].downloadedAt == originalDate)
+        #expect(all[0].verifiedAt == verifyTime)
+        #expect(all[0].url == "https://new.example.com/match.bin")
+    }
+
+    @Test("AC2/M2: recordVerified with different sha256 creates entry with downloadedAt=verifiedAt")
+    func recordVerifiedDifferentHashCreatesNewEntry() throws {
+        let dir = try tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = store.load()
+        let path = "/Users/u/Downloads/changed.bin"
+        let oldSha = "sha256:" + String(repeating: "1", count: 64)
+        let newSha = "sha256:" + String(repeating: "2", count: 64)
+        try store.record(entry: ProvenanceEntry(
+            url: "https://example.com/changed.bin", sha256: oldSha, size: 100,
+            downloadedAt: Date(timeIntervalSince1970: 1_740_000_000),
+            destinationPath: URL(fileURLWithPath: path).standardizedFileURL.path))
+        let verifyTime = Date(timeIntervalSince1970: 1_750_000_000)
+        try store.recordVerified(entries: [VerifiedProvenanceEntry(
+            url: "https://example.com/changed.bin", sha256: newSha, size: 200,
+            destinationPath: path, verifiedAt: verifyTime)])
+        let all = store.allEntries()
+        #expect(all.count == 1)
+        #expect(all[0].sha256 == newSha)
+        #expect(all[0].downloadedAt == verifyTime)
+        #expect(all[0].verifiedAt == verifyTime)
+    }
+
+    @Test("AC2: recordVerified for a brand-new path creates entry with downloadedAt=verifiedAt")
+    func recordVerifiedNewPathCreatesEntry() throws {
+        let dir = try tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = store.load()
+        let verifyTime = Date(timeIntervalSince1970: 1_750_000_000)
+        let sha = "sha256:" + String(repeating: "f", count: 64)
+        try store.recordVerified(entries: [VerifiedProvenanceEntry(
+            url: "https://example.com/new.bin", sha256: sha, size: 512,
+            destinationPath: "/Users/u/Downloads/new.bin", verifiedAt: verifyTime)])
+        let all = store.allEntries()
+        #expect(all.count == 1)
+        #expect(all[0].sha256 == sha)
+        #expect(all[0].downloadedAt == verifyTime)
+        #expect(all[0].verifiedAt == verifyTime)
+        #expect(all[0].destinationPath ==
+            URL(fileURLWithPath: "/Users/u/Downloads/new.bin").standardizedFileURL.path)
+    }
+
+    @Test("AC3: recordVerified batch with distinct paths writes both entries")
+    func recordVerifiedBatchDistinctPaths() throws {
+        let dir = try tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = store.load()
+        let t = Date(timeIntervalSince1970: 1_750_000_000)
+        try store.recordVerified(entries: [
+            VerifiedProvenanceEntry(url: "https://a.example.com/a.bin",
+                sha256: "sha256:" + String(repeating: "a", count: 64), size: 1,
+                destinationPath: "/tmp/a.bin", verifiedAt: t),
+            VerifiedProvenanceEntry(url: "https://b.example.com/b.bin",
+                sha256: "sha256:" + String(repeating: "b", count: 64), size: 2,
+                destinationPath: "/tmp/b.bin", verifiedAt: t)])
+        #expect(store.allEntries().count == 2)
+    }
+
+    @Test("recordVerified with empty entries is a no-op")
+    func recordVerifiedEmptyIsNoop() throws {
+        let dir = try tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = store.load()
+        try store.recordVerified(entries: [])
+        #expect(store.allEntries().isEmpty)
+    }
+
     // CodeRabbit: loadReadOnly() failing on a reused instance must clear prior entries.
     @Test("loadReadOnly failure after a prior load clears stale in-memory entries")
     func loadReadOnlyFailureClearsStaleEntries() throws {

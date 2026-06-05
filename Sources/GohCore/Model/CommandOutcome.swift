@@ -12,6 +12,8 @@ public enum CommandOutcome: Sendable, Equatable {
     case removed(RmReply)
     /// `authImportSafari` — the number of imported cookies.
     case authImported(AuthImportSafariReply)
+    /// `recordVerifiedProvenance` — zero-payload acknowledgement.
+    case ack
     /// Any command — a structured failure.
     case failure(GohError)
 }

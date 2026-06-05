@@ -116,7 +116,7 @@ public final class ProvenanceStore: Sendable {
     /// (thousands to tens-of-thousands of downloads), this is imperceptible — see
     /// Approach A "THE BET" in the approach decision memo.
     public func record(entry: ProvenanceEntry) throws {
-        var snapshot: ProvenanceRecord = inner.withLock { inner in
+        try inner.withLock { inner in
             if let idx = inner.record.entries.firstIndex(where: {
                 $0.destinationPath == entry.destinationPath
             }) {
@@ -124,9 +124,47 @@ public final class ProvenanceStore: Sendable {
             } else {
                 inner.record.entries.append(entry)
             }
-            return inner.record
+            try writeAtomically(&inner.record)
         }
-        try writeAtomically(&snapshot)
+    }
+
+    /// Merges a batch of sync-verified entries into the ledger in a single
+    /// `Mutex.withLock` + one atomic write (O(n) total — not O(n²) per-entry).
+    ///
+    /// Merge rule (§3.2): same canonical path + same sha256 → preserve `downloadedAt`,
+    /// set `verifiedAt`, refresh `url`/`size`; otherwise (new path OR sha changed) →
+    /// new entry with `downloadedAt = verifiedAt` AND `verifiedAt = verifiedAt`.
+    /// The entry's `sha256` is stored verbatim (already `"sha256:"`-prefixed; never re-prefix).
+    /// Empty `entries` is a no-op (no lock acquired, no disk write).
+    public func recordVerified(entries: [VerifiedProvenanceEntry]) throws {
+        guard !entries.isEmpty else { return }
+        try inner.withLock { inner in
+            for entry in entries {
+                let canonical = URL(fileURLWithPath: entry.destinationPath).standardizedFileURL.path
+                if let idx = inner.record.entries.firstIndex(where: { $0.destinationPath == canonical }) {
+                    let existing = inner.record.entries[idx]
+                    if existing.sha256 == entry.sha256 {
+                        // Same hash — preserve downloadedAt, refresh verifiedAt/url/size.
+                        inner.record.entries[idx].verifiedAt = entry.verifiedAt
+                        inner.record.entries[idx].url = entry.url
+                        inner.record.entries[idx].size = entry.size
+                    } else {
+                        // Hash changed — treat as a new file: downloadedAt = verifiedAt.
+                        inner.record.entries[idx] = ProvenanceEntry(
+                            url: entry.url, sha256: entry.sha256, size: entry.size,
+                            downloadedAt: entry.verifiedAt, destinationPath: canonical,
+                            verifiedAt: entry.verifiedAt)
+                    }
+                } else {
+                    // Brand-new path — downloadedAt = verifiedAt.
+                    inner.record.entries.append(ProvenanceEntry(
+                        url: entry.url, sha256: entry.sha256, size: entry.size,
+                        downloadedAt: entry.verifiedAt, destinationPath: canonical,
+                        verifiedAt: entry.verifiedAt))
+                }
+            }
+            try writeAtomically(&inner.record)
+        }
     }
 
     // MARK: — Read

@@ -685,11 +685,13 @@ path divergence. CLI read paths call `ProvenanceStoreLocation.defaultURL(create:
 
 ### Frozen-contract invariant
 
-`protocolVersion = 3`, `JobCatalog.currentVersion = 1`, `JobSummary` wire shape,
+`JobCatalog.currentVersion = 1`, `JobSummary` wire shape,
 `gohfile.lock lockfileVersion = 1`, `DownloadCheckpoint` v1, `HostScheduling` v1
 are all unchanged. The provenance ledger carries its own `ProvenanceRecord.currentVersion = 1`,
 independent of every other contract. A golden round-trip fixture
-(`Tests/GohCoreTests/Fixtures/provenance-v1.plist`) locks the format.
+(`Tests/GohCoreTests/Fixtures/provenance-v1.plist`) locks the format. (The XPC
+`protocolVersion` was `3` for this v0.1 slice; the sync-skip-fold slice below
+intentionally bumps it to `4` — see "Sync-verified provenance (skip-path fold).")
 
 ### Canonicalization rule (BLOCK-1)
 
@@ -715,6 +717,58 @@ Unlike `HostProfileStore` (90-day TTL), `ProvenanceStore` performs NO TTL evicti
 Evicting entries would silently lose the user's own provenance record. A source-level
 comment in `ProvenanceStore.load()` records this intentional divergence for future
 maintainers.
+
+### Sync-verified provenance (skip-path fold)
+
+The original slice only recorded files goh *downloaded*. `goh sync` is idempotent:
+when a manifest file is already present and its hash matches the pin (or the prior
+lock entry), sync *skips* the download — so those files landed only in `gohfile.lock`,
+never in the ledger, and `goh which` / `verify --all` were blind to them. This slice
+records sync-verified files too.
+
+**Mechanism — "The Courier."** The CLI cannot write the daemon-owned ledger (the
+daemon caches it in memory; a direct CLI write would be silently clobbered by the
+daemon's next download-completion write — the in-memory cache is the single-writer
+invariant's teeth). So the CLI sends the daemon a new **batch** XPC command,
+`recordVerifiedProvenance(entries:)`, after the per-entry loop; the daemon — still
+the sole writer — merges the batch in one `Mutex.withLock` + one atomic write (O(n),
+not O(n²) per-file). Recording is **best-effort**: the CLI wraps the send in
+do/catch+warn and the daemon wraps the store write in do/catch+warn; a failure (daemon
+down, store error) prints a warning and never changes `goh sync`'s exit code. An
+all-present sync with the daemon stopped still exits 0.
+
+**`verifiedAt` semantics (additive, no format bump).** A file goh did *not* fetch this
+run carries a new optional `ProvenanceEntry.verifiedAt: Date?` — the time goh confirmed
+the bytes present. The field is additive-optional: old records decode with
+`verifiedAt = nil`, nil entries omit the key, and `ProvenanceRecord.currentVersion`
+stays `1` (the `provenance-v1.plist` golden fixture still round-trips). `downloadedAt`
+is never fabricated as a fetch that did not happen: the daemon-side merge is keyed on
+the hash — if an existing entry for the path already holds the same `sha256` (goh
+downloaded these exact bytes once), its real `downloadedAt` is preserved and only
+`verifiedAt` is set; otherwise (new path, or accepted tofu-change to different bytes)
+the new entry gets `downloadedAt = verifiedAt`. Thus `verifiedAt != nil &&
+downloadedAt == verifiedAt` is the on-disk discriminant for "goh confirmed, did not
+download." The recorded `sha256` is the already-`"sha256:"`-prefixed `FileDigest`
+output, byte-identical to the download path's stored form — so a later real download
+to the same path merges (not duplicates), and `verify --all` matches.
+
+**`goh which` is now ledger-first.** Because every sync-verified file is *also* in
+`gohfile.lock`, the previous lock-first lookup order would have hidden the ledger's
+`verifiedAt` entirely. `goh which` now consults the ledger first and falls back to the
+lockfile only for paths absent from the ledger. This is a deliberate precedence change:
+the ledger is the unified, more-current source of truth (updated on every download and
+every verify), where a lockfile is frozen at its last sync. For a path recorded in both
+with divergent hashes, `which` now shows the ledger's values. The renderer is three-way:
+`verifiedAt == nil` → "downloaded \<date\>"; `downloadedAt == verifiedAt` → "verified
+present \<date\>"; `downloadedAt < verifiedAt` → both lines.
+
+**Wire contract.** Adds `Command.recordVerifiedProvenance`, `RecordVerifiedProvenanceRequest`,
+`VerifiedProvenanceEntry`, a zero-payload `AckReply` / `CommandOutcome.ack`, and bumps
+`CommandService.protocolVersion` **3 → 4** (exact-equality check, so an un-upgraded CLI
+gets a clean `protocolVersionMismatch` — restart-the-daemon — rather than a mysterious
+failure). New `envelope-v4-record-verified-provenance-{request,reply}.json` golden
+fixtures are added; the `envelope-v3-*` fixtures are retained unchanged. Design + plan:
+`docs/superpowers/specs/2026-06-05-provenance-sync-skip-fold-design.md`.
 
 ## IPC
 

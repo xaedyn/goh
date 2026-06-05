@@ -111,6 +111,7 @@ public enum GohSyncCommand {
 
         // ── Step 5: per-entry loop ───────────────────────────────────────────
         var acceptedEntries: [LockfileCodec.LockEntry] = []
+        var verifiedEntries: [VerifiedProvenanceEntry] = []
         var worstExit: Int32 = 0
         let detector = CompletionDetector(send: send, watchdogSeconds: watchdogSeconds)
 
@@ -126,6 +127,24 @@ public enum GohSyncCommand {
             worstExit = combine(worstExit, outcome.exitContribution)
             if let entry = outcome.entry {
                 acceptedEntries.append(entry)
+            }
+            if let ve = outcome.verifiedEntry {
+                verifiedEntries.append(ve)
+            }
+        }
+
+        // ── Best-effort provenance batch for verified-skip entries ────────────
+        if !verifiedEntries.isEmpty {
+            do {
+                let client = GohCommandClient(send: send)
+                _ = try client.send(
+                    .recordVerifiedProvenance(
+                        request: RecordVerifiedProvenanceRequest(entries: verifiedEntries)),
+                    expecting: AckReply.self)
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "goh sync: warning: could not record provenance for \(verifiedEntries.count) verified-skip entr\(verifiedEntries.count == 1 ? "y" : "ies") (\(error))\n"
+                    .utf8))
             }
         }
 
@@ -152,6 +171,10 @@ public enum GohSyncCommand {
         var exitContribution: Int32
         /// The lock entry to write, or nil to drop the entry.
         var entry: LockfileCodec.LockEntry?
+        /// Provenance entry for a verified-skip (upToDate / firstUse / accepted
+        /// tofuChange). Nil for download paths, confinement failures, and
+        /// rejected tofuChange outcomes.
+        var verifiedEntry: VerifiedProvenanceEntry?
     }
 
     private static func process(
@@ -184,25 +207,43 @@ public enum GohSyncCommand {
                 // Pinned: a match means up to date; otherwise fall through to
                 // re-download (digest matches neither pin nor lock).
                 if onDisk.0 == pin {
-                    return upToDate(asset: asset, digest: onDisk.0, size: onDisk.1)
+                    var outcome = upToDate(asset: asset, digest: onDisk.0, size: onDisk.1)
+                    outcome.verifiedEntry = VerifiedProvenanceEntry(
+                        url: asset.url, sha256: onDisk.0,
+                        size: onDisk.1, destinationPath: dest, verifiedAt: Date())
+                    return outcome
                 }
             } else {
                 // Unpinned.
                 if let prior = priorEntry {
                     if onDisk.0 == prior.sha256 {
-                        return upToDate(asset: asset, digest: onDisk.0, size: onDisk.1)
+                        var outcome = upToDate(asset: asset, digest: onDisk.0, size: onDisk.1)
+                        outcome.verifiedEntry = VerifiedProvenanceEntry(
+                            url: asset.url, sha256: onDisk.0,
+                            size: onDisk.1, destinationPath: dest, verifiedAt: Date())
+                        return outcome
                     }
                     // A smaller file is an interrupted partial → re-download.
                     if onDisk.1 >= prior.size {
                         // Complete-but-changed unpinned entry → AC5 (T6.4).
-                        return tofuChange(
+                        var tofuOutcome = tofuChange(
                             asset: asset, prior: prior, onDisk: onDisk,
                             acceptChanged: acceptChanged)
+                        if tofuOutcome.exitContribution == 0 {
+                            tofuOutcome.verifiedEntry = VerifiedProvenanceEntry(
+                                url: asset.url, sha256: onDisk.0,
+                                size: onDisk.1, destinationPath: dest, verifiedAt: Date())
+                        }
+                        return tofuOutcome
                     }
                     // else: partial — fall through to download.
                 } else {
                     // Present, unpinned, no prior lock entry → trust on first use.
-                    return firstUse(asset: asset, digest: onDisk.0, size: onDisk.1)
+                    var outcome = firstUse(asset: asset, digest: onDisk.0, size: onDisk.1)
+                    outcome.verifiedEntry = VerifiedProvenanceEntry(
+                        url: asset.url, sha256: onDisk.0,
+                        size: onDisk.1, destinationPath: dest, verifiedAt: Date())
+                    return outcome
                 }
             }
         }

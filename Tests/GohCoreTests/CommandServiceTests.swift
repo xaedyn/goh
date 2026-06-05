@@ -410,6 +410,85 @@ struct CommandServiceTests {
         #expect(reply.payload.code == .protocolVersionMismatch)
     }
 
+    @Test("recordVerifiedProvenance returns AckReply over real XPC and records to the store")
+    func recordVerifiedProvenanceReturnsAck() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("goh-dispatcher-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let pStore = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = pStore.load()
+
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: JobStore(), provenanceStore: pStore))
+        let listener = GohXPCListener(anonymousHandler: { service.handle($0) })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { listener.cancel(); client.cancel() }
+
+        let t = Date(timeIntervalSince1970: 1_750_000_000)
+        // Send a NON-canonical path (contains a "/./" segment) to prove the daemon canonicalizes it.
+        let entry = VerifiedProvenanceEntry(
+            url: "https://example.com/f.bin",
+            sha256: "sha256:" + String(repeating: "d", count: 64),
+            size: 256, destinationPath: "/tmp/./test-dispatcher-f.bin", verifiedAt: t)
+        let command = Command.recordVerifiedProvenance(
+            request: RecordVerifiedProvenanceRequest(entries: [entry]))
+
+        let reply = try send(command, expecting: AckReply.self, over: client)
+        #expect(reply.messageType == .reply)
+        #expect(reply.payload == AckReply())
+
+        // Lookup using the canonical path — proves the daemon canonicalized the non-canonical input.
+        let canonical = URL(fileURLWithPath: "/tmp/test-dispatcher-f.bin").standardizedFileURL.path
+        let found = pStore.lookup(destinationPath: canonical)
+        #expect(found != nil)
+        #expect(found?.verifiedAt == t)
+    }
+
+    @Test("recordVerifiedProvenance drops invalid entries, still returns AckReply")
+    func recordVerifiedProvenanceDropsInvalidEntries() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("goh-dispatcher-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let pStore = ProvenanceStore(fileURL: dir.appendingPathComponent("provenance.plist"))
+        _ = pStore.load()
+
+        let service = CommandService(
+            dispatcher: CommandDispatcher(store: JobStore(), provenanceStore: pStore))
+        let listener = GohXPCListener(anonymousHandler: { service.handle($0) })
+        let client = try GohXPCClient(endpoint: listener.endpoint)
+        defer { listener.cancel(); client.cancel() }
+
+        let t = Date(timeIntervalSince1970: 1_750_000_000)
+        // Valid entry: sha256 has "sha256:" prefix, non-empty path.
+        let validEntry = VerifiedProvenanceEntry(
+            url: "https://example.com/valid.bin",
+            sha256: "sha256:" + String(repeating: "a", count: 64),
+            size: 512, destinationPath: "/tmp/test-dispatcher-valid.bin", verifiedAt: t)
+        // Invalid entry: sha256 does NOT have the "sha256:" prefix (raw hex only).
+        let invalidEntry = VerifiedProvenanceEntry(
+            url: "https://example.com/invalid.bin",
+            sha256: String(repeating: "b", count: 64),
+            size: 512, destinationPath: "/tmp/test-dispatcher-invalid.bin", verifiedAt: t)
+        let command = Command.recordVerifiedProvenance(
+            request: RecordVerifiedProvenanceRequest(entries: [validEntry, invalidEntry]))
+
+        let reply = try send(command, expecting: AckReply.self, over: client)
+        // Best-effort: reply is always AckReply regardless of dropped entries.
+        #expect(reply.messageType == .reply)
+        #expect(reply.payload == AckReply())
+
+        // Only the valid entry must have been persisted.
+        #expect(pStore.allEntries().count == 1)
+        let canonical = URL(fileURLWithPath: "/tmp/test-dispatcher-valid.bin").standardizedFileURL.path
+        let found = pStore.lookup(destinationPath: canonical)
+        #expect(found != nil)
+        #expect(found?.verifiedAt == t)
+    }
+
     @Test("a non-request envelope replies with invalidArgument")
     func nonRequestEnvelopeRepliesWithError() throws {
         let (listener, client) = try makeChannel()

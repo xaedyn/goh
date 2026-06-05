@@ -124,8 +124,8 @@ struct GohWhichLedgerTests {
         #expect(r.exitCode == 4)
     }
 
-    // Lock-first precedence: ledger branch is NOT checked when the lock already matches.
-    @Test("lock match takes precedence over ledger — ledger branch not reached")
+    // Ledger-first precedence: ledger takes precedence over lock for the same path.
+    @Test("ledger takes precedence over lock when both have an entry for the same path")
     func lockPrecedence() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -156,10 +156,147 @@ struct GohWhichLedgerTests {
             lockPath: lockURL.path,
             provenanceStorePath: storePath)
 
-        // Lock match returns sha256 from the lock, NOT from the ledger.
+        // Ledger-first: output contains LEDGER's sha (2...2), NOT lock's (1...1).
         #expect(r.exitCode == 0)
-        #expect(r.standardOutput.contains(String(repeating: "1", count: 64)))
-        #expect(!r.standardOutput.contains(String(repeating: "2", count: 64)))
+        #expect(r.standardOutput.contains(String(repeating: "2", count: 64)))
+        #expect(!r.standardOutput.contains(String(repeating: "1", count: 64)))
+        _ = store
+    }
+
+    // Lock fallback: file present only in lock (ledger empty) → falls back to lock.
+    @Test("lock fallback when file not in ledger — falls back to lock, exit 0, lock sha present")
+    func lockFallbackWhenNotInLedger() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let sha256Lock = "sha256:" + String(repeating: "9", count: 64)
+        let lockText = """
+            lockfileVersion = 1
+            manifestHash = "sha256:\(String(repeating: "0", count: 64))"
+
+            [[entry]]
+            url = "https://lock.example.com/g.bin"
+            path = "g.bin"
+            sha256 = "\(sha256Lock)"
+            size = 1
+            downloadedAt = "2026-06-01T00:00:00Z"
+            """
+        let lockURL = dir.appendingPathComponent("gohfile.lock")
+        try lockText.write(to: lockURL, atomically: true, encoding: .utf8)
+        let target = dir.appendingPathComponent("g.bin")
+        try Data("y".utf8).write(to: target)
+
+        // Write an EMPTY ledger (no entry for this file).
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+        let storePath = storeURL.path
+
+        let r = GohWhichCommand.run(
+            filePath: target.path,
+            lockPath: lockURL.path,
+            provenanceStorePath: storePath)
+
+        #expect(r.exitCode == 0)
+        #expect(r.standardOutput.contains(String(repeating: "9", count: 64)))
+        _ = store
+    }
+
+    // M5: download-only entry (verifiedAt == nil) → shows "downloaded", not "verified present".
+    @Test("M5: download-only entry shows 'downloaded' line, not 'verified present'")
+    func whichDownloadOnlyShowsDownloadedDate() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let destPath = dir.appendingPathComponent("dl.bin").path
+        try Data("dl".utf8).write(to: URL(fileURLWithPath: destPath))
+
+        // storeWithEntry records verifiedAt = nil (default)
+        let store = try storeWithEntry(in: dir, destPath: destPath,
+                                       sha256: "sha256:" + String(repeating: "d", count: 64))
+        let storePath = dir.appendingPathComponent("provenance.plist").path
+
+        let r = GohWhichCommand.run(
+            filePath: destPath,
+            lockPath: dir.appendingPathComponent("gohfile.lock").path,
+            provenanceStorePath: storePath)
+
+        #expect(r.exitCode == 0)
+        #expect(r.standardOutput.contains("downloaded"))
+        #expect(!r.standardOutput.contains("verified present"))
+        #expect(!r.standardOutput.contains("last verified"))
+        _ = store
+    }
+
+    // M5: entry with downloadedAt == verifiedAt → shows "verified present", NOT "downloaded".
+    @Test("M5: entry with downloadedAt == verifiedAt shows 'verified present', not 'downloaded'")
+    func whichVerifiedPresentShowsVerifiedDate() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let destPath = dir.appendingPathComponent("vp.bin").path
+        try Data("vp".utf8).write(to: URL(fileURLWithPath: destPath))
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+        let canonical = URL(fileURLWithPath: destPath).standardizedFileURL.path
+        let ts = Date(timeIntervalSince1970: 1_748_000_000)
+        // downloadedAt == verifiedAt → sync-recorded, never downloaded by goh
+        try store.record(entry: ProvenanceEntry(
+            url: "https://example.com/vp.bin",
+            sha256: "sha256:" + String(repeating: "e", count: 64),
+            size: 2,
+            downloadedAt: ts,
+            destinationPath: canonical,
+            verifiedAt: ts))
+        let storePath = storeURL.path
+
+        let r = GohWhichCommand.run(
+            filePath: destPath,
+            lockPath: dir.appendingPathComponent("gohfile.lock").path,
+            provenanceStorePath: storePath)
+
+        #expect(r.exitCode == 0)
+        #expect(r.standardOutput.contains("verified present"))
+        #expect(!r.standardOutput.contains("downloaded"))
+        #expect(!r.standardOutput.contains("last verified"))
+        _ = store
+    }
+
+    // M5: entry with downloadedAt < verifiedAt → shows BOTH "downloaded" AND "last verified".
+    @Test("M5: entry with downloadedAt < verifiedAt shows both 'downloaded' and 'last verified'")
+    func whichBothShowsBothDates() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let destPath = dir.appendingPathComponent("both.bin").path
+        try Data("both".utf8).write(to: URL(fileURLWithPath: destPath))
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+        let canonical = URL(fileURLWithPath: destPath).standardizedFileURL.path
+        let downloadedAt = Date(timeIntervalSince1970: 1_748_000_000)
+        let verifiedAt   = Date(timeIntervalSince1970: 1_748_100_000)  // later
+        try store.record(entry: ProvenanceEntry(
+            url: "https://example.com/both.bin",
+            sha256: "sha256:" + String(repeating: "3", count: 64),
+            size: 4,
+            downloadedAt: downloadedAt,
+            destinationPath: canonical,
+            verifiedAt: verifiedAt))
+        let storePath = storeURL.path
+
+        let r = GohWhichCommand.run(
+            filePath: destPath,
+            lockPath: dir.appendingPathComponent("gohfile.lock").path,
+            provenanceStorePath: storePath)
+
+        #expect(r.exitCode == 0)
+        #expect(r.standardOutput.contains("downloaded"))
+        #expect(r.standardOutput.contains("last verified"))
+        #expect(!r.standardOutput.contains("verified present"))
         _ = store
     }
 }

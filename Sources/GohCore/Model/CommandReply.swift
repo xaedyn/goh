@@ -16,3 +16,8 @@ public struct RmReply: Codable, Sendable, Equatable {
         self.removedJobID = removedJobID
     }
 }
+
+/// The `recordVerifiedProvenance` command's success reply — zero-payload acknowledgement.
+public struct AckReply: Codable, Sendable, Equatable {
+    public init() {}
+}

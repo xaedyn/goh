@@ -3,9 +3,12 @@ import Foundation
 
 /// CLI-local provenance lookup for `goh which <path>`.
 ///
-/// Checks two sources in order:
-/// 1. `gohfile.lock` — lock-entry path matched against the target file.
-/// 2. Spotlight extended attributes — `kMDItemWhereFroms` / `kMDItemDownloadedDate`.
+/// Checks three sources in order:
+/// 1. Provenance ledger (`provenance.plist`) — the unified, most-current source of truth.
+///    Skipped when `provenanceStorePath` is nil (preserves legacy lock→xattr→exit-4 behaviour).
+/// 2. `gohfile.lock` — lock-entry path matched against the target file (fallback for files
+///    managed by a Gohfile that have no ledger entry yet).
+/// 3. Spotlight extended attributes — `kMDItemWhereFroms` / `kMDItemDownloadedDate`.
 ///
 /// No daemon or XPC connection is required.
 public enum GohWhichCommand {
@@ -26,14 +29,15 @@ public enum GohWhichCommand {
     ) -> GohCommandLineResult {
         let targetURL = URL(fileURLWithPath: filePath).standardizedFileURL
 
-        // 1. Lock lookup (unchanged).
-        if let output = lookupInLock(targetURL: targetURL, lockPath: lockPath) {
+        // 1. Provenance-ledger lookup — most current source of truth.
+        //    Skipped when provenanceStorePath is nil so callers that pass nil are unaffected.
+        if let storePath = provenanceStorePath,
+           let output = lookupInLedger(targetURL: targetURL, storePath: storePath) {
             return GohCommandLineResult(exitCode: 0, standardOutput: output)
         }
 
-        // 2. NEW: Provenance-ledger lookup (skipped when provenanceStorePath is nil).
-        if let storePath = provenanceStorePath,
-           let output = lookupInLedger(targetURL: targetURL, storePath: storePath) {
+        // 2. Lock fallback — for files in a Gohfile manifest with no ledger entry yet.
+        if let output = lookupInLock(targetURL: targetURL, lockPath: lockPath) {
             return GohCommandLineResult(exitCode: 0, standardOutput: output)
         }
 
@@ -59,6 +63,13 @@ public enum GohWhichCommand {
     /// sidecar — recovery is the daemon's job alone. A missing/unreadable/corrupt store
     /// is indistinguishable from "no match" here; both fall through silently (the `which`
     /// contract has no corrupt-ledger exit code — that distinction is `verify --all`'s job).
+    ///
+    /// Three-way date rendering (driven by `verifiedAt`):
+    /// - `verifiedAt == nil`                         → "downloaded <date>" (download-only entry).
+    /// - `verifiedAt != nil && downloadedAt == verifiedAt` → "verified present <date>"
+    ///   (sync confirmed these bytes; goh never downloaded them — no "downloaded" line).
+    /// - `verifiedAt != nil && downloadedAt < verifiedAt`  → "downloaded <date>" AND
+    ///   "last verified <date>" (goh downloaded, then later sync-confirmed still present).
     private static func lookupInLedger(targetURL: URL, storePath: String) -> String? {
         let store = ProvenanceStore(fileURL: URL(fileURLWithPath: storePath))
         // false → missing / unreadable / version-mismatch: no match, no side effects.
@@ -74,7 +85,23 @@ public enum GohWhichCommand {
         let formatter = ISO8601DateFormatter()
         var out = "url:          \(entry.url)\n"
         out    += "sha256:       \(entry.sha256)\n"
-        out    += "downloadedAt: \(formatter.string(from: entry.downloadedAt))\n"
+        out    += "size:         \(entry.size)\n"
+        if let verifiedAt = entry.verifiedAt {
+            if entry.downloadedAt == verifiedAt {
+                // Sync-only entry: goh never downloaded these bytes.
+                out += "verified present \(formatter.string(from: verifiedAt))\n"
+            } else if entry.downloadedAt < verifiedAt {
+                // Downloaded and later re-verified by sync.
+                out += "downloaded       \(formatter.string(from: entry.downloadedAt))\n"
+                out += "last verified    \(formatter.string(from: verifiedAt))\n"
+            } else {
+                // Non-monotonic: verifiedAt < downloadedAt — defensive fallback, show download only.
+                out += "downloaded       \(formatter.string(from: entry.downloadedAt))\n"
+            }
+        } else {
+            // Download-only entry: no sync verification recorded.
+            out += "downloaded       \(formatter.string(from: entry.downloadedAt))\n"
+        }
         return out
     }
 

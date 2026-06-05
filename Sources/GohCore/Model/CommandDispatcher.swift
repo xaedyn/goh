@@ -19,6 +19,7 @@ public struct CommandDispatcher: Sendable {
     private let checkpointStore: CheckpointStore?
     private let hostProfileStore: HostProfileStore?
     private let importedCookies: ImportedCookieStore?
+    private let provenanceStore: ProvenanceStore?
     /// Daemon-internal explicit-`--connections` channel (NOT on the wire). When a
     /// job is admitted with a user-supplied connection count, the dispatcher
     /// records `job.id → cappedConnectionCount` here so the scheduler can run that
@@ -26,6 +27,7 @@ public struct CommandDispatcher: Sendable {
     private let explicitConnectionCounts: ExplicitConnectionCounts?
     private let onJobQueued: (@Sendable (UInt64) -> Void)?
     private let queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)?
+    private let warn: (@Sendable (String) -> Void)?
 
     /// Creates a dispatcher over `store`. `onJobQueued`, when provided, is called
     /// with a job's id whenever a command leaves that job `queued` — after
@@ -39,18 +41,22 @@ public struct CommandDispatcher: Sendable {
         checkpointStore: CheckpointStore? = nil,
         hostProfileStore: HostProfileStore? = nil,
         importedCookies: ImportedCookieStore? = nil,
+        provenanceStore: ProvenanceStore? = nil,
         explicitConnectionCounts: ExplicitConnectionCounts? = nil,
         onJobQueued: (@Sendable (UInt64) -> Void)? = nil,
-        queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil
+        queuedJobAdmission: (@Sendable (UInt64) -> JobSummary?)? = nil,
+        warn: (@Sendable (String) -> Void)? = nil
     ) {
         self.store = store
         self.control = control
         self.checkpointStore = checkpointStore
         self.hostProfileStore = hostProfileStore
         self.importedCookies = importedCookies
+        self.provenanceStore = provenanceStore
         self.explicitConnectionCounts = explicitConnectionCounts
         self.onJobQueued = onJobQueued
         self.queuedJobAdmission = queuedJobAdmission
+        self.warn = warn
     }
 
     /// Handles `command`, mutating the job store, and returns the outcome.
@@ -207,6 +213,28 @@ public struct CommandDispatcher: Sendable {
                 return .failure(GohError(
                     code: .invalidArgument,
                     message: "subscribe requires a progress subscription handler"))
+
+            case .recordVerifiedProvenance(let request):
+                guard let provenanceStore else {
+                    warn?("recordVerifiedProvenance: provenance store unavailable; skipped \(request.entries.count) entr\(request.entries.count == 1 ? "y" : "ies")")
+                    return .ack
+                }
+                let validEntries = request.entries.filter {
+                    $0.sha256.hasPrefix("sha256:") && !$0.destinationPath.isEmpty
+                }
+                if validEntries.count != request.entries.count {
+                    let dropped = request.entries.count - validEntries.count
+                    warn?("recordVerifiedProvenance: dropped \(dropped) invalid entr\(dropped == 1 ? "y" : "ies")")
+                }
+                do {
+                    try provenanceStore.recordVerified(entries: validEntries)
+                } catch {
+                    // Best-effort: a store write failure is non-fatal for the daemon
+                    // (mirrors the download completion handler). The reply is still .ack;
+                    // the CLI's best-effort path does not depend on a structured error here.
+                    warn?("recordVerifiedProvenance: provenance store write failed for \(validEntries.count) entr\(validEntries.count == 1 ? "y" : "ies"): \(error)")
+                }
+                return .ack
             }
         } catch let error as GohError {
             return .failure(error)
