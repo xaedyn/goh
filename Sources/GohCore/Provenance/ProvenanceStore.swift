@@ -59,6 +59,7 @@ public final class ProvenanceStore: Sendable {
     @discardableResult
     public func load() -> ProvenanceLoadResult {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            inner.withLock { $0.record = .empty }
             return ProvenanceLoadResult(record: .empty, corruptionSidecar: nil)
         }
         do {
@@ -94,6 +95,7 @@ public final class ProvenanceStore: Sendable {
               let record = try? PropertyListDecoder().decode(ProvenanceRecord.self, from: data),
               record.version == ProvenanceRecord.currentVersion
         else {
+            inner.withLock { $0.record = .empty }
             return false
         }
         inner.withLock { $0.record = record }

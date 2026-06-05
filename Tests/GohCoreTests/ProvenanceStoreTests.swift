@@ -288,4 +288,47 @@ struct ProvenanceStoreTests {
         }
         #expect(threw)
     }
+
+    // CodeRabbit: a reload that finds the file missing/unreadable must reset
+    // in-memory state, not serve entries from a prior successful load.
+    @Test("reloading a store whose file vanished resets in-memory state to empty")
+    func reloadAfterFileVanishesResetsState() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let fileURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: fileURL)
+        _ = store.load()
+        try store.record(entry: fixedEntry())
+        #expect(store.allEntries().count == 1)
+
+        // The on-disk file disappears; a subsequent load() must not keep stale entries.
+        try FileManager.default.removeItem(at: fileURL)
+        let result = store.load()
+        #expect(result.record.entries.isEmpty)
+        #expect(store.allEntries().isEmpty)
+        #expect(store.lookup(destinationPath: "/Users/u/Downloads/a.bin") == nil)
+    }
+
+    // CodeRabbit: loadReadOnly() failing on a reused instance must clear prior entries.
+    @Test("loadReadOnly failure after a prior load clears stale in-memory entries")
+    func loadReadOnlyFailureClearsStaleEntries() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let fileURL = dir.appendingPathComponent("provenance.plist")
+        // Seed a clean store, then read it once (populates in-memory state).
+        let writer = ProvenanceStore(fileURL: fileURL)
+        _ = writer.load()
+        try writer.record(entry: fixedEntry(path: "/Users/u/Downloads/a.bin"))
+
+        let reader = ProvenanceStore(fileURL: fileURL)
+        #expect(reader.loadReadOnly() == true)
+        #expect(reader.allEntries().count == 1)
+
+        // Corrupt the file, then re-read on the SAME instance: must return false AND clear state.
+        try Data("not a plist".utf8).write(to: fileURL)
+        #expect(reader.loadReadOnly() == false)
+        #expect(reader.allEntries().isEmpty)
+    }
 }

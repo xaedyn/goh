@@ -63,4 +63,5 @@ crashing the daemon or aborting/blocking the download itself. Observable
 signal: downloading the same destination twice yields exactly one entry with
 the latest hash/date; a deliberately corrupted store file causes the next
 download to still succeed and the store to be re-initialized (corrupt file
-moved aside), asserted by test.
+copied to a `.corrupt-<unixtime>` sidecar, original left in place until the next
+atomic overwrite), asserted by test.

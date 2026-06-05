@@ -677,7 +677,7 @@ daemon owns recovery; the CLI is read-only, §8).
 
 `OK` / `FAILED` / `MISSING`, one line per entry, matching `GohVerifyCommand`:
 
-```
+```text
 OK /Users/u/Downloads/a.bin
 FAILED /Users/u/Downloads/b.bin expected sha256:… actual sha256:…
 MISSING /Users/u/Downloads/c.bin (expected sha256:…)
