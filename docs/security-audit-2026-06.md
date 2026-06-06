@@ -21,8 +21,14 @@ medium findings (M1–M5)** and the closely-related lows **L1** (ANSI stripping,
 folded into M5) and **L3** (sidecar path, folded into M1). **L2** was assessed as
 **no-fix-needed** — the cookie record-size overflow is unreachable on the 64-bit
 platform floor (`offset + Int(recordSize) ≤ ~8.6e9 ≪ Int.max`, and the existing
-`recordEnd <= page.count` guard already rejects oversized records). Remaining
-backlog: the CI/test-coverage hygiene lows (L4–L8) and the by-design item (I1).
+`recordEnd <= page.count` guard already rejects oversized records). A third
+follow-up PR then closed the remainder: **L4** (release-script cert `chmod 0600`),
+**L5** (`ci.yml` least-privilege `permissions`), **L7** (codec out-of-range
+`protocolVersion` test — exact-equality was already pinned), **L8** (resume
+representation-change fail-closed test), and **I1** (per-command authorization
+documented as by-design with a `CommandAuthorizer` seam noted in code). **L6** was
+already covered by existing peer-validation tests, so no new test was added. The
+audit backlog is now fully resolved or explicitly assessed.
 
 ---
 
