@@ -80,4 +80,18 @@ struct CatalogStoreTests {
         let contents = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         #expect(contents == ["catalog.plist"])
     }
+
+    @Test("save writes catalog.plist with owner-only 0600 permissions")
+    func saveSets0600Permissions() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fileURL = directory.appending(path: "catalog.plist")
+        let store = CatalogStore(fileURL: fileURL)
+        try store.save(sampleCatalog())
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue
+        #expect(mode == 0o600)
+    }
 }
