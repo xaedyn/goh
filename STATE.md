@@ -5,6 +5,70 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-06 (audit + launch-doc session) — **Whole-codebase security/code-quality audit MERGED across 3 PRs (#93 / #94 / #95); SECURITY/CONTRIBUTING/CODE_OF_CONDUCT drafted (local-only, gitignored)**
+
+A multi-agent security + code-quality audit of the entire codebase ran this
+session (threat-model-first, with adversarial verification of every finding).
+Report committed at `docs/security-audit-2026-06.md`. **19 findings survived
+verification — ALL implementation-consistency gaps, not design flaws.** The
+architecture held: URLSession transport, XPC mutual peer validation,
+content-addressed SHA-256 integrity, `openat(2)`/`O_NOFOLLOW` confinement, and
+every frozen wire/disk contract. Fixed or assessed across three merged PRs:
+
+- **#93 (squash `4355a97`) — 5 high.** `CatalogStore` + `CheckpointStore` now
+  write `0600` (were world-readable to same-user processes); `verify-attestation
+  --json` fails closed (exit 6) on encode failure via a shared
+  `GohCommandLineResult.jsonOrFailClosed`; `HostProfileStore.load` validates the
+  decoded plist (host/arm caps + finite-EWMA) and `ConnObservation.foldingIn`
+  saturates `sampleCount` (no overflow trap on a poisoned record).
+- **#94 (squash `8a41de7`) — 5 medium (+ L1/L3).** Filesystem paths stripped from
+  `GohError` messages crossing XPC (`DownloadFileError.redactedDescription`;
+  sidecar path dropped from the unsafe-resume message); `goh which` URLs
+  sanitized via shared `URLDisplay.sanitized` (control-char strip +
+  query-credential redaction); `DownloadEngine` bounds the server-declared
+  `Content-Range` total (`maxDeclaredTotal` = 8 TiB) before chunk planning;
+  foreground download + `goh top` skip stale-`requestID` notifications instead of
+  crashing; daemon `openConfined` rejects `..` components.
+- **#95 (squash `8e72d77`) — lows + I1.** Release-script `chmod 0600` on decoded
+  certs; `ci.yml` least-privilege `permissions: contents: read`; regression tests
+  pinning protocolVersion-out-of-range and resume-representation-change
+  fail-closed; per-command authz documented as by-design (a `CommandAuthorizer`
+  seam noted in `CommandDispatcher`).
+
+**Honest deltas (recorded so they aren't re-litigated):** L2 (binarycookies
+`offset + Int(recordSize)` overflow) assessed **NO-FIX** — unreachable on the
+64-bit floor, and the existing `recordEnd <= page.count` guard already rejects
+oversized records. The M2 `Int(remaining)` cast was a **false alarm**
+(ternary-guarded; the real fix was bounding `total`). The menu-bar progress
+stream shares M3's stale-requestID pattern but ends a *recoverable* stream rather
+than crashing a process, and has a test pinning its contract — left as a
+documented follow-up, not flipped. One verifier agent got Swift's `UInt32`
+overflow-trap semantics wrong and was overridden.
+
+**715 tests pass; `swift build -warnings-as-errors` clean.** All three PRs
+CI-green at merge; CodeRabbit clean on #93/#94 (rate-limited / org out-of-credits
+on #95, so #95 didn't get a deep pass — it's config + tests + a comment).
+Memory written: [[security-audit-2026-06]].
+
+**Launch docs drafted LOCAL-ONLY** (gitignored alongside the vision/launch-post
+memos): `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`. These are
+**launch-sequence step 4** — ready to un-ignore and publish right before the brew
+tap opens. `SECURITY.md` routes reports through GitHub Private Vulnerability
+Reporting (no email address exposed) and states the single-user threat model +
+90-day coordinated disclosure; the CoC adopts Contributor Covenant 2.1 by
+reference.
+
+**NEXT-SESSION HANDOFF — the strategic read is unchanged: the build is done; the lever is launch.**
+1. The trust-layer arc + positioning are complete, and the security audit added
+   **no design surface** (consistency fixes only). Per the standing "stop
+   overbuilding a zero-user tool" call, do NOT add more hardening/features.
+2. **Phase 3 public launch is the next step, gated on Apple Developer ID
+   credentials** (sign+notarize PKG → open the brew tap → publish
+   SECURITY/CONTRIBUTING/CODE_OF_CONDUCT → launch post → HN/Reddit). The launch
+   docs are now drafted and waiting local.
+3. If BUILDING anyway, the one strategically-justified feature remains the
+   **`hf://` smart-URL adapter** (cross-source moat-widener), NOT more hardening.
+
 ### 2026-06-06 (build session) — **Hardware-attested provenance (`goh attest` / `goh verify-attestation`, Secure Enclave signing) MERGED to `main` via PR #89 (squash `bd4aca4`)**
 
 **MERGED. Local `main` synced; `feat/hardware-attested-provenance` deleted (local + remote). 695 tests pass, `swift build -warnings-as-errors` clean. CI green at merge. CodeRabbit posted 2 code findings (both Major), BOTH FIXED in `41bdb25` and explicitly endorsed ("both fixes look exactly right"): (1) `payloadBytes(for:)` was `try?`→silent-blank-output — now `throws`, fail-closed (`--json` exit 6 / `attest` exit 5, never signs empty bytes); (2) the 32-bit `kid` was too weak for the trust decision — `verify-attestation --expect-key` now requires a FULL public key (or its 64-hex SHA-256 fingerprint); an 8-hex kid → usage error (exit 64); kid is display-only. 5 docs-markdownlint threads declined (no docs-lint CI gate). Real-binary spot-check passed end-to-end with the actual Secure Enclave.** Built via the full `enterprise-pipeline` → `subagent-driven-development`. The "tie Apple Silicon into goh" exploration (Concept 1 of a brainstorm).
