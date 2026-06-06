@@ -123,10 +123,11 @@ public struct GohCommandLine {
             case .verify(let lockPath, let strictUntracked):
                 return GohVerifyCommand.run(lockPath: lockPath, strictUntracked: strictUntracked)
 
-            case .verifyAll:
+            case .verifyAll(let json):
                 // BLOCK-1: resolve at dispatch via the injected resolver (create:false in production).
                 return GohVerifyAllCommand.run(
-                    provenanceStorePath: provenanceStorePathResolver() ?? "")
+                    provenanceStorePath: provenanceStorePathResolver() ?? "",
+                    json: json)
 
             case .sync(let manifestPath, let base, let acceptChanged):
                 return GohSyncCommand.run(
@@ -225,7 +226,7 @@ private enum ParsedCommand: Equatable {
     case diagnose(url: String, full: Bool, json: Bool, connections: Int?)
     case which(path: String)
     case verify(lockPath: String, strictUntracked: Bool)
-    case verifyAll
+    case verifyAll(json: Bool)
     case sync(manifestPath: String, base: String?, acceptChanged: Bool)
     case ls(OutputFormat)
     case pause(UInt64)
@@ -287,9 +288,16 @@ extension GohCommandLine {
             // and a positional lockfile path (which are lock-directory concepts with no
             // analogue for the global ledger).
             if rest.first == "--all" {
-                // Reject any additional flags or positional arguments after --all.
+                // Accepted grammar: `verify --all` or `verify --all --json` only.
+                // Any other remainder (--strict-untracked, a positional, --json twice,
+                // or an unknown flag) is rejected → exit 64.
                 let after = Array(rest.dropFirst())
-                if !after.isEmpty {
+                let jsonFlag: Bool
+                if after.isEmpty {
+                    jsonFlag = false
+                } else if after == ["--json"] {
+                    jsonFlag = true
+                } else {
                     throw ParseError(
                         message: "--all is incompatible with \(after.joined(separator: " "))")
                 }
@@ -297,7 +305,7 @@ extension GohCommandLine {
                 // resolver is not in scope; resolving the real default at parse time would make
                 // every parse test read the user's real provenance ledger. The path is resolved
                 // at DISPATCH (run()) via the injected `provenanceStorePathResolver`.
-                return .verifyAll
+                return .verifyAll(json: jsonFlag)
             }
 
             // Frozen path: --all is not present; parse exactly as before.
@@ -563,7 +571,7 @@ extension GohCommandLine {
           goh which <path>
           goh sync [<manifest>] [--base <dir>] [--accept-changed]   (--base is cwd-relative)
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
-          goh verify --all
+          goh verify --all [--json]   (exit: 0 ok · 2 changed · 9 missing · 6 ledger error)
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
