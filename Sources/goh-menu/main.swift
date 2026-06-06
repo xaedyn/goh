@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ServiceManagement
 import SwiftUI
 import XPC
 
@@ -177,14 +178,42 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         })
+    let preferences: UserDefaultsMenuPreferences = UserDefaultsMenuPreferences()
+    let notificationService: LiveNotificationService = LiveNotificationService()
+    let loginItem: any GohMenuLoginItem = GohMenuAppDelegate.makeLoginItem()
+    private lazy var coordinator = GohNotificationCoordinator(preferences: preferences)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
+
+        // Wire the notification feed BEFORE start() so the first (seed) delivery is captured.
+        model.onProgressSnapshots = { [weak self] snapshots in
+            guard let self else { return }
+            let toPost = self.coordinator.evaluate(snapshots)   // sync, ordered, MainActor
+            for content in toPost {
+                let service = self.notificationService
+                Task { await service.post(content) }
+            }
+        }
+
+        // Request notification authorization once (best-effort; never blocks start()).
+        Task { await notificationService.requestAuthorization() }
+
         model.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        model.onProgressSnapshots = nil
         model.stop()
+    }
+
+    private static func makeLoginItem() -> any GohMenuLoginItem {
+        // SMAppService requires a real .app bundle. Return UnsupportedLoginItem
+        // when running as a bare binary (no bundle identifier).
+        guard Bundle.main.bundleIdentifier != nil else {
+            return UnsupportedLoginItem()
+        }
+        return SMAppServiceLoginItem()
     }
 }
 
