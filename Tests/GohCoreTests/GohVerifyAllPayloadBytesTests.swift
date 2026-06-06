@@ -38,8 +38,8 @@ struct GohVerifyAllPayloadBytesTests {
             ])
 
         // B1: payloadBytes must equal the fixture bytes (no trailing newline)
-        let payload = try #require(GohVerifyAllCommand.payloadBytes(for: report),
-            "payloadBytes returned nil — encoding a valid value type should never fail")
+        // payloadBytes now throws rather than returning Data? — a throw here is a programming error.
+        let payload = try GohVerifyAllCommand.payloadBytes(for: report)
 
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

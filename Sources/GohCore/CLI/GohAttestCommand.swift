@@ -79,11 +79,19 @@ public enum GohAttestCommand {
         // Strip the trailing '\n' that --json appends
         let reportData = stdoutData.dropLast()
         guard !reportData.isEmpty,
-              let report = try? CommandCoding.decoder.decode(VerifyAllReport.self, from: reportData),
-              let payloadBytes = GohVerifyAllCommand.payloadBytes(for: report) else {
+              let report = try? CommandCoding.decoder.decode(VerifyAllReport.self, from: reportData) else {
             return GohCommandLineResult(
                 exitCode: 5,
                 standardError: "attest: failed to encode report for signing\n")
+        }
+        let payloadBytes: Data
+        do {
+            payloadBytes = try GohVerifyAllCommand.payloadBytes(for: report)
+        } catch {
+            // payloadBytes() threw — refuse to sign empty/garbage bytes; fail with exit 5.
+            return GohCommandLineResult(
+                exitCode: 5,
+                standardError: "attest: failed to encode report for signing: \(error)\n")
         }
 
         // ── Step 2: Create-or-open the signing key ────────────────────────────

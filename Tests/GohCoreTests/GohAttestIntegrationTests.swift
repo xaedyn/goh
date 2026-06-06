@@ -83,18 +83,21 @@ struct GohAttestIntegrationTests {
             json: false)
         #expect(verifyResult.exitCode == 0)
 
-        // AC3: verify with correct --expect-key kid → exit 0
+        // AC3: verify with correct --expect-key full pubkey → exit 0
+        let correctPub = key.publicKey.x963Representation.base64URLEncodedString()
         let verifyResult2 = GohVerifyAttestationCommand.run(
             artifactPath: outputPath,
-            expectKey: signer.kid,
+            expectKey: correctPub,
             allowUntrustedKey: false,
             json: false)
         #expect(verifyResult2.exitCode == 0)
 
-        // AC3: verify with wrong --expect-key → exit 3 (mismatch)
+        // AC3: verify with wrong --expect-key full pubkey → exit 3 (mismatch)
+        let wrongKey = P256.Signing.PrivateKey()
+        let wrongPub = wrongKey.publicKey.x963Representation.base64URLEncodedString()
         let verifyResult3 = GohVerifyAttestationCommand.run(
             artifactPath: outputPath,
-            expectKey: "00000000",
+            expectKey: wrongPub,
             allowUntrustedKey: false,
             json: false)
         #expect(verifyResult3.exitCode == 3)

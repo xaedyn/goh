@@ -112,14 +112,15 @@ struct GohAttestParseTests {
         #expect(r.exitCode == 6)  // file absent, not parse error
     }
 
-    // AC5/parse: `verify-attestation <file> --expect-key <kid>` parses correctly
-    @Test("AC5/parse: 'verify-attestation <file> --expect-key <kid>' parses")
+    // AC5/parse: `verify-attestation <file> --expect-key <kid>` now exits 64 (kid rejected as too weak)
+    @Test("AC5/parse: 'verify-attestation <file> --expect-key <kid>' → exit 64 (kid is display-only)")
     func verifyAttestationExpectKey() {
         let r = GohCommandLine(
             arguments: ["verify-attestation", "/nonexistent.json", "--expect-key", "aabbccdd"],
             send: { _ in throw TestTransportError() }
         ).run()
-        #expect(r.exitCode == 6)  // file absent, not parse error
+        // 8-hex kid is rejected as too weak before the file is read — exit 64
+        #expect(r.exitCode == 64)
     }
 
     // AC5/parse: `verify-attestation <file> --json` parses correctly

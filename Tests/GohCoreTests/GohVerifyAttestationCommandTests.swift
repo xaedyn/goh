@@ -156,20 +156,22 @@ struct GohVerifyAttestationCommandTests {
         #expect(result.exitCode == 0)
     }
 
-    // M5/exit-0 (--expect-key kid match): valid sig + matching kid → exit 0
-    @Test("M5: valid sig + matching --expect-key kid → exit 0")
-    func validSigMatchingKidIsZero() throws {
+    // M5/exit-64 (--expect-key kid): 8-hex kid passed to --expect-key → exit 64 (rejected as too weak)
+    @Test("M5: --expect-key with 8-hex kid → exit 64 (rejected, kid is display-only)")
+    func expectKeyKidShapeRejectedExit64() throws {
         let path = try loadFixtureArtifactPath()
         let artifactData = try Data(contentsOf: URL(fileURLWithPath: path))
         let envelope = try CommandCoding.decoder.decode(SignedVerifyReport.self, from: artifactData)
-        let kid = envelope.sig.kid
+        let kid = envelope.sig.kid  // 8-hex kid from fixture
 
         let result = GohVerifyAttestationCommand.run(
             artifactPath: path,
             expectKey: kid,
             allowUntrustedKey: false,
             json: false)
-        #expect(result.exitCode == 0)
+        // Kid-shaped value must be rejected as too weak for a trust decision
+        #expect(result.exitCode == 64)
+        #expect(result.standardError.contains("kid is display-only"))
     }
 
     // M5/exit-0 (--expect-key full pubkey match): valid sig + matching full pubkey → exit 0
@@ -183,6 +185,24 @@ struct GohVerifyAttestationCommandTests {
         let result = GohVerifyAttestationCommand.run(
             artifactPath: path,
             expectKey: fullPub,
+            allowUntrustedKey: false,
+            json: false)
+        #expect(result.exitCode == 0)
+    }
+
+    // M5/exit-0 (--expect-key SHA-256 fingerprint match): valid sig + matching fingerprint → exit 0
+    @Test("M5: valid sig + matching --expect-key SHA-256 fingerprint → exit 0")
+    func validSigMatchingFingerprintIsZero() throws {
+        let path = try loadFixtureArtifactPath()
+        let artifactData = try Data(contentsOf: URL(fileURLWithPath: path))
+        let envelope = try CommandCoding.decoder.decode(SignedVerifyReport.self, from: artifactData)
+        let fp = try #require(SignedVerifyReport.sha256Fingerprint(ofPubBase64url: envelope.sig.pubBase64url))
+        // Fingerprint must be 64 hex chars (full SHA-256)
+        #expect(fp.count == 64)
+
+        let result = GohVerifyAttestationCommand.run(
+            artifactPath: path,
+            expectKey: fp,
             allowUntrustedKey: false,
             json: false)
         #expect(result.exitCode == 0)
@@ -223,13 +243,17 @@ struct GohVerifyAttestationCommandTests {
         #expect(result.exitCode == 2)
     }
 
-    // M5/exit-3: valid sig, --expect-key mismatch → exit 3
-    @Test("M5: valid sig + --expect-key mismatch → exit 3")
+    // M5/exit-3: valid sig, --expect-key mismatch → exit 3 (wrong full pubkey)
+    @Test("M5: valid sig + --expect-key full-pubkey mismatch → exit 3")
     func expectKeyMismatchExits3() throws {
         let path = try loadFixtureArtifactPath()
+        // Generate a different (wrong) key and pass its full pubkey as --expect-key.
+        // This is NOT kid-shaped, so it reaches the mismatch check → exit 3.
+        let wrongKey = P256.Signing.PrivateKey()
+        let wrongPub = wrongKey.publicKey.x963Representation.base64URLEncodedString()
         let result = GohVerifyAttestationCommand.run(
             artifactPath: path,
-            expectKey: "00000000",   // wrong kid
+            expectKey: wrongPub,
             allowUntrustedKey: false,
             json: false)
         #expect(result.exitCode == 3)
@@ -359,20 +383,23 @@ struct GohVerifyAttestationCommandTests {
         #expect(parsed.verdict == nil)
     }
 
-    // AC5: --json result for exit-3 (--expect-key mismatch) has keyTrusted=false
-    @Test("AC5: --json result for --expect-key mismatch has keyTrusted=false")
+    // AC5: --json result for exit-3 (--expect-key full pubkey mismatch) has keyTrusted=false
+    @Test("AC5: --json result for --expect-key full-pubkey mismatch has keyTrusted=false")
     func jsonResultForKeyMismatch() throws {
         let path = try loadFixtureArtifactPath()
+        // Use a wrong full pubkey (not kid-shaped) so it reaches the mismatch path → exit 3
+        let wrongKey = P256.Signing.PrivateKey()
+        let wrongPub = wrongKey.publicKey.x963Representation.base64URLEncodedString()
         let result = GohVerifyAttestationCommand.run(
             artifactPath: path,
-            expectKey: "00000000",
+            expectKey: wrongPub,
             allowUntrustedKey: false,
             json: true)
         #expect(result.exitCode == 3)
 
         let data = Data(result.standardOutput.utf8)
         let parsed = try CommandCoding.decoder.decode(VerifyAttestationResult.self, from: data)
-        // AC5: golden fixture pins exit-3 --json shape
+        // AC5: exit-3 --json shape
         #expect(parsed.signatureValid == true)
         #expect(parsed.keyTrusted == false)
     }

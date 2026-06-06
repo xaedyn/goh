@@ -198,10 +198,11 @@ public enum GohVerifyAllCommand {
     /// It is byte-identical to the golden `verify-all-report-v1.json` fixture.
     /// The `--json` stdout path appends `"\n"` AFTER this; never sign the stdout bytes.
     ///
-    /// Returns `nil` only if `CommandCoding.encoder.encode` fails (a programming error —
-    /// encoding a value type should never fail in practice).
-    public static func payloadBytes(for report: VerifyAllReport) -> Data? {
-        try? CommandCoding.encoder.encode(report)
+    /// Throws if `CommandCoding.encoder.encode` fails (a programming error — encoding a
+    /// value type should never fail in practice, but the error is propagated fail-closed
+    /// rather than silently producing nil / empty bytes).
+    public static func payloadBytes(for report: VerifyAllReport) throws -> Data {
+        try CommandCoding.encoder.encode(report)
     }
 
     // MARK: - Private helpers
@@ -215,9 +216,15 @@ public enum GohVerifyAllCommand {
     }
 
     private static func jsonResult(exitCode: Int32, report: VerifyAllReport) -> GohCommandLineResult {
-        guard let data = payloadBytes(for: report) else {
-            // Defensive: encoding a value type should never fail.
-            return GohCommandLineResult(exitCode: exitCode, standardOutput: "")
+        let data: Data
+        do {
+            data = try payloadBytes(for: report)
+        } catch {
+            // Fail-closed: encoding failure → exit 6 (ledger error class) with no JSON output.
+            // Never emit blank stdout + success exit on an encode failure.
+            return GohCommandLineResult(
+                exitCode: 6,
+                standardError: "verify --all: failed to encode JSON report\n")
         }
         return GohCommandLineResult(
             exitCode: exitCode,

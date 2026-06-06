@@ -156,10 +156,10 @@ Lifecycle:
   Rationale for fail-closed: the headline use is "verify in CI / before trusting a release," whose idiom
   is `cmd && next`; the safe interpretation must be the default and reach `$?`. Tamper-evidence-only is a
   deliberate opt-in.
-  - **`--expect-key` strength:** accepts either an 8-hex `kid` (convenient but only 32-bit — a *hint*) or
-    a full base64url x963 public key (strong pinning). The spec recommends full-pubkey pinning for
-    adversarial settings; `kid` matching is a convenience for honest-error detection. Documented in
-    `--help`.
+  - **`--expect-key` trust requirement:** accepts a **full base64url x963 public key** or its **full
+    64-hex SHA-256 fingerprint** — both are 256-bit safe. An 8-hex `kid` is rejected as `--expect-key`
+    with exit `64` ("kid is display-only"); the `kid` field is for human reference only, not for trust
+    decisions. Documented in `--help`.
 - **`verify-attestation --json` result is its own FROZEN, versioned, golden-fixtured schema (B4):**
   ```jsonc
   { "resultVersion": 1,              // frozen; its own golden fixture
@@ -232,6 +232,6 @@ touched. No rolling-deploy concern (CLI-local, no XPC). `attestationVersion: 1` 
 - **Valid signature, no `--expect-key` / no `--allow-untrusted-key`:** exit `1` (fail-closed — identity unverified), with a message instructing how to pin or opt in. `--allow-untrusted-key` → exit `0` (tamper-evidence-only, explicit).
 - **`--expect-key` mismatch:** exit `3` (valid signature, wrong key) — distinct from INVALID (`2`) and from unverified (`1`).
 - **Unknown `attestationVersion` / media-type `v=` / malformed envelope:** `verify-attestation` exit `6` (loud rejection, never silent accept).
-- **Key reset / different machine:** an artifact made by an old/other key still verifies from its embedded `pub`; `--expect-key` of the old kid still matches; a new local key gets a new kid appended to `keys.json` (signer-side only; never consulted on verify).
+- **Key reset / different machine:** an artifact made by an old/other key still verifies from its embedded `pub`; `--expect-key` of the old full pubkey (or its fingerprint) still matches; a new local key gets a new kid appended to `keys.json` (signer-side only; never consulted on verify).
 - **Concurrent first `attest`:** O_EXCL handle create + atomic append-merge `keys.json`; at worst one orphaned enclave key; never a corrupt store.
 - **ECDSA non-determinism:** the same report signed twice yields different `sig` bytes; both verify. Tests/fixtures verify signatures, never byte-compare them.

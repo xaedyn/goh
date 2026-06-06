@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-/// CLI runner for `goh verify-attestation <file> [--expect-key <kid|pubkey>] [--allow-untrusted-key] [--json]`.
+/// CLI runner for `goh verify-attestation <file> [--expect-key <full-pubkey|sha256-fingerprint>] [--allow-untrusted-key] [--json]`.
 ///
 /// Parses a `SignedVerifyReport` envelope, reconstructs the DSSE-PAE from the embedded
 /// payloadType + payload, and verifies the signature against the **embedded public key**.
@@ -14,14 +14,18 @@ import CryptoKit
 ///   2  — signature INVALID (payload tampered / bad signature / pub mismatch)
 ///   3  — --expect-key mismatch (valid signature, wrong key)
 ///   6  — malformed/unparseable artifact or unknown attestationVersion / media-type v=
-///   64 — usage error
+///   64 — usage error (including: 8-hex kid passed to --expect-key — too weak for trust)
+///
+/// Trust decision requires a FULL public key or its full SHA-256 fingerprint (both 256-bit safe).
+/// An 8-hex kid is display-only and is **rejected** as --expect-key with exit 64.
 public enum GohVerifyAttestationCommand {
 
     /// Runs `goh verify-attestation`.
     ///
     /// - Parameters:
     ///   - artifactPath: Path to the `SignedVerifyReport` JSON file.
-    ///   - expectKey: Optional `--expect-key` value: 8-hex kid (hint) or full base64url x963 pubkey.
+    ///   - expectKey: Optional `--expect-key` value: full base64url x963 pubkey OR full 64-hex
+    ///     SHA-256 fingerprint of the pubkey. An 8-hex kid is rejected with exit 64.
     ///   - allowUntrustedKey: `--allow-untrusted-key` opt-in: valid sig → exit 0 regardless of pin.
     ///   - json: `--json` flag: emit a `VerifyAttestationResult` JSON instead of human text.
     public static func run(
@@ -30,6 +34,16 @@ public enum GohVerifyAttestationCommand {
         allowUntrustedKey: Bool,
         json: Bool
     ) -> GohCommandLineResult {
+
+        // ── Step 0: Validate --expect-key shape ───────────────────────────────
+        // An 8-hex kid is display-only (32-bit) — reject it immediately so it can never
+        // grant trust. Only a full base64url pubkey or its full 64-hex SHA-256 fingerprint
+        // is accepted as a trust control.
+        if let expectKey, SignedVerifyReport.isKidShaped(expectKey) {
+            let msg = "--expect-key requires a full public key or its full SHA-256 fingerprint, "
+                + "not a short key id (kid); the kid is display-only.\n"
+            return GohCommandLineResult(exitCode: 64, standardError: msg)
+        }
 
         // ── Step 1: Read + parse envelope ─────────────────────────────────────
         guard let artifactData = try? Data(contentsOf: URL(fileURLWithPath: artifactPath)) else {
@@ -108,6 +122,8 @@ public enum GohVerifyAttestationCommand {
         }
 
         // ── Step 7: Key trust evaluation ──────────────────────────────────────
+        // Trust requires the FULL public key (or its full SHA-256 fingerprint) — both are
+        // 256-bit safe. The 8-hex kid is display-only and was already rejected in Step 0.
         let kid = envelope.sig.kid
         var keyTrusted = false
         var exitCode: Int32
@@ -116,10 +132,16 @@ public enum GohVerifyAttestationCommand {
             exitCode = 2
             // keyTrusted stays false; verdict stays nil
         } else if let expectKey {
-            // --expect-key: match against kid (8-hex hint) or full pubkey (strong pin)
-            let kidMatch = (expectKey == kid)
+            // Full pubkey match: compare against the embedded base64url x963 public key.
             let pubMatch = (expectKey == envelope.sig.pubBase64url)
-            if kidMatch || pubMatch {
+            // Full SHA-256 fingerprint match: hex(SHA256(x963Bytes)) — 64 hex chars.
+            let fingerprintMatch: Bool
+            if let fp = SignedVerifyReport.sha256Fingerprint(ofPubBase64url: envelope.sig.pubBase64url) {
+                fingerprintMatch = (expectKey == fp)
+            } else {
+                fingerprintMatch = false
+            }
+            if pubMatch || fingerprintMatch {
                 keyTrusted = true
                 exitCode = 0
             } else {
@@ -161,7 +183,7 @@ public enum GohVerifyAttestationCommand {
             statusLine = "VALID — signature OK, key trusted (kid: \(kid), verdict: \(verdict ?? "unknown"))\n"
         case 1:
             statusLine = "VALID — but key identity NOT verified (kid: \(kid))\n"
-                + "  Pass --expect-key \(kid) to pin this key, or --allow-untrusted-key to accept tamper-evidence only.\n"
+                + "  Pass --expect-key <full-pubkey> to pin this key, or --allow-untrusted-key to accept tamper-evidence only.\n"
         case 2:
             statusLine = "INVALID — signature verification failed\n"
         case 3:

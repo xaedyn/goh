@@ -683,8 +683,10 @@ extension GohCommandLine {
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
           goh verify --all [--json]   (exit: 0 ok · 2 changed · 9 missing · 6 ledger error)
           goh attest [--output <file>]   (exit: 0 ok · 2 changed · 9 missing · 5 attest-failed · 6 ledger-error)
-          goh verify-attestation <file> [--expect-key <kid|pubkey>] [--allow-untrusted-key] [--json]
-            (exit: 0 valid+trusted · 1 valid-unverified · 2 invalid · 3 key-mismatch · 6 malformed)
+          goh verify-attestation <file> [--expect-key <full-pubkey|sha256-fingerprint>] [--allow-untrusted-key] [--json]
+            (exit: 0 valid+trusted · 1 valid-unverified · 2 invalid · 3 key-mismatch · 6 malformed · 64 usage)
+            --expect-key accepts a full base64url x963 public key or its full 64-hex SHA-256 fingerprint.
+            kid (8-hex) is display-only and is rejected as --expect-key (exit 64).
             Note: attest and verify-attestation use DIFFERENT exit-code vocabularies — not interchangeable.
           goh pause <id>
           goh resume <id>

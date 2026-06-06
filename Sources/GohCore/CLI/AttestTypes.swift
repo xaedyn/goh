@@ -104,9 +104,31 @@ public struct SignedVerifyReport: Codable, Sendable {
     /// Derives the 8-hex-char key id from a P-256 public key.
     ///
     /// `kid = hex(SHA256(publicKey.x963Representation)[0..3])`
+    ///
+    /// **Display only.** The `kid` is a 32-bit hint for human reference; it MUST NOT be used
+    /// as a trust control. Pass the full public key or its full SHA-256 fingerprint to
+    /// `verify-attestation --expect-key` for a trust decision.
     public static func deriveKid(from publicKey: P256.Signing.PublicKey) -> String {
         let hash = SHA256.hash(data: publicKey.x963Representation)
         return hash.prefix(4).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Returns the full 64-hex SHA-256 fingerprint of a base64url-encoded x963 public key.
+    ///
+    /// `fingerprint = hex(SHA256(x963Bytes))` — all 32 bytes (64 hex chars).
+    /// This is the full-256-bit form accepted by `verify-attestation --expect-key`.
+    public static func sha256Fingerprint(ofPubBase64url pubBase64url: String) -> String? {
+        guard let x963 = Data(base64URLEncoded: pubBase64url) else { return nil }
+        let hash = SHA256.hash(data: x963)
+        return hash.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Returns true iff the given `--expect-key` value is shaped like an 8-hex kid (too weak for trust).
+    ///
+    /// A string is "kid-shaped" if it is exactly 8 hex characters. Such a value is rejected by
+    /// `verify-attestation --expect-key` with exit 64 to prevent accidental 32-bit trust grants.
+    public static func isKidShaped(_ value: String) -> Bool {
+        value.count == 8 && value.allSatisfy(\.isHexDigit)
     }
 }
 

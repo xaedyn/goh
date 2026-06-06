@@ -839,10 +839,11 @@ signing was the considered, deferred alternative.)
   integrity* ("unchanged since signed by this key"), **not identity to a stranger**: an attacker
   running as you could mint a fresh key and sign a forgery. So `verify-attestation` **fails closed** —
   exit `1` for a valid-but-unpinned signature (so `verify-attestation && deploy` does not accept a
-  forgery), exit `0` only when the key is trusted (`--expect-key <kid|pubkey>` matches, or explicit
-  `--allow-untrusted-key`), `2` invalid, `3` expect-key mismatch, `6` malformed/unknown-version. The
-  output never implies identity it can't prove. Full-pubkey `--expect-key` is the strong pin; `kid` is
-  a 32-bit convenience.
+  forgery), exit `0` only when the key is trusted (`--expect-key` matched or explicit
+  `--allow-untrusted-key`), `2` invalid, `3` expect-key mismatch, `6` malformed/unknown-version, `64`
+  usage (including a kid-shaped value passed to `--expect-key`). The output never implies identity it
+  can't prove. `--expect-key` requires a full public key (or its SHA-256 fingerprint) for the trust
+  decision; `kid` is a display-only label.
 - **Key store (CLI-owned, separate):** `~/Library/Application Support/dev.goh.attest/` (its OWN dir,
   NOT under the daemon-owned `dev.goh.daemon/` — preserving the "CLI never creates the daemon dir"
   invariant): `signing-key.handle` (created `O_CREAT|O_EXCL`, 0600; EEXIST → open existing, never
