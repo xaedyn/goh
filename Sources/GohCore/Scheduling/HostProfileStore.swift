@@ -72,6 +72,14 @@ public final class HostProfileStore: Sendable {
     /// 90-day TTL for evicting stale host profiles on load.
     public static let ttlSeconds: Double = 90 * 24 * 3600
 
+    /// Safety caps for a hostile or corrupt on-disk record (audit H4). A record
+    /// that breaches these is treated as unreadable and recovered to empty — the
+    /// host-scheduling file is a non-essential optimization, so discarding a
+    /// malformed one is safe. A healthy file holds at most a few dozen hosts, and
+    /// arms per host are bounded by the candidate set plus the odd explicit `-c N`.
+    static let maxHosts = 4096
+    static let maxArmsPerHost = 256
+
     // MARK: — Private state
 
     private let fileURL: URL
@@ -112,6 +120,13 @@ public final class HostProfileStore: Sendable {
             let data = try Data(contentsOf: fileURL)
             var scheduling = try PropertyListDecoder().decode(HostScheduling.self, from: data)
             guard scheduling.version == HostScheduling.currentVersion else {
+                return recoverToEmpty()
+            }
+            // A well-formed but hostile record (millions of hosts/arms, or a
+            // non-finite EWMA that would poison selection math) decodes fine but
+            // must not be trusted wholesale — validate the decoded values before
+            // adopting them (audit H4).
+            guard Self.isWithinSafetyLimits(scheduling) else {
                 return recoverToEmpty()
             }
             // D9: evict profiles whose updatedAt is older than ttlSeconds.
@@ -305,6 +320,17 @@ public final class HostProfileStore: Sendable {
     }
 
     // MARK: — Private helpers
+
+    /// Whether a decoded record is within the safety caps (audit H4). Pure so it
+    /// can be reasoned about and tested in isolation.
+    private static func isWithinSafetyLimits(_ scheduling: HostScheduling) -> Bool {
+        guard scheduling.hosts.count <= maxHosts else { return false }
+        for host in scheduling.hosts {
+            guard host.arms.count <= maxArmsPerHost else { return false }
+            for arm in host.arms where !arm.throughputEWMA.isFinite { return false }
+        }
+        return true
+    }
 
     private func recoverToEmpty() -> HostProfileLoadResult {
         let timestamp = Int(Date().timeIntervalSince1970)
