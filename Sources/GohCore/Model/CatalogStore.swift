@@ -52,6 +52,11 @@ public struct CatalogStore: Sendable {
 
         do {
             try data.write(to: temporaryURL)
+            // Owner-only: the catalog holds job URLs, destinations, and progress
+            // and must not be world-readable to other same-user processes
+            // (audit H1; matches HostProfileStore/ProvenanceStore).
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
             try Self.fsync(path: temporaryURL.path)
             guard rename(temporaryURL.path, fileURL.path) == 0 else {
                 throw CatalogStoreError.renameFailed(errno: errno)

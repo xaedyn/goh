@@ -354,4 +354,82 @@ struct HostProfileStoreTests {
         #expect(traceReason(.explore, hasExplicitN: false, governorOn: true) == .explore)   // not exploit
         #expect(traceReason(.cold,    hasExplicitN: false, governorOn: true) == .cold)
     }
+
+    // MARK: — Hardening against a hostile on-disk plist (audit H4/H5)
+
+    @Test("foldingIn saturates at UInt32.max instead of trapping on overflow")
+    func foldingInSaturatesSampleCount() {
+        let arm = ConnObservation(
+            connectionCount: 8, throughputEWMA: 1_000_000,
+            sampleCount: .max, updatedAt: Date())
+        let folded = arm.foldingIn(throughput: 2_000_000, alpha: 0.3)
+        #expect(folded.sampleCount == .max)
+    }
+
+    @Test("load recovers to empty when a host carries implausibly many arms")
+    func loadRejectsTooManyArms() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appending(path: "host-scheduling.plist")
+        let store = HostProfileStore(fileURL: fileURL)
+
+        let recent = Date(timeIntervalSinceNow: -3600)
+        let arms = (0..<300).map { i in
+            ConnObservation(
+                connectionCount: UInt8(i % 256), throughputEWMA: 1_000,
+                sampleCount: 1, updatedAt: recent)
+        }
+        try store.save(HostScheduling(hosts: [
+            HostProfile(host: "https://h.example.com:443", arms: arms, updatedAt: recent)
+        ]))
+
+        let loaded = store.load()
+        #expect(loaded.scheduling.hosts.isEmpty)
+        #expect(loaded.corruptionSidecar != nil)
+    }
+
+    @Test("load recovers to empty when the host count exceeds the safety cap")
+    func loadRejectsTooManyHosts() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appending(path: "host-scheduling.plist")
+        let store = HostProfileStore(fileURL: fileURL)
+
+        let recent = Date(timeIntervalSinceNow: -3600)
+        let hosts = (0..<4097).map { i in
+            HostProfile(
+                host: "https://h\(i).example.com:443",
+                arms: [ConnObservation(
+                    connectionCount: 8, throughputEWMA: 1_000,
+                    sampleCount: 1, updatedAt: recent)],
+                updatedAt: recent)
+        }
+        try store.save(HostScheduling(hosts: hosts))
+
+        let loaded = store.load()
+        #expect(loaded.scheduling.hosts.isEmpty)
+        #expect(loaded.corruptionSidecar != nil)
+    }
+
+    @Test("load recovers to empty when an arm carries a non-finite EWMA")
+    func loadRejectsNonFiniteEWMA() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appending(path: "host-scheduling.plist")
+        let store = HostProfileStore(fileURL: fileURL)
+
+        let recent = Date(timeIntervalSinceNow: -3600)
+        try store.save(HostScheduling(hosts: [
+            HostProfile(
+                host: "https://h.example.com:443",
+                arms: [ConnObservation(
+                    connectionCount: 8, throughputEWMA: .infinity,
+                    sampleCount: 1, updatedAt: recent)],
+                updatedAt: recent)
+        ]))
+
+        let loaded = store.load()
+        #expect(loaded.scheduling.hosts.isEmpty)
+        #expect(loaded.corruptionSidecar != nil)
+    }
 }

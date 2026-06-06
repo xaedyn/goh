@@ -103,4 +103,19 @@ struct DownloadCheckpointTests {
 
         #expect(store.load(jobID: checkpoint.jobID).checkpoint == nil)
     }
+
+    @Test("CheckpointStore save writes the checkpoint file with owner-only 0600 permissions")
+    func checkpointSaveSets0600Permissions() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = CheckpointStore(directoryURL: directory)
+        let checkpoint = sampleCheckpoint()
+        try store.save(checkpoint)
+
+        let fileURL = store.fileURL(jobID: checkpoint.jobID)
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue
+        #expect(mode == 0o600)
+    }
 }

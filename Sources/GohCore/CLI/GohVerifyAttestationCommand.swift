@@ -168,12 +168,12 @@ public enum GohVerifyAttestationCommand {
             verdict: verdict)
 
         if json {
-            guard let data = try? CommandCoding.encoder.encode(result) else {
-                return GohCommandLineResult(exitCode: exitCode, standardOutput: "")
-            }
-            return GohCommandLineResult(
-                exitCode: exitCode,
-                standardOutput: String(decoding: data, as: UTF8.self) + "\n")
+            // Fail closed: a JSON encode failure must surface as exit 6 + stderr,
+            // never as the verdict exit code with empty stdout (audit H3).
+            return GohCommandLineResult.jsonOrFailClosed(
+                result,
+                successExitCode: exitCode,
+                failureMessage: "verify-attestation: failed to encode JSON result\n")
         }
 
         // Human output

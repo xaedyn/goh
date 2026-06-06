@@ -79,10 +79,13 @@ public struct ConnObservation: Codable, Sendable, Equatable {
         } else {
             newEWMA = alpha * throughput + (1 - alpha) * throughputEWMA
         }
+        // Saturate rather than trap: a hostile/corrupt on-disk record could carry
+        // sampleCount == .max, and an unchecked `+ 1` would overflow-trap the
+        // daemon on the next fold (audit H5).
         return ConnObservation(
             connectionCount: connectionCount,
             throughputEWMA: newEWMA,
-            sampleCount: sampleCount + 1,
+            sampleCount: sampleCount == .max ? .max : sampleCount + 1,
             updatedAt: Date())
     }
 }

@@ -41,6 +41,11 @@ public struct CheckpointStore: Sendable {
 
         do {
             try data.write(to: temporaryURL)
+            // Owner-only: checkpoints hold the URL, validators (ETag/Last-Modified),
+            // and byte-range progress and must not be world-readable to other
+            // same-user processes (audit H2; matches HostProfileStore/ProvenanceStore).
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
             try Self.fsync(path: temporaryURL.path)
             guard rename(temporaryURL.path, destination.path) == 0 else {
                 throw CheckpointStoreError.renameFailed(errno: errno)

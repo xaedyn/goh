@@ -13,6 +13,34 @@ public struct GohCommandLineResult: Sendable, Equatable {
     }
 }
 
+extension GohCommandLineResult {
+    /// Emits `value` as a JSON line with `successExitCode`, or **fails closed**
+    /// with exit 6 and `failureMessage` on stderr when encoding throws.
+    ///
+    /// Security-critical verify commands must never emit blank stdout alongside a
+    /// success exit code on an encode failure — otherwise
+    /// `goh verify-attestation --json && deploy` could deploy on a swallowed
+    /// error. Routing those commands through this helper guarantees the
+    /// fail-closed contract (audit `docs/security-audit-2026-06.md` finding H3).
+    /// The `encode` seam defaults to the shared `CommandCoding.encoder`; tests
+    /// inject a throwing closure to exercise the failure path.
+    public static func jsonOrFailClosed<Value: Encodable>(
+        _ value: Value,
+        successExitCode: Int32,
+        failureMessage: String,
+        encode: (Value) throws -> Data = { try CommandCoding.encoder.encode($0) }
+    ) -> GohCommandLineResult {
+        do {
+            let data = try encode(value)
+            return GohCommandLineResult(
+                exitCode: successExitCode,
+                standardOutput: String(decoding: data, as: UTF8.self) + "\n")
+        } catch {
+            return GohCommandLineResult(exitCode: 6, standardError: failureMessage)
+        }
+    }
+}
+
 public struct GohCommandLine {
     public typealias Sender = (XPCDictionary) throws -> XPCDictionary
     public typealias Foreground = (AddRequest) throws -> GohCommandLineResult
