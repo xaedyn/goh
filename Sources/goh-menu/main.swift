@@ -225,6 +225,8 @@ struct GohMenuApp: App {
         MenuBarExtra {
             GohMenuView(
                 model: appDelegate.model,
+                preferences: appDelegate.preferences,
+                loginItem: appDelegate.loginItem,
                 quitApplication: { NSApplication.shared.terminate(nil) })
         } label: {
             Label("goh", systemImage: "arrow.down.circle")
