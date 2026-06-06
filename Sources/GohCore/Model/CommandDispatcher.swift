@@ -60,6 +60,14 @@ public struct CommandDispatcher: Sendable {
     }
 
     /// Handles `command`, mutating the job store, and returns the outcome.
+    ///
+    /// By design (audit I1): every command is equally available to any peer that
+    /// passed XPC peer validation. This is correct for goh's single-user threat
+    /// model (DESIGN.md §3 / §Platform support) — the trust boundary is the
+    /// signed-peer XPC accept, not per-command authorization. If a future
+    /// requirement introduces multi-user or app-sandbox scope, the authorization
+    /// seam belongs here: gate specific commands before this switch (e.g. a
+    /// `CommandAuthorizer` consulted per command).
     public func reply(to command: Command) -> CommandOutcome {
         do {
             switch command {

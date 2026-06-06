@@ -115,6 +115,9 @@ mkdir -p \
 
 decode_base64_env "DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64" "$app_certificate"
 decode_base64_env "DEVELOPER_ID_INSTALLER_CERTIFICATE_BASE64" "$installer_certificate"
+# Owner-only on the decoded .p12 material, immediately after decode and before
+# the keychain import, matching the notary key below (audit L4).
+chmod 0600 "$app_certificate" "$installer_certificate"
 if [[ ${#notary_auth_args[@]} -gt 0 && -n "${APPLE_NOTARY_KEY_P8_BASE64:-}" ]]; then
   decode_base64_env "APPLE_NOTARY_KEY_P8_BASE64" "$notary_key"
   chmod 0600 "$notary_key"
