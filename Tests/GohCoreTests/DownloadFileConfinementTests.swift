@@ -104,4 +104,22 @@ struct DownloadFileConfinementTests {
             Issue.record("wrong error type: \(error)")
         }
     }
+
+    @Test("a destination path containing a '..' component is refused (audit M4)")
+    func dotDotComponentRefused() throws {
+        let dir = try tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        // The CLI normalizes '..' away before the daemon sees a path; the daemon
+        // must still refuse one defensively rather than follow it upward.
+        let dest = dir.path + "/sub/../escaped.bin"
+        do {
+            _ = try DownloadFile(path: dest, expectedSize: 4, truncate: true)
+            Issue.record("expected a refusal")
+        } catch let e as GohError {
+            #expect(e.code == .destinationUnwritable)
+        } catch {
+            Issue.record("wrong error type: \(error)")
+        }
+        // The '..' must not have been followed to create the file in `dir`.
+        #expect(!FileManager.default.fileExists(atPath: dir.path + "/escaped.bin"))
+    }
 }

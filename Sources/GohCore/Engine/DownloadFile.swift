@@ -168,6 +168,16 @@ public final class DownloadFile: Sendable {
         let components = path.split(separator: "/").map(String.init).filter {
             $0 != "." && !$0.isEmpty
         }
+        // Defense-in-depth: refuse any ".." component rather than follow it
+        // upward. The CLI lexically normalizes paths before the daemon sees them,
+        // so ".." never legitimately arrives — but the daemon must not depend on
+        // that. A ".." here would let the openat descent escape the destination's
+        // directory (audit M4).
+        guard !components.contains("..") else {
+            throw GohError(
+                code: .destinationUnwritable,
+                message: "refused a destination path containing a '..' component")
+        }
         guard let finalComponent = components.last else {
             // No usable final component (e.g. "/" or ""): nothing to open.
             throw DownloadFileError.openFailed(path: path, errno: ENOENT)
