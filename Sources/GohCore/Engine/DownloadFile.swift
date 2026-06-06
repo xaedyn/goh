@@ -8,6 +8,22 @@ public enum DownloadFileError: Error {
     case writeFailed(errno: Int32)
     case readFailed(errno: Int32)
     case syncFailed(errno: Int32)
+
+    /// A path-free rendering safe to surface over the XPC progress channel. The
+    /// raw `openFailed` case embeds the destination path, which must not leak to
+    /// other same-user subscribers via a job's error message (audit M1).
+    public var redactedDescription: String {
+        switch self {
+        case .openFailed(_, let errno):
+            return "could not open the destination file (errno \(errno))"
+        case .writeFailed(let errno):
+            return "writing to the destination failed (errno \(errno))"
+        case .readFailed(let errno):
+            return "reading from the destination failed (errno \(errno))"
+        case .syncFailed(let errno):
+            return "syncing the destination failed (errno \(errno))"
+        }
+    }
 }
 
 /// The disk side of a download — positioned reads and writes over one file

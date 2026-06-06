@@ -1059,7 +1059,7 @@ public struct DownloadEngine: Sendable {
             if case .writeFailed(let code) = fileError, code == ENOSPC {
                 return GohError(code: .diskFull, message: "no space on the destination volume")
             }
-            return GohError(code: .destinationUnwritable, message: "\(fileError)")
+            return GohError(code: .destinationUnwritable, message: fileError.redactedDescription)
         }
         return GohError(code: .connectionFailed, message: "\(error)")
     }

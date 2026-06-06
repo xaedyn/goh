@@ -190,4 +190,30 @@ struct JobStoreStartupReconciliationTests {
         #expect(result.failedJobIDs == [active.id])
         #expect(store.job(id: active.id)?.state == .failed)
     }
+
+    @Test("the unsafe-resume failure message does not disclose the checkpoint sidecar path")
+    func unsafeResumeMessageOmitsSidecarPath() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = JobStore()
+        let active = try makeActiveJob(store: store, directory: directory)
+
+        let checkpointDir = directory.appending(path: "checkpoints")
+        try FileManager.default.createDirectory(at: checkpointDir, withIntermediateDirectories: true)
+        let checkpointStore = CheckpointStore(directoryURL: checkpointDir)
+        // A corrupt checkpoint file makes load() recover to nil and preserve a
+        // sidecar; the failure message published over XPC must not leak its path.
+        try Data("not a property list".utf8).write(
+            to: checkpointStore.fileURL(jobID: active.id))
+
+        let result = store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore)
+
+        #expect(result.failedJobIDs == [active.id])
+        let failed = try #require(store.job(id: active.id))
+        let message = try #require(failed.error?.message)
+        #expect(message.contains("resume metadata"))
+        #expect(!message.contains("/"))
+        #expect(!message.contains(".corrupt-"))
+    }
 }

@@ -337,8 +337,12 @@ public final class JobStore: Sendable {
 
     private static func unsafeResumeMessage(sidecar: URL?) -> String {
         var message = "resume metadata was unavailable or unsafe after daemon restart"
-        if let sidecar {
-            message += "; damaged checkpoint was kept at \(sidecar.path)"
+        if sidecar != nil {
+            // Note that a sidecar was kept, but not its path — the message
+            // crosses the XPC progress channel and must not disclose daemon
+            // filesystem paths to other same-user subscribers (audit L3). The
+            // operator can locate it via the daemon's local log.
+            message += "; a copy of the damaged checkpoint was preserved for diagnostics"
         }
         message += "; retry to start a fresh download"
         return message
