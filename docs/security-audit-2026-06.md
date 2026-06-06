@@ -15,10 +15,14 @@ honest high-severity count is **5**, all of them cheap, localized fixes.
 **Confidence:** findings are reasoned and peer-refuted, **not PoC-executed**.
 Each carries a confidence label.
 
-**Status:** the review itself changed no code. The PR that introduced this
-document also implements the **five high-severity fixes (H1–H5)**; the
-medium/low findings remain a tracked backlog. The fix plan at the bottom records
-the full sequence.
+**Status:** the review itself changed no code. The introducing PR implemented
+the **five high-severity fixes (H1–H5)**. A follow-up PR then fixed the **five
+medium findings (M1–M5)** and the closely-related lows **L1** (ANSI stripping,
+folded into M5) and **L3** (sidecar path, folded into M1). **L2** was assessed as
+**no-fix-needed** — the cookie record-size overflow is unreachable on the 64-bit
+platform floor (`offset + Int(recordSize) ≤ ~8.6e9 ≪ Int.max`, and the existing
+`recordEnd <= page.count` guard already rejects oversized records). Remaining
+backlog: the CI/test-coverage hygiene lows (L4–L8) and the by-design item (I1).
 
 ---
 
