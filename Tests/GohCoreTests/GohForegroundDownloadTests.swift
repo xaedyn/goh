@@ -105,6 +105,80 @@ struct GohForegroundDownloadTests {
         #expect(emittedError.withLock { $0 } == "")
     }
 
+    @Test("a stale notification carrying a previous subscription's requestID is skipped, not fatal")
+    func staleNotificationRequestIDIsSkipped() throws {
+        let request = AddRequest(url: "https://example.com/file.zip")
+        let active = Self.makeJob(
+            id: 42, state: .active,
+            progress: JobProgress(bytesCompleted: 512, bytesTotal: 1024, bytesPerSecond: 2048))
+        let completed = Self.makeJob(
+            id: 42, state: .completed,
+            progress: JobProgress(bytesCompleted: 1024, bytesTotal: 1024, bytesPerSecond: 0))
+        let subscribeRequestID = Mutex<UUID?>(nil)
+        let notificationCount = Mutex(0)
+        let emittedError = Mutex("")
+
+        let session = GohForegroundDownloadSession(
+            sendSync: { message in
+                try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    switch envelope.payload {
+                    case .add:
+                        return try Self.reply(to: envelope, payload: active)
+                    case .subscribe:
+                        subscribeRequestID.withLock { $0 = envelope.requestID }
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 1,
+                                snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                    default:
+                        Issue.record("unexpected command \(envelope.payload)")
+                        return try Self.reply(
+                            to: envelope, payload: GohError(code: .invalidArgument),
+                            messageType: .error)
+                    }
+                }
+            },
+            receiveNotification: {
+                let n = notificationCount.withLock { $0 += 1; return $0 }
+                let realID = try #require(subscribeRequestID.withLock { $0 })
+                switch n {
+                case 1:
+                    // Stale: a notification from a previous subscription (wrong requestID),
+                    // as can arrive in-flight just after a reconnect. Must be skipped.
+                    return Self.notification(
+                        requestID: UUID(),
+                        event: ProgressEvent(
+                            sequence: 1, revision: 2,
+                            emittedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                            updateKind: .fullSnapshot,
+                            snapshot: [ProgressSnapshot(job: active, lanes: [])]))
+                case 2:
+                    return Self.notification(
+                        requestID: realID,
+                        event: ProgressEvent(
+                            sequence: 2, revision: 3,
+                            emittedAt: Date(timeIntervalSince1970: 1_800_000_001),
+                            updateKind: .fullSnapshot,
+                            snapshot: [ProgressSnapshot(job: completed, lanes: [])]))
+                default:
+                    throw GohError(code: .cancelled, message: "no more notifications")
+                }
+            },
+            cancel: {}
+        )
+
+        let result = GohForegroundDownload(
+            request: request,
+            session: session,
+            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+        ).run()
+
+        #expect(result.exitCode == 0)
+        #expect(!emittedError.withLock { $0 }.contains("invalid reply"))
+    }
+
     @Test("foreground interrupt detaches without cancelling the daemon job")
     func interruptDetachesWithoutCancellingJob() throws {
         let request = AddRequest(url: "https://example.com/file.zip")
