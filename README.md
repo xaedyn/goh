@@ -1,89 +1,160 @@
 <p align="center">
-  <img src="assets/brand/wordmark/goh-wordmark-dark.svg" alt="goh — terminal download manager" width="360">
+  <img src="assets/brand/wordmark/goh-wordmark-dark.svg" alt="goh — an offline lockfile for the files you download" width="360">
 </p>
 
 # goh
 
-> **v0.1 — in development.** The daemon, download engine, CLI controls, foreground
-> progress, and `goh top` dashboard are in place. Release packaging is being
-> prepared privately; no official install channel or tagged v0.1.0 artifact
-> exists yet.
+**An offline lockfile for the files you download.** Pull model weights, datasets,
+archives, or any large file, and `goh` records what you got — the source URL, the
+SHA-256, the date — into a frozen local record. Later, on any machine, with no
+network, you can answer the one question no hub can: **"is this still exactly what
+I downloaded?"** — even if the upstream changed, or is gone.
+
+`goh` — pronounced "go." Daemon-backed, Swift, Apple frameworks, MIT.
+
+> **v0.1 — in development.** The engine, the daemon, the trust verbs below, and the
+> `goh top` dashboard all work today (built from source). There is **no public
+> install channel yet** — no Homebrew tap, no tagged release, no signed PKG. See
+> [Install status](#install-status).
 >
-> Floor: macOS 26.0 (hard requirement — secure XPC peer-validation API).
-> Supported: macOS 26.0+ (Tahoe), Apple Silicon.
+> Floor: **macOS 26.0+ (Tahoe), Apple Silicon** — a hard requirement of the daemon's
+> macOS 26.0 secure XPC peer-validation API.
 
-A daemon-backed download manager for Apple Silicon macOS. MIT-licensed,
-written in Swift, built on Apple frameworks.
+## Why this exists
 
-`goh` — pronounced "go."
+Transfer speed is solved. Per-source integrity is solved too — the major hubs hash
+their own blobs, verify their own layers, and sign at publish. What none of them give
+you is a **vendor-neutral, offline record of what *you* pulled**, verifiable *against
+your own frozen truth* rather than against a live server.
 
-## What it is
+That gap is not academic. When a file is deleted from the place you got it from — 404,
+no re-download — anyone who only ever trusted the upstream is stuck: there is nothing
+left to verify *against*. A hub's own verify command checks its **live** server; it
+can't tell you whether the bytes on your disk still match what you originally pulled.
+The only thing that can answer that is **your own lockfile** — and almost nobody keeps
+one for ad-hoc downloads. It's the idea reproducible build tools have leaned on for
+years — pin the source, the hash; reproduce and verify offline — applied to arbitrary
+downloaded assets.
 
-A `launchd`-managed daemon (`gohd`) owns the queue, the network, and the
-disk. The CLI (`goh`) and a SwiftUI menu bar companion (`goh-menu`) are both
-thin XPC clients of the same daemon, so downloads survive terminal closes,
-app quits, and reboots.
+## What it does today
 
-v0.1 ships:
+Everything below runs **offline** and works with the daemon stopped — the trust verbs
+read your records directly.
 
-- Range-parallel HTTP/2 over `URLSession` — 8 connections by default, tunable
-  to 16. (HTTP/3 was tried in slice 3b and reverted; see
+```sh
+# 1. Declare what you want in a manifest, then pull it reproducibly.
+#    sync is idempotent: it hashes what's already on disk and skips what matches,
+#    so re-running never re-downloads a file you already have.
+goh sync ./gohfile.toml
+
+#    → writes gohfile.lock: { url, path, sha256, size, downloadedAt } per file,
+#      with paths relative to the lockfile, so `git clone` + `goh verify` reproduces
+#      on any machine.
+
+# 2. Is everything still exactly what you downloaded? Offline, against YOUR record.
+#    (bare `goh verify` reads ./gohfile.lock)
+goh verify
+#   OK ./model.safetensors
+#   FAILED ./config.json expected sha256:… actual sha256:…
+#   MISSING ./tokenizer.json (expected sha256:…)
+
+# 3. Every download goh makes — sync, `goh add`, foreground, even a resume — is also
+#    auto-recorded in a personal provenance ledger. Ask where any file came from:
+goh which ~/Downloads/dataset.tar.zst
+#   url:    https://example.com/dataset.tar.zst
+#   sha256: sha256:…
+#   downloaded 2026-06-05T21:13:02Z
+
+# 4. Re-verify your whole ledger — and wire it straight into CI or a nightly cron.
+goh verify --all --json | jq '.summary'
+#   { "total": 42, "ok": 41, "failed": 0, "missing": 1 }
+#   exit 0 all-ok · 2 a file changed · 9 a file went missing · 6 ledger error · 64 usage
+```
+
+That last line is the point: `goh verify --all` is a **drift detector you can put in a
+pipeline**. A nightly job that re-hashes `~/datasets` and fails the build (or pages you)
+the moment a file silently rots, gets truncated, or disappears — verified against the
+record *you* froze, with no call to any server.
+
+The hard parts are already built and hardened: streamed SHA-256 computed *during* a
+range-parallel download (not a slow second pass), a TOCTOU-resistant write path, two
+frozen on-disk formats (`gohfile.lock`, the provenance ledger) with loud-rejection
+parsing and golden-file tests, and provenance recording on every completion path.
+
+## Honest boundaries
+
+- **A lockfile can't resurrect a deleted upstream.** `goh` *tells* you a file changed or
+  vanished; it does not keep a second copy of the bytes. It is verify-only by design, not
+  a mirror or a backup tool.
+- **It records the files *you* pull.** Today that's any URL or a `gohfile.toml` manifest.
+  Native smart-URL adapters for popular asset hubs are on the roadmap, not shipped — see
+  [ROADMAP.md](ROADMAP.md).
+- **It consumes provenance, it doesn't produce signatures.** Producing supply-chain
+  signatures (who built these weights) belongs to dedicated signing ecosystems; `goh`
+  stays in the lane of *your* local record.
+
+## Also: a capable download engine
+
+The lockfile sits on top of a real daemon-backed download manager. A `launchd`-managed
+daemon (`gohd`) owns the queue, the network, and the disk; the CLI (`goh`) and a SwiftUI
+menu bar companion (`goh-menu`) are thin XPC clients, so downloads survive terminal
+closes, app quits, and reboots. v0.1 also ships:
+
+- Range-parallel HTTP/2 over `URLSession` — 8 connections by default, tunable to 16, with
+  an adaptive in-flight connection governor. (HTTP/3 was tried and reverted; see
   [DESIGN.md §Transport](DESIGN.md#http3--tried-and-reverted-for-v01).)
-- Streaming SHA-256 verification computed during the download via a
-  contiguous-frontier read-back from the partial file.
-- Crash-safe resume from 1 MiB checkpoints with `If-Range` strong-validator
-  gating.
+- Crash-safe resume from 1 MiB checkpoints with `If-Range` strong-validator gating.
 - Cellular auto-pause via `NWPathMonitor`; sleep assertions via `IOKit`.
-- Safari `Cookies.binarycookies` import for authenticated downloads,
-  fd-passed from the CLI to the daemon so the daemon doesn't need Full Disk
-  Access of its own.
-- Spotlight provenance — `kMDItemWhereFroms` (source URL) and
-  `kMDItemDownloadedDate` xattrs on every completed file.
-- A `goh top` terminal dashboard and a menu bar companion with clipboard
-  quick-add and Terminal-handoff that auto-detects Ghostty, iTerm2, WezTerm,
-  Alacritty, and kitty.
+- Safari `Cookies.binarycookies` import for authenticated downloads, fd-passed from the
+  CLI so the daemon never needs Full Disk Access of its own.
+- `goh diagnose <url>` — plain-English link diagnostics (reachability, Range support,
+  negotiated protocol, parallel-connection acceptance, throughput, bottleneck).
+- A `goh top` terminal dashboard and a menu bar companion with clipboard quick-add and
+  handoff that auto-detects common terminal emulators.
 
-## Install Status
+## Install status
 
-There is no official public install channel yet. The Homebrew formula, tarball,
-and PKG paths are being built and verified as release-candidate machinery before
-they are published.
+There is **no official public install channel yet.** The Homebrew formula, tarball, and
+signed PKG are being built and verified as release-candidate machinery before they're
+published. Tagged releases, stable checksums, a public tap, and direct packages appear
+only after the private release gates are complete.
 
-People working directly from this GitHub repository can build and test from
-source. Tagged releases, stable checksums, a public Homebrew tap, and direct
-download packages will appear only after the private release gates are complete.
-For private local testing, use the dogfood lane in [DOGFOOD.md](DOGFOOD.md),
-including `Scripts/dogfood-acceptance.sh` as the readiness gate.
+Until then: build from source from this repository. For private local testing, use the
+dogfood lane in [DOGFOOD.md](DOGFOOD.md) (`Scripts/dogfood-acceptance.sh` is the readiness
+gate).
 
 ## Usage
 
 ```sh
-goh <url>
+# Trust layer
+goh sync [<manifest>] [--base <dir>] [--accept-changed]   # reproducible bulk pull (--base is cwd-relative)
+goh verify [<gohfile.lock>] [--strict-untracked]          # verify on-disk files against the lock
+goh verify --all [--json]                                 # verify the whole provenance ledger
+goh which <path>                                          # provenance: source, hash, date
+
+# Downloads
+goh <url>                                                 # foreground download with live progress
 goh add [--output <path>] [--connections <1-16>] [--priority low|normal|high] [--no-cookies] <url>
-goh ls [--json]
-goh top
-goh doctor
-goh pause <id>
-goh resume <id>
-goh rm [--keep] <id>
+goh diagnose [--full] [--json] [--connections <1-16> | -c <1-16>] <url>
+goh ls [--json]   ;   goh top   ;   goh doctor
+goh pause <id>    ;   goh resume <id>   ;   goh rm [--keep] <id>
 goh auth import safari
 ```
 
 ## Requirements
 
-- macOS 26.0+ (Tahoe), Apple Silicon
-- Built with Swift 6.2+ (developed against the Swift 6.3 toolchain)
+- **macOS 26.0+ (Tahoe), Apple Silicon.**
+- Built with Swift 6.2+ (developed against the Swift 6.3 toolchain).
 
-The Swift package manifest declares a macOS 26.0 floor — a hard requirement of the
-daemon's macOS 26.0 XPC peer-validation API, and conveniently also the highest
-floor that builds on a stable Xcode toolchain. The supported runtime OS matches at
-macOS 26.0+. See [DESIGN.md](DESIGN.md) for the rationale.
+The macOS 26.0 floor is a hard requirement of the daemon's macOS 26.0 XPC peer-validation
+API (and conveniently the highest floor that builds on a stable Xcode toolchain). See
+[DESIGN.md](DESIGN.md) for the rationale.
 
 ## Status
 
 v0.1 is under active development. See [ROADMAP.md](ROADMAP.md) for scope,
-[DESIGN.md](DESIGN.md) for architecture decisions, and [RELEASE.md](RELEASE.md)
-for release packaging status.
+[DESIGN.md](DESIGN.md) for architecture decisions, and [RELEASE.md](RELEASE.md) for release
+packaging status.
 
 ## License
 
