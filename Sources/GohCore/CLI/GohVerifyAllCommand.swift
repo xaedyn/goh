@@ -23,19 +23,37 @@ public enum GohVerifyAllCommand {
 
     /// Runs `goh verify --all` and returns a result suitable for the CLI runner.
     ///
-    /// - Parameter provenanceStorePath: Absolute path to `provenance.plist`.
-    ///   Resolved by the caller from `ProvenanceStoreLocation.defaultURL(create: false)`.
-    public static func run(provenanceStorePath: String) -> GohCommandLineResult {
+    /// - Parameters:
+    ///   - provenanceStorePath: Absolute path to `provenance.plist`.
+    ///     Resolved by the caller from `ProvenanceStoreLocation.defaultURL(create: false)`.
+    ///   - json: When `true`, render output as JSON (`VerifyAllReport` or `VerifyErrorReport`).
+    ///     Defaults to `false` so existing callers and tests compile unchanged.
+    ///   - generatedAt: The timestamp to embed in the JSON `generatedAt` field.
+    ///     Defaults to `Date()` (current time) in production; inject a fixed instant in tests
+    ///     and for the golden-fixture encode-equals test. Ignored when `json` is false.
+    public static func run(
+        provenanceStorePath: String,
+        json: Bool = false,
+        generatedAt: Date = Date()
+    ) -> GohCommandLineResult {
         let storeURL = URL(fileURLWithPath: provenanceStorePath)
 
         // ── Step 1: Read the ledger (read-only; never creates a sidecar or resets) ──
         guard FileManager.default.fileExists(atPath: provenanceStorePath) else {
+            if json {
+                return jsonResult(
+                    exitCode: 0,
+                    report: emptyReport(generatedAt: generatedAt))
+            }
             return GohCommandLineResult(
                 exitCode: 0,
                 standardOutput: "0 recorded entries\n")
         }
 
         guard let data = try? Data(contentsOf: storeURL) else {
+            if json {
+                return jsonErrorResult(.ledgerUnreadable)
+            }
             return GohCommandLineResult(
                 exitCode: 6,
                 standardOutput: "provenance ledger unreadable\n")
@@ -46,12 +64,18 @@ public enum GohVerifyAllCommand {
             record = try PropertyListDecoder().decode(ProvenanceRecord.self, from: data)
         } catch {
             // CLI does NOT copy-to-sidecar or reset — the daemon owns recovery.
+            if json {
+                return jsonErrorResult(.ledgerCorrupt)
+            }
             return GohCommandLineResult(
                 exitCode: 6,
                 standardOutput: "provenance ledger corrupt\n")
         }
 
         guard record.version == ProvenanceRecord.currentVersion else {
+            if json {
+                return jsonErrorResult(.ledgerVersionUnknown)
+            }
             return GohCommandLineResult(
                 exitCode: 6,
                 standardOutput: "provenance ledger version \(record.version) is unknown\n")
@@ -66,12 +90,23 @@ public enum GohVerifyAllCommand {
 
         // ── Step 2: Empty store ────────────────────────────────────────────────
         if record.entries.isEmpty {
+            if json {
+                return jsonResult(
+                    exitCode: 0,
+                    report: emptyReport(generatedAt: generatedAt))
+            }
             return GohCommandLineResult(
                 exitCode: 0,
                 standardOutput: "0 recorded entries\n")
         }
 
-        // ── Step 3: Re-hash each entry ────────────────────────────────────────
+        // ── Step 3: Re-hash each entry — compute ONCE into [VerifyEntryResult] ─
+        //
+        // Bet: deriving both renderings from one result model keeps the JSON and
+        // human verdicts + exit codes consistent at zero ongoing cost; the existing
+        // byte-exact regression tests prove the human output stayed identical after
+        // the refactor.
+        var entries: [VerifyEntryResult] = []
         var lines: [String] = []
         var hasMissing = false
         var hasFailed = false
@@ -81,25 +116,50 @@ public enum GohVerifyAllCommand {
             do {
                 (hash, _) = try FileDigest.sha256WithSize(path: entry.destinationPath)
             } catch FileDigest.DigestError.cannotOpen {
+                entries.append(VerifyEntryResult(
+                    path: entry.destinationPath,
+                    url: entry.url,
+                    status: .missing,
+                    expectedSha256: entry.sha256,
+                    actualSha256: nil))
                 lines.append("MISSING \(entry.destinationPath) (expected \(entry.sha256))\n")
                 hasMissing = true
                 continue
             } catch {
+                entries.append(VerifyEntryResult(
+                    path: entry.destinationPath,
+                    url: entry.url,
+                    status: .missing,
+                    expectedSha256: entry.sha256,
+                    actualSha256: nil))
                 lines.append("MISSING \(entry.destinationPath) (expected \(entry.sha256))\n")
                 hasMissing = true
                 continue
             }
 
             if hash == entry.sha256 {
+                entries.append(VerifyEntryResult(
+                    path: entry.destinationPath,
+                    url: entry.url,
+                    status: .ok,
+                    expectedSha256: entry.sha256,
+                    actualSha256: nil))
                 lines.append("OK \(entry.destinationPath)\n")
             } else {
+                entries.append(VerifyEntryResult(
+                    path: entry.destinationPath,
+                    url: entry.url,
+                    status: .failed,
+                    expectedSha256: entry.sha256,
+                    actualSha256: hash))
                 lines.append(
                     "FAILED \(entry.destinationPath) expected \(entry.sha256) actual \(hash)\n")
                 hasFailed = true
             }
         }
 
-        // ── Step 4: Precedence 9 > 2 > 0 ─────────────────────────────────────
+        // ── Step 4: Derive exit code from the SAME entries[] array ────────────
+        // (hasMissing/hasFailed booleans mirror entries[] — they are in sync by construction.)
         let exitCode: Int32
         if hasMissing {
             exitCode = 9
@@ -109,6 +169,53 @@ public enum GohVerifyAllCommand {
             exitCode = 0
         }
 
+        // ── Step 5: Render — JSON or human ────────────────────────────────────
+        if json {
+            // Summary is DERIVED by folding over the final entries[] array.
+            // This is the single source of truth — no parallel tally that could drift.
+            let summary = VerifySummary(
+                total: entries.count,
+                ok: entries.filter { $0.status == .ok }.count,
+                failed: entries.filter { $0.status == .failed }.count,
+                missing: entries.filter { $0.status == .missing }.count)
+            let report = VerifyAllReport(
+                reportVersion: 1,
+                generatedAt: generatedAt,
+                summary: summary,
+                entries: entries)
+            return jsonResult(exitCode: exitCode, report: report)
+        }
+
         return GohCommandLineResult(exitCode: exitCode, standardOutput: lines.joined())
+    }
+
+    // MARK: - Private helpers
+
+    private static func emptyReport(generatedAt: Date) -> VerifyAllReport {
+        VerifyAllReport(
+            reportVersion: 1,
+            generatedAt: generatedAt,
+            summary: VerifySummary(total: 0, ok: 0, failed: 0, missing: 0),
+            entries: [])
+    }
+
+    private static func jsonResult(exitCode: Int32, report: VerifyAllReport) -> GohCommandLineResult {
+        guard let data = try? CommandCoding.encoder.encode(report) else {
+            // Defensive: encoding a value type should never fail.
+            return GohCommandLineResult(exitCode: exitCode, standardOutput: "")
+        }
+        return GohCommandLineResult(
+            exitCode: exitCode,
+            standardOutput: String(decoding: data, as: UTF8.self) + "\n")
+    }
+
+    private static func jsonErrorResult(_ code: VerifyErrorCode) -> GohCommandLineResult {
+        let envelope = VerifyErrorReport(reportVersion: 1, error: code)
+        guard let data = try? CommandCoding.encoder.encode(envelope) else {
+            return GohCommandLineResult(exitCode: 6, standardOutput: "")
+        }
+        return GohCommandLineResult(
+            exitCode: 6,
+            standardOutput: String(decoding: data, as: UTF8.self) + "\n")
     }
 }
