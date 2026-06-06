@@ -21,6 +21,15 @@ public struct GohCommandLine {
     public typealias Diagnose = (_ url: String, _ full: Bool, _ json: Bool, _ connections: Int?) throws -> GohCommandLineResult
     public typealias ProvenanceStorePathResolver = () -> String?
 
+    /// Resolves the attest key store locations (handle + keys.json URLs).
+    /// Returns nil if the directory cannot be resolved (treated as "use default").
+    public typealias AttestKeyLocationResolver = () -> (handleURL: URL, keysJSONURL: URL)?
+
+    /// Test-only injection seam for the attest signer. PRODUCTION DEFAULT IS NIL (no override).
+    /// When nil, the real SE signer is used via SecureEnclaveSigner.createOrOpen.
+    /// Must NEVER be used as a production software-key fallback — that defeats hardware attestation.
+    public typealias AttestSignerResolver = () -> GohAttestCommand.SignerOverride?
+
     private let arguments: [String]
     private let homeDirectory: URL
     private let foreground: Foreground?
@@ -28,6 +37,8 @@ public struct GohCommandLine {
     private let doctor: Doctor?
     private let diagnose: Diagnose?
     private let provenanceStorePathResolver: ProvenanceStorePathResolver
+    private let attestKeyLocationResolver: AttestKeyLocationResolver
+    private let attestSignerResolver: AttestSignerResolver
     private let send: Sender
 
     public init(
@@ -40,6 +51,14 @@ public struct GohCommandLine {
         provenanceStorePathResolver: @escaping ProvenanceStorePathResolver = {
             try? ProvenanceStoreLocation.defaultURL(create: false).path
         },
+        // attestKeyLocationResolver and attestSignerResolver MUST be placed BEFORE send:
+        // so that main.swift's trailing-closure call site (send: as trailing closure) compiles.
+        attestKeyLocationResolver: @escaping AttestKeyLocationResolver = {
+            guard let handleURL = try? AttestKeyLocation.signingKeyHandleURL(create: false),
+                  let keysURL = try? AttestKeyLocation.keysJSONURL(create: false) else { return nil }
+            return (handleURL, keysURL)
+        },
+        attestSignerResolver: @escaping AttestSignerResolver = { nil },
         send: @escaping Sender
     ) {
         self.arguments = arguments
@@ -49,6 +68,8 @@ public struct GohCommandLine {
         self.doctor = doctor
         self.diagnose = diagnose
         self.provenanceStorePathResolver = provenanceStorePathResolver
+        self.attestKeyLocationResolver = attestKeyLocationResolver
+        self.attestSignerResolver = attestSignerResolver
         self.send = send
     }
 
@@ -127,6 +148,33 @@ public struct GohCommandLine {
                 // BLOCK-1: resolve at dispatch via the injected resolver (create:false in production).
                 return GohVerifyAllCommand.run(
                     provenanceStorePath: provenanceStorePathResolver() ?? "",
+                    json: json)
+
+            case .attest(let outputPath):
+                let storePathOrEmpty = provenanceStorePathResolver() ?? ""
+                let locations = attestKeyLocationResolver()
+                // attestKeyLocationResolver uses create:false (read path default).
+                // GohAttestCommand.run calls create:true internally for the SE key.
+                let handleURL = locations?.handleURL
+                    ?? (try? AttestKeyLocation.signingKeyHandleURL(create: false))
+                    ?? URL(fileURLWithPath: "")
+                let keysURL = locations?.keysJSONURL
+                    ?? (try? AttestKeyLocation.keysJSONURL(create: false))
+                    ?? URL(fileURLWithPath: "")
+                // Thread the injected signer override (test-only; nil in production).
+                let signerOverride = attestSignerResolver()
+                return GohAttestCommand.run(
+                    provenanceStorePath: storePathOrEmpty,
+                    outputPath: outputPath,
+                    attestKeyHandleURL: handleURL,
+                    attestKeysJSONURL: keysURL,
+                    signerOverride: signerOverride)
+
+            case .verifyAttestation(let artifactPath, let expectKey, let allowUntrustedKey, let json):
+                return GohVerifyAttestationCommand.run(
+                    artifactPath: artifactPath,
+                    expectKey: expectKey,
+                    allowUntrustedKey: allowUntrustedKey,
                     json: json)
 
             case .sync(let manifestPath, let base, let acceptChanged):
@@ -227,6 +275,12 @@ private enum ParsedCommand: Equatable {
     case which(path: String)
     case verify(lockPath: String, strictUntracked: Bool)
     case verifyAll(json: Bool)
+    case attest(outputPath: String?)
+    case verifyAttestation(
+        artifactPath: String,
+        expectKey: String?,
+        allowUntrustedKey: Bool,
+        json: Bool)
     case sync(manifestPath: String, base: String?, acceptChanged: Bool)
     case ls(OutputFormat)
     case pause(UInt64)
@@ -349,6 +403,62 @@ extension GohCommandLine {
             return .remove(
                 RmRequest(jobID: try parseJobID(arguments[1]), keepPartialFile: true))
         }
+        // attest [--output <file>]
+        // NOTE: must be checked BEFORE the single-arg foreground fallback (attest is a known verb)
+        if arguments.first == "attest" {
+            var outputPath: String?
+            var index = 1
+            while index < arguments.count {
+                let arg = arguments[index]
+                switch arg {
+                case "--output", "-o":
+                    outputPath = try value(after: arg, in: arguments, at: &index)
+                default:
+                    guard !arg.hasPrefix("-") else {
+                        throw ParseError(message: "unknown attest option \(arg)")
+                    }
+                    throw ParseError(message: "attest: unexpected argument \(arg)")
+                }
+            }
+            return .attest(outputPath: outputPath)
+        }
+
+        // verify-attestation <file> [--expect-key <kid|pubkey>] [--allow-untrusted-key] [--json]
+        // NOTE: must be checked BEFORE the single-arg foreground fallback
+        if arguments.first == "verify-attestation" {
+            let rest = Array(arguments.dropFirst())
+            guard !rest.isEmpty, let artifactPath = rest.first, !artifactPath.hasPrefix("-") else {
+                throw ParseError(message: "verify-attestation requires an artifact file path")
+            }
+            var expectKey: String?
+            var allowUntrustedKey = false
+            var json = false
+            var index = 1
+            while index < rest.count {
+                let arg = rest[index]
+                switch arg {
+                case "--expect-key":
+                    expectKey = try value(after: arg, in: rest, at: &index)
+                case "--allow-untrusted-key":
+                    allowUntrustedKey = true
+                    index += 1
+                case "--json":
+                    json = true
+                    index += 1
+                default:
+                    guard !arg.hasPrefix("-") else {
+                        throw ParseError(message: "unknown verify-attestation option \(arg)")
+                    }
+                    throw ParseError(message: "verify-attestation: unexpected argument \(arg)")
+                }
+            }
+            return .verifyAttestation(
+                artifactPath: artifactPath,
+                expectKey: expectKey,
+                allowUntrustedKey: allowUntrustedKey,
+                json: json)
+        }
+
         if arguments.count == 1, let url = arguments.first, !url.hasPrefix("-") {
             return .foreground(AddRequest(url: url))
         }
@@ -572,6 +682,10 @@ extension GohCommandLine {
           goh sync [<manifest>] [--base <dir>] [--accept-changed]   (--base is cwd-relative)
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
           goh verify --all [--json]   (exit: 0 ok · 2 changed · 9 missing · 6 ledger error)
+          goh attest [--output <file>]   (exit: 0 ok · 2 changed · 9 missing · 5 attest-failed · 6 ledger-error)
+          goh verify-attestation <file> [--expect-key <kid|pubkey>] [--allow-untrusted-key] [--json]
+            (exit: 0 valid+trusted · 1 valid-unverified · 2 invalid · 3 key-mismatch · 6 malformed)
+            Note: attest and verify-attestation use DIFFERENT exit-code vocabularies — not interchangeable.
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
