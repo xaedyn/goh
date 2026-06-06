@@ -102,6 +102,30 @@ struct GohNotificationTransitionDetectorTests {
         #expect(toPost.isEmpty)
     }
 
+    // AC2: a job absent from a non-nil previous map that appears ALREADY TERMINAL
+    // in the current snapshots must fire exactly one notification — it was observed
+    // live after the seed, not pre-existing history.
+    @Test func postSeedFirstSeenTerminalFiresOneNotification() {
+        let detector = GohNotificationTransitionDetector()
+
+        // Step 1: seed with an unrelated job so previous is non-nil.
+        let (_, seedNext) = detector.evaluate(
+            previous: nil,
+            snapshots: [snapshot(id: 99, state: .active)])
+
+        // Step 2: evaluate with previous = seedNext; introduce a brand-new job (id: 42)
+        // that was never in the prior map but is already in .completed state.
+        let (toPost, next) = detector.evaluate(
+            previous: seedNext,
+            snapshots: [
+                snapshot(id: 99, state: .active),
+                snapshot(id: 42, state: .completed),
+            ])
+
+        #expect(toPost.count == 1)
+        #expect(next[42] == .completed)
+    }
+
     // Helper
     private func snapshot(id: UInt64, state: JobState) -> ProgressSnapshot {
         ProgressSnapshot(
