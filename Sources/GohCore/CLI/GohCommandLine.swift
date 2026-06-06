@@ -571,7 +571,7 @@ extension GohCommandLine {
           goh which <path>
           goh sync [<manifest>] [--base <dir>] [--accept-changed]   (--base is cwd-relative)
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
-          goh verify --all [--json]
+          goh verify --all [--json]   (exit: 0 ok · 2 changed · 9 missing · 6 ledger error)
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>

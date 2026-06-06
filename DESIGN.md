@@ -770,6 +770,38 @@ failure). New `envelope-v4-record-verified-provenance-{request,reply}.json` gold
 fixtures are added; the `envelope-v3-*` fixtures are retained unchanged. Design + plan:
 `docs/superpowers/specs/2026-06-05-provenance-sync-skip-fold-design.md`.
 
+### Machine-readable verify (`goh verify --all --json`)
+
+`goh verify --all` gained a `--json` presentation mode so the ledger can drop into CI/cron
+("re-verify `~/datasets` nightly, fail the build / alert on drift"). The command follows a
+**compute-once-render-twice** structure: a single re-hash pass builds one `[VerifyEntryResult]`
+model and one exit code; the command then renders either today's byte-identical human text or a
+versioned JSON report (`VerifyAllReport`, `reportVersion = 1`) derived from the same model — so the
+two renderings and their exit codes can never disagree. The JSON `summary{total,ok,failed,missing}`
+is **folded from the final `entries[]`** (single source of truth, never a parallel tally).
+
+- **Frozen contract.** `VerifyAllReport` / `VerifyEntryResult` / `VerifyStatus`
+  (`ok`/`failed`/`missing`) / `VerifyErrorReport` / `VerifyErrorCode` live in a CLI-layer file
+  (`VerifyReportTypes.swift`) — NOT a change to `ProvenanceRecord` (`currentVersion` stays 1). Field
+  names and enum raw values are frozen ("do NOT rename"); a golden fixture
+  (`Tests/GohCoreTests/Fixtures/verify-all-report-v1.json`, a single compact line) forces any schema
+  change to be a deliberate `reportVersion` bump.
+- **Encoder choice.** Uses `CommandCoding.encoder` (`.iso8601` dates, `[.sortedKeys]`, no
+  pretty-print) — the canonical encoder, deliberately chosen over `goh diagnose`'s bare
+  `JSONEncoder()` (a pre-existing inconsistency). Tests decode with `CommandCoding.decoder` to match
+  the ISO-8601 date strategy. `actualSha256` is present only on `failed` entries (omitted otherwise).
+- **Always-JSON.** In `--json` mode the three ledger-error conditions (unreadable / corrupt /
+  unknown-version) emit a JSON error envelope (`{reportVersion, error}`, exit 6) — never mixed
+  text+JSON; an empty/absent ledger emits a valid empty report (exit 0).
+- **Exit-code contract (unchanged, now documented):** `0` all-ok · `2` hash MISMATCH (no missing) ·
+  `9` any MISSING (precedence 9 > 2 > 0) · `6` ledger error · `64` usage. `--json` returns the
+  identical code as the human path for the same ledger state. `2`/`9` do not collide with
+  `sysexits.h` (which starts at 64); a deliberate, documented divergence from `sha256sum -c` (which
+  collapses all failures to exit 1). Parse grammar: only `goh verify --all --json` enables JSON;
+  `--json` in any other position is a usage error (exit 64), and the frozen `goh verify` lockfile
+  surface is untouched. Design + plan:
+  `docs/superpowers/specs/2026-06-05-verify-json-design.md`.
+
 ## IPC
 
 The `goh` ↔ `gohd` contract runs over the modern low-level Swift XPC API
