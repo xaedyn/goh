@@ -13,8 +13,12 @@ auditor-tagged "critical" was downgraded to **medium** by its own panel; the
 honest high-severity count is **5**, all of them cheap, localized fixes.
 
 **Confidence:** findings are reasoned and peer-refuted, **not PoC-executed**.
-Each carries a confidence label. This is an audit + fix *plan* — no code was
-changed.
+Each carries a confidence label.
+
+**Status:** the review itself changed no code. The PR that introduced this
+document also implements the **five high-severity fixes (H1–H5)**; the
+medium/low findings remain a tracked backlog. The fix plan at the bottom records
+the full sequence.
 
 ---
 
@@ -75,6 +79,11 @@ infallible and was not trusted blindly.
 ---
 
 ## Findings (high → low, verifier-consensus severity)
+
+> **Line numbers reference the pre-fix code** at the time of review. H1–H5 have
+> since been fixed in the introducing PR, so their cited lines now point at the
+> remediated code. A `~` prefix (e.g. `~1062`) marks an approximate line where
+> the exact offset shifts with surrounding edits.
 
 ### HIGH
 
