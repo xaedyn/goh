@@ -69,12 +69,25 @@ goh which ~/Downloads/dataset.tar.zst
 goh verify --all --json | jq '.summary'
 #   { "total": 42, "ok": 41, "failed": 0, "missing": 1 }
 #   exit 0 all-ok · 2 a file changed · 9 a file went missing · 6 ledger error · 64 usage
+
+# 5. Turn a verify result into a portable, tamper-evident proof — signed by a key
+#    that lives inside this Mac's Secure Enclave (the private key can't leave the chip):
+goh attest --output report.signed.json
+#    Anyone can check it offline, on any machine, with only the file (no key of their own):
+goh verify-attestation report.signed.json --expect-key <your-public-key>
+#    valid & trusted → exit 0 · unpinned → exit 1 (fail-closed) · tampered → exit 2
 ```
 
 That last line is the point: `goh verify --all` is a **drift detector you can put in a
 pipeline**. A nightly job that re-hashes `~/datasets` and fails the build (or pages you)
 the moment a file silently rots, gets truncated, or disappears — verified against the
 record *you* froze, with no call to any server.
+
+And `goh attest` makes a result **shareable**: the report is signed by a key generated
+*inside* the Secure Enclave and never extractable, so you can hand a verify proof to a
+collaborator or attach one to a release, and they can confirm — offline, with no account
+or server — that not one byte changed since you signed it. This is the one place goh
+genuinely leans on Apple Silicon: a hardware root of trust, not a label.
 
 The hard parts are already built and hardened: streamed SHA-256 computed *during* a
 range-parallel download (not a slow second pass), a TOCTOU-resistant write path, two
@@ -92,6 +105,10 @@ parsing and golden-file tests, and provenance recording on every completion path
 - **It consumes provenance, it doesn't produce signatures.** Producing supply-chain
   signatures (who built these weights) belongs to dedicated signing ecosystems; `goh`
   stays in the lane of *your* local record.
+- **An attestation is tamper-evidence, not identity.** `goh attest` proves a report hasn't
+  changed since it was signed — not *who* signed it, unless you pin the signer's public key
+  (`--expect-key`). `goh verify-attestation` fails closed by default: a valid-but-unpinned
+  signature is a non-zero exit, so it won't quietly pass a CI gate.
 
 ## Also: a capable download engine
 
@@ -131,6 +148,8 @@ goh sync [<manifest>] [--base <dir>] [--accept-changed]   # reproducible bulk pu
 goh verify [<gohfile.lock>] [--strict-untracked]          # verify on-disk files against the lock
 goh verify --all [--json]                                 # verify the whole provenance ledger
 goh which <path>                                          # provenance: source, hash, date
+goh attest [--output <path>]                              # Secure-Enclave-signed verify report
+goh verify-attestation <file> [--expect-key <pubkey>] [--allow-untrusted-key] [--json]
 
 # Downloads
 goh <url>                                                 # foreground download with live progress
