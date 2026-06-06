@@ -25,3 +25,10 @@ AGENTS.md
 # Benchmark diagnostic logs — capture machine state (Darwin version, paths,
 # trace data) on whoever ran them. Keep local.
 Benchmarks/diagnose-*.log
+
+# Community/launch docs — drafted ahead of the Phase-3 public launch but kept
+# local until the brew tap opens (published right before launch, per the launch
+# sequence). Local-only drafts, like the vision/launch-post memos above.
+/SECURITY.md
+/CONTRIBUTING.md
+/CODE_OF_CONDUCT.md
