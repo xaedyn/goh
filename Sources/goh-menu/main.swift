@@ -165,40 +165,38 @@ nonisolated private final class LiveProgressSubscription: @unchecked Sendable {
 
 @MainActor
 final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
+    let model: GohMenuViewModel = GohMenuViewModel(
+        client: LiveGohMenuClient(),
+        pasteboardText: { NSPasteboard.general.string(forType: .string) },
+        revealInFinder: { destination in
+            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
+        },
+        openTerminalDashboard: { openTopInTerminal() },
+        openDoctor: { openDoctorInTerminal() },
+        copyText: { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        })
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
+        model.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.stop()
     }
 }
 
 @main
 struct GohMenuApp: App {
     @NSApplicationDelegateAdaptor(GohMenuAppDelegate.self) private var appDelegate
-    @StateObject private var model = GohMenuViewModel(
-        client: LiveGohMenuClient(),
-        pasteboardText: {
-            NSPasteboard.general.string(forType: .string)
-        },
-        revealInFinder: { destination in
-            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
-        },
-        openTerminalDashboard: {
-            openTopInTerminal()
-        },
-        openDoctor: {
-            openDoctorInTerminal()
-        },
-        copyText: { text in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        })
 
     var body: some Scene {
         MenuBarExtra {
             GohMenuView(
-                model: model,
-                quitApplication: {
-                    NSApplication.shared.terminate(nil)
-                })
+                model: appDelegate.model,
+                quitApplication: { NSApplication.shared.terminate(nil) })
         } label: {
             Label("goh", systemImage: "arrow.down.circle")
         }

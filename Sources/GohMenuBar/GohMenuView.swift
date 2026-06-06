@@ -25,11 +25,7 @@ public struct GohMenuView: View {
         .frame(width: 380)
         .padding(12)
         .task {
-            model.start()
             await model.refreshClipboard()
-        }
-        .onDisappear {
-            model.stop()
         }
     }
 
