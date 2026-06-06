@@ -83,7 +83,7 @@ public enum GohWhichCommand {
         }
 
         let formatter = ISO8601DateFormatter()
-        var out = "url:          \(entry.url)\n"
+        var out = "url:          \(URLDisplay.sanitized(entry.url))\n"
         out    += "sha256:       \(entry.sha256)\n"
         out    += "size:         \(entry.size)\n"
         if let verifiedAt = entry.verifiedAt {
@@ -130,7 +130,7 @@ public enum GohWhichCommand {
                 .standardizedFileURL
 
             if entryURL == targetURL {
-                var out = "url:          \(entry.url)\n"
+                var out = "url:          \(URLDisplay.sanitized(entry.url))\n"
                 out    += "sha256:       \(entry.sha256)\n"
                 out    += "downloadedAt: \(entry.downloadedAt)\n"
                 return out
@@ -149,7 +149,7 @@ public enum GohWhichCommand {
 
         let downloadedDate = readDownloadedDate(path: path)
 
-        var out = "url:          \(url)\n"
+        var out = "url:          \(URLDisplay.sanitized(url))\n"
         out    += "sha256:       (not recorded)\n"
         if let date = downloadedDate {
             let formatted = ISO8601DateFormatter().string(from: date)
