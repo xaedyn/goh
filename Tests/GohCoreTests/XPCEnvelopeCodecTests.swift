@@ -155,6 +155,18 @@ struct XPCEnvelopeCodecTests {
         }
     }
 
+    @Test("a protocolVersion above the UInt32 range is rejected, not crashed (audit L7)")
+    func rejectsOutOfRangeProtocolVersion() throws {
+        // The exact-equality version check lives in CommandService (covered by
+        // CommandServiceTests.oldProtocolVersionMismatchRepliesWithError). This
+        // pins the codec-level guard that rejects a raw version outside UInt32.
+        let dictionary = try makeEnvelopeDictionary(protocolVersion: UInt64(UInt32.max) + 1)
+
+        #expect(throws: XPCEnvelopeError.self) {
+            try GohEnvelope<TestPayload>(xpcDictionary: dictionary)
+        }
+    }
+
     @Test("the invalidArgument error code round-trips at protocolVersion 1")
     func invalidArgumentErrorCodeRoundTrips() throws {
         let fixture = try fixtureData("envelope-v1-error-invalid-argument")
