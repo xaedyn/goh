@@ -191,6 +191,21 @@ public enum GohVerifyAllCommand {
 
     // MARK: - Private helpers
 
+    /// Returns the canonical payload bytes for a `VerifyAllReport` — the encoder output
+    /// with NO trailing newline.
+    ///
+    /// **Crypto-critical (B1):** this is `payload_bytes` for `goh attest`'s signing input.
+    /// It is byte-identical to the golden `verify-all-report-v1.json` fixture.
+    /// The `--json` stdout path appends `"\n"` AFTER this; never sign the stdout bytes.
+    ///
+    /// Returns `nil` only if `CommandCoding.encoder.encode` fails (a programming error —
+    /// encoding a value type should never fail in practice).
+    public static func payloadBytes(for report: VerifyAllReport) -> Data? {
+        try? CommandCoding.encoder.encode(report)
+    }
+
+    // MARK: - Private helpers
+
     private static func emptyReport(generatedAt: Date) -> VerifyAllReport {
         VerifyAllReport(
             reportVersion: 1,
@@ -200,7 +215,7 @@ public enum GohVerifyAllCommand {
     }
 
     private static func jsonResult(exitCode: Int32, report: VerifyAllReport) -> GohCommandLineResult {
-        guard let data = try? CommandCoding.encoder.encode(report) else {
+        guard let data = payloadBytes(for: report) else {
             // Defensive: encoding a value type should never fail.
             return GohCommandLineResult(exitCode: exitCode, standardOutput: "")
         }
