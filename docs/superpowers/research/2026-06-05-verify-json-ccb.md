@@ -30,6 +30,7 @@ synchronous (no async in verify). JSON via `Foundation.JSONEncoder`. Swift Testi
   not auto-regenerated. Mirror as `verify-all-report-v1.json`.
 
 ## RELEVANT FILES
+
 | File | Purpose | Key signatures |
 |---|---|---|
 | `Sources/GohCore/CLI/GohVerifyAllCommand.swift` | `verify --all` runner | `run(provenanceStorePath: String) -> GohCommandLineResult` (28). Exit codes in header 14–21. |

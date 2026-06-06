@@ -12,7 +12,7 @@ computing the exit code once.
 
 ## Acceptance Criteria (from Step 2.5)
 - **AC1** — single valid JSON doc: `reportVersion:1` + `entries[]` (path, url, status, expected/actual sha256) + `summary{total,ok,failed,missing}` whose counts match the entries.
-- **AC2** — `--json` exit code == human exit code for the same ledger state (0 all-ok / 2 any failed|missing).
+- **AC2** — `--json` exit code == human exit code for the same ledger state, precedence 9 > 2 > 0 (0 all-ok / 2 any FAILED & no MISSING / 9 any MISSING).
 - **AC3** — human `verify --all` output byte-identical + exit codes unchanged (existing tests pass unmodified).
 - **AC4** — corrupt/unreadable/unknown-version → single JSON error envelope, exit 6; empty → valid empty JSON, exit 0.
 - **AC5** — schema pinned by `verify-all-report-v1.json` golden fixture + encode test.

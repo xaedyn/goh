@@ -18,6 +18,7 @@ Add `case verifyAll(json: Bool)` to `ParsedCommand`, update the `verify --all` p
 - [ ] Task 5 — Full `swift test` + `swift build -Xswiftc -warnings-as-errors` health check; manual spot-check of JSON output
 
 ## Parse boundary being pinned
+
 | Input | Expected |
 |-------|----------|
 | `verify --all --json` | `verifyAll(json:true)` → exit 0 (empty store) |
