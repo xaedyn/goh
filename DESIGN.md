@@ -802,6 +802,59 @@ is **folded from the final `entries[]`** (single source of truth, never a parall
   surface is untouched. Design + plan:
   `docs/superpowers/specs/2026-06-05-verify-json-design.md`.
 
+### Hardware-attested provenance (`goh attest` / `goh verify-attestation`)
+
+Every Apple Silicon Mac has a Secure Enclave whose private keys cannot leave the chip, and goh
+already requires Apple Silicon. `goh attest` runs `verify --all`, then signs the report with a
+**Secure Enclave P-256 key** into a portable, self-contained artifact; `goh verify-attestation
+<file>` verifies it **offline, on any machine**, using only the public key embedded in the file.
+This makes a verify result tamper-evident and shareable as a hardware-rooted proof — and makes the
+Apple-Silicon requirement *earned*, not incidental. (Approach "The Signed Receipt"; per-entry ledger
+signing was the considered, deferred alternative.)
+
+- **Empirical feasibility (resolved a feared blocker):** a spike proved `SecureEnclave.P256.Signing`
+  key create/sign/verify works on **ad-hoc / dogfood builds — no Developer ID, no Team ID, no
+  entitlement**. The feature is buildable now; it does NOT depend on the Phase-3 credential gate. The
+  private key persists only as the opaque ~284-byte machine-bound `dataRepresentation` handle; the
+  65-byte `publicKey.x963Representation` is exported into each artifact for offline verification.
+- **Sign the raw stored bytes, never re-serialize (the DSSE pattern).** The signed input is
+  `PAE = "DSSEv1" SP len(payloadType) SP payloadType SP len(payload_bytes) SP payload_bytes`
+  (DSSE pre-authentication encoding; byte-length-prefixed, injective). `payload_bytes` is
+  `CommandCoding.encoder.encode(VerifyAllReport)` with **no trailing newline** (byte-identical to the
+  `verify-all-report-v1.json` fixture; the `--json` stdout `+"\n"` is a separate, frozen, untouched
+  path). Only `payload_bytes` is signed — never the outer envelope — so the verifier base64-decodes
+  the embedded payload and rebuilds the identical PAE with no JSON re-encoding (canonicalization
+  footgun eliminated). The media-type inside the PAE namespaces the signature against cross-context
+  replay.
+- **Envelope (frozen, `attestationVersion = 1`):** SSH-sig-style, self-contained —
+  `{ attestationVersion, payloadType, payload (base64), sig{ ns, alg:"ES256", kid, pub (base64url
+  x963), sig (base64url raw 64B r‖s) } }`. `kid = hex(SHA256(pub.x963)[0..3])` is an 8-hex *hint*;
+  `pub` is authoritative. New CLI-layer types (`AttestTypes.swift`), no change to `ProvenanceRecord`.
+- **ECDSA P-256 is non-deterministic** (random nonce → a different signature each call): tests and
+  golden fixtures pin the signed *payload* and *verify*, and **never byte-compare signatures**. The
+  golden artifact fixture's signature is made by a throwaway software key so verification (which needs
+  only the embedded `pub`) runs on CI without a Secure Enclave; real-SE sign tests guard
+  `SecureEnclave.isAvailable`.
+- **Honest threat model.** A self-signed, embedded-pubkey artifact proves *tamper-evidence +
+  integrity* ("unchanged since signed by this key"), **not identity to a stranger**: an attacker
+  running as you could mint a fresh key and sign a forgery. So `verify-attestation` **fails closed** —
+  exit `1` for a valid-but-unpinned signature (so `verify-attestation && deploy` does not accept a
+  forgery), exit `0` only when the key is trusted (`--expect-key <kid|pubkey>` matches, or explicit
+  `--allow-untrusted-key`), `2` invalid, `3` expect-key mismatch, `6` malformed/unknown-version. The
+  output never implies identity it can't prove. Full-pubkey `--expect-key` is the strong pin; `kid` is
+  a 32-bit convenience.
+- **Key store (CLI-owned, separate):** `~/Library/Application Support/dev.goh.attest/` (its OWN dir,
+  NOT under the daemon-owned `dev.goh.daemon/` — preserving the "CLI never creates the daemon dir"
+  invariant): `signing-key.handle` (created `O_CREAT|O_EXCL`, 0600; EEXIST → open existing, never
+  clobber) + `keys.json` (signer-side key history ONLY — **never read on the verify path**). The
+  `attest` signer is real-SE in production; a software-key override exists for tests only (never a
+  production fallback).
+- **Additive; verify-only.** No existing format, command, or exit code changes; `attest` failure
+  (no enclave / write error → exit 5) and ledger-error (exit 6) produce no artifact and never touch
+  the ledger or the byte-verify path. Touch-ID-gating the signing key and per-entry ledger signing are
+  deferred (out of scope v1). Design + plan:
+  `docs/superpowers/specs/2026-06-06-hardware-attested-provenance-design.md`.
+
 ## IPC
 
 The `goh` ↔ `gohd` contract runs over the modern low-level Swift XPC API
