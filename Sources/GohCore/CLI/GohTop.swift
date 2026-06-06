@@ -53,9 +53,14 @@ public struct GohTop {
             while true {
                 do {
                     let notification = try activeSession.receiveNotification()
-                    let event = try decodeNotification(
+                    guard let event = try decodeNotification(
                         notification,
                         requestID: subscribeRequestID)
+                    else {
+                        // Stale notification from a prior subscription (e.g. arriving
+                        // just after a reconnect): skip it, keep the TUI alive (audit M3).
+                        continue
+                    }
                     repaint(event.snapshot)
                     if shouldInterrupt() {
                         return GohCommandLineResult(exitCode: 0)
@@ -222,16 +227,19 @@ public struct GohTop {
         }
     }
 
+    /// Decodes a progress notification for the current subscription. Returns
+    /// `nil` for a *stale* notification (a previous subscription's requestID,
+    /// e.g. arriving just after a reconnect) so the caller skips it rather than
+    /// tearing down the TUI (audit M3). A non-notification message is malformed.
     private func decodeNotification(
         _ notification: GohEnvelope<ProgressEvent>,
         requestID: UUID
-    ) throws -> ProgressEvent {
+    ) throws -> ProgressEvent? {
         guard notification.messageType == .notification else {
             throw TopError("daemon sent a non-notification progress message")
         }
         guard notification.requestID == requestID else {
-            throw TopError(
-                "daemon notification requestID did not match the subscription")
+            return nil
         }
         return notification.payload
     }

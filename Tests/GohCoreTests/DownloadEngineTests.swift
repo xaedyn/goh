@@ -922,6 +922,35 @@ struct DownloadEngineTests {
         #expect(final?.error?.code == .connectionFailed)
     }
 
+    @Test("a 206 declaring an implausibly large total fails closed instead of planning a giant chunk array")
+    func implausibleContentRangeTotalFailsJob() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = "https://test.local/\(UUID().uuidString).bin"
+        let payload = Data((0..<(1 << 20)).map { UInt8($0 & 0xff) })
+        // A total far beyond any real asset and beyond the engine's accepted ceiling.
+        let huge = (UInt64(1) << 43) + 1
+        MockURLProtocol.stub(
+            url,
+            body: payload,
+            contentRangeOverride: [0: "bytes 0-\(huge - 1)/\(huge)"])
+
+        let store = JobStore()
+        let destination = directory.appending(path: "out.bin").path
+        let job = store.create(url: url, destination: destination, requestedConnectionCount: 8)
+
+        // Large chunkSize so that, even without the bound, this test never tries
+        // to allocate the astronomical chunk array — we assert the fail-closed path.
+        await DownloadEngine(session: mockSession(), chunkSize: 1 << 40)
+            .run(jobID: job.id, in: store)
+
+        let final = store.job(id: job.id)
+        #expect(final?.state == .failed)
+        #expect(final?.error?.code == .connectionFailed)
+        #expect(final?.error?.message?.contains("content length") == true)
+    }
+
     @Test("an initial open-ended ranged response that ends early fails the job")
     func truncatedInitialRangeFailsJob() async throws {
         let directory = try temporaryDirectory()

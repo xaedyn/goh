@@ -144,9 +144,15 @@ public struct GohForegroundDownload {
             while true {
                 do {
                     let notification = try activeSession.receiveNotification()
-                    let event = try decodeNotification(
+                    guard let event = try decodeNotification(
                         notification,
                         requestID: subscribeRequestID)
+                    else {
+                        // Stale notification from a prior subscription (e.g. an
+                        // in-flight message arriving just after a reconnect):
+                        // skip it and keep listening (audit M3).
+                        continue
+                    }
                     standardOutput(event.snapshot.map(Self.progressLine).joined())
                     if let terminal = terminalResult(in: event.snapshot, jobID: job.id) {
                         return GohCommandLineResult(exitCode: terminal)
@@ -318,16 +324,20 @@ public struct GohForegroundDownload {
         }
     }
 
+    /// Decodes a progress notification for the current subscription. Returns
+    /// `nil` for a *stale* notification — one carrying a previous subscription's
+    /// requestID, as can arrive in-flight just after a reconnect — so the caller
+    /// skips it rather than failing the whole foreground session (audit M3). A
+    /// non-notification message on this channel is still treated as malformed.
     private func decodeNotification(
         _ notification: GohEnvelope<ProgressEvent>,
         requestID: UUID
-    ) throws -> ProgressEvent {
+    ) throws -> ProgressEvent? {
         guard notification.messageType == .notification else {
             throw ForegroundError("daemon sent a non-notification progress message")
         }
         guard notification.requestID == requestID else {
-            throw ForegroundError(
-                "daemon notification requestID did not match the subscription")
+            return nil
         }
         return notification.payload
     }

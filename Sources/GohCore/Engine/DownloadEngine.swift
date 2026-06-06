@@ -56,6 +56,14 @@ public struct DownloadEngine: Sendable {
     /// No range is split below this; smaller files download over one connection.
     private static let minChunk: UInt64 = 1 << 20
 
+    /// The largest server-declared content length the engine will accept. A 206
+    /// `Content-Range` total beyond this is treated as a hostile/malformed
+    /// response and fails the job closed, rather than planning a chunk array of
+    /// `total / chunkSize` entries — at `total` near `UInt64.max` that array
+    /// would exhaust memory (audit M2). 8 TiB is far above any real asset goh
+    /// targets (model weights, datasets) while bounding the chunk count.
+    static let maxDeclaredTotal: UInt64 = 1 << 43
+
     /// Daemon kill-switch for the in-flight parallelism governor (spec §10).
     /// When `false`, `fetchRanged` falls back to a static N (the requested
     /// connection count) and never runs the governor. Defaults to `true`.
@@ -258,6 +266,13 @@ public struct DownloadEngine: Sendable {
                     message: "the initial 206 response did not carry a full Content-Range")
             }
             let total = contentRange.total
+            // Reject an implausibly large declared length before it drives chunk
+            // planning / preallocation (audit M2).
+            guard total <= Self.maxDeclaredTotal else {
+                throw GohError(
+                    code: .connectionFailed,
+                    message: "the server declared an implausibly large content length (\(total) bytes)")
+            }
             try await fetchRanged(
                 job: job, store: store, url: url, total: total, initialResponse: response,
                 firstRangeStream: stream, cancelFirstRangeStream: cancelStream, trace: trace,
@@ -1059,7 +1074,7 @@ public struct DownloadEngine: Sendable {
             if case .writeFailed(let code) = fileError, code == ENOSPC {
                 return GohError(code: .diskFull, message: "no space on the destination volume")
             }
-            return GohError(code: .destinationUnwritable, message: "\(fileError)")
+            return GohError(code: .destinationUnwritable, message: fileError.redactedDescription)
         }
         return GohError(code: .connectionFailed, message: "\(error)")
     }

@@ -84,4 +84,12 @@ struct DownloadFileTests {
         #expect(readBack == whole)
         #expect(try Data(contentsOf: url) == whole)
     }
+
+    @Test("redactedDescription of openFailed carries no filesystem path")
+    func redactedDescriptionOmitsPath() {
+        let error = DownloadFileError.openFailed(path: "/Users/secret/private.iso", errno: 13)
+        let redacted = error.redactedDescription
+        #expect(!redacted.contains("/Users/secret"))
+        #expect(!redacted.contains("/"))
+    }
 }
