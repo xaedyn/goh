@@ -9,6 +9,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: CI only reads the repo (checkout, build, test, brew style).
+# No job writes to the repository, so the default token needs read-only scope
+# (audit L5; matches release-artifacts.yml).
+permissions:
+  contents: read
+
 jobs:
   build-test:
     name: Build & test
