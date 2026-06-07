@@ -151,10 +151,28 @@ install -m 0644 "$repo_root/Resources/dev.goh.daemon.plist" "$payload_root/usr/l
 plutil -lint "$payload_root/usr/local/share/goh/dev.goh.daemon.plist" >/dev/null
 xattr -cr "$payload_root"
 
-for binary in "$payload_root/usr/local/bin/goh" "$payload_root/usr/local/bin/gohd"; do
-  codesign --force --sign "$GOH_APP_SIGN_IDENTITY" --options runtime --timestamp --keychain "$keychain" "$binary"
+# Stage goh.app into the payload.
+# NOTE: package-app.sh runs swift build again; it is idempotent (same release build).
+source "$script_dir/_stage-app-payload.sh"
+
+# Sign inside-out: inner Mach-Os first, then the .app bundle last.
+# The goh-menu binary inside the .app must be signed before the bundle seal.
+for binary in "$payload_root/usr/local/bin/goh" "$payload_root/usr/local/bin/gohd" \
+              "$payload_root/Applications/goh.app/Contents/MacOS/goh-menu"; do
+  codesign --force --sign "$GOH_APP_SIGN_IDENTITY" \
+    --options runtime --timestamp --keychain "$keychain" "$binary"
   codesign --verify --strict --verbose=2 "$binary"
 done
+
+# Sign the .app bundle last (after inner binary is signed).
+codesign --force --sign "$GOH_APP_SIGN_IDENTITY" \
+  --options runtime --timestamp --keychain "$keychain" \
+  "$payload_root/Applications/goh.app"
+codesign --verify --strict --verbose=2 "$payload_root/Applications/goh.app"
+
+# POST-CREDENTIAL NOTE: after the PKG is notarized and stapled, the .app
+# inside it is also covered by the PKG's notarization ticket. No separate
+# staple on the .app is required when it is delivered inside a notarized PKG.
 
 cat > "$requirements" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

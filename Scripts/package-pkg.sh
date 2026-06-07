@@ -56,6 +56,12 @@ install -m 0644 "$repo_root/Resources/dev.goh.daemon.plist" "$payload_root/usr/l
 plutil -lint "$payload_root/usr/local/share/goh/dev.goh.daemon.plist" >/dev/null
 xattr -cr "$payload_root"
 
+# Stage goh.app into the payload (Approach B — All-in-One PKG).
+# THE BET: engine + tray app are versioned together for the tester phase.
+# See Scripts/_stage-app-payload.sh — this is the single point of truth for
+# the goh.app staging logic. private-release-candidate.sh sources the same helper.
+source "$script_dir/_stage-app-payload.sh"
+
 cat > "$requirements" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
