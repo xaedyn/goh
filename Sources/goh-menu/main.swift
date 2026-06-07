@@ -178,7 +178,6 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
     let preferences: UserDefaultsMenuPreferences = UserDefaultsMenuPreferences()
 
     override init() {
-        let path = (try? ProvenanceStoreLocation.defaultURL(create: false))?.path ?? ""
         self.model = GohMenuViewModel(
             client: LiveGohMenuClient(),
             pasteboardText: { NSPasteboard.general.string(forType: .string) },
@@ -191,7 +190,7 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             },
-            trustReader: LiveProvenanceReader(path: path))
+            trustReader: LiveProvenanceReader(path: provenancePath))
         super.init()
     }
     let notificationService: LiveNotificationService = LiveNotificationService()

@@ -37,9 +37,9 @@ public enum VerifyAllRunnerError: Error {
 /// - Per-file digest errors → MISSING/FAILED; the run NEVER aborts on one bad file.
 ///
 /// **Concurrency:** this function is synchronous (no `async`). Callers that need
-/// off-main execution MUST dispatch it on `Thread.detachNewThread` or
-/// `DispatchQueue.global().async` — NOT `Task.detached`, which runs on the
-/// cooperative pool and would starve it during the blocking hash loop (#81).
+/// off-main execution MUST dispatch it via `DispatchQueue.global().async` (a real
+/// OS thread, off the Swift cooperative pool) — NOT `Task.detached`, which remains
+/// on the cooperative pool and would starve it during the blocking hash loop (#81).
 public enum VerifyAllRunner {
 
     /// Re-hashes every recorded file and returns the structured report.

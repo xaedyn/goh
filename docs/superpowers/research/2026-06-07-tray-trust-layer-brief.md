@@ -30,8 +30,8 @@ trivially satisfied when both the CLI and the tray call the *same* runner.
 `FileDigest.sha256WithSize` is synchronous blocking I/O; the verify loop is serial with no yield/cancel
 [VERIFIED]. **Known repo gotcha [[swift-sync-async-bridge-cooperative-pool-deadlock]]:** running sync
 blocking work on a cooperative-pool worker starved CI (#81 hung ~6h). Therefore the runner must execute
-on a **dedicated thread** (`Task.detached`, or an explicit `Thread`/`DispatchQueue`), NOT a default
-`Task` on the cooperative pool [VERIFIED — gotcha]. The runner iterates entries, invoking a
+on a **real OS thread via `DispatchQueue.global().async`**, NOT `Task.detached` (which stays on the
+cooperative pool) and NOT a default `Task` on the cooperative pool [VERIFIED — gotcha]. The runner iterates entries, invoking a
 `@Sendable (VerifyProgress) -> Void` callback per file and checking a cancellation flag between files;
 on cancel it returns a partial report (or a cancelled state). Results publish back to the `@MainActor`
 view model via `MainActor.run`/`@Published` assignment [UNVERIFIED — standard pattern]. Per-file

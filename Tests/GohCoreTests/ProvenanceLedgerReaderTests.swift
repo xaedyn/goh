@@ -39,7 +39,7 @@ struct ProvenanceLedgerReaderTests {
 
     // AC4: corrupt plist bytes → .unreadable(.corrupt)
     @Test("corrupt plist bytes returns .unreadable(.corrupt)")
-    func corruptReturnscorrupt() throws {
+    func corruptReturnsCorrupt() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("provenance.plist")

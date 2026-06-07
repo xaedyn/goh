@@ -75,7 +75,7 @@ struct VerifyAllRunnerTests {
             VerifyAllReport.self, from: Data(cliResult.standardOutput.utf8))
 
         // Runner result (synchronous call — acceptable in test body; not on cooperative pool)
-        // NOTE: production callers dispatch this on Thread.detachNewThread.
+        // NOTE: production callers dispatch this via DispatchQueue.global().async.
         let runnerReport = try VerifyAllRunner.verifyAll(
             provenanceStorePath: storeURL.path,
             generatedAt: fixedDate,

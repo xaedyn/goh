@@ -61,8 +61,8 @@ CONSTRAINTS
   Running it on the MainActor freezes the popover. Must run off-main.
 - **Known repo gotcha [[swift-sync-async-bridge-cooperative-pool-deadlock]]:** sync blocking work driven
   from the cooperative pool starved CI (#81 hung 6h). The re-hash is sync blocking I/O — run it on a
-  dedicated thread (`Task.detached`) or chunk with explicit `Task.yield()`/cancellation checks; do NOT
-  block a cooperative-pool worker.
+  real OS thread via `DispatchQueue.global().async`; do NOT use `Task.detached` (stays on the
+  cooperative pool) and do NOT block a cooperative-pool worker.
 - MainActor-default isolation; `nonisolated`-Sendable convention; Swift Testing; `-warnings-as-errors`;
   no `#available`.
 - ROADMAP "**not a full GUI clone**": read-only status, not management. A full per-file list for huge

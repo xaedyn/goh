@@ -9,7 +9,7 @@ struct GohTrustModelsTests {
 
     // AC1: GohTrustSummary counts are correct
     @Test("GohTrustSummary stores tracked/verified/downloadOnly counts")
-    func summaryStorescounts() {
+    func summaryStoresCounts() {
         let s = GohTrustSummary(tracked: 10, verified: 7, downloadOnly: 3)
         #expect(s.tracked == 10)
         #expect(s.verified == 7)

@@ -10,7 +10,7 @@ Research determined most mechanics (shared, no real fork): the tray **reads the 
 (unsandboxed, like the CLI — no new XPC/wire change); a pure **`VerifyAllRunner`** is extracted into
 GohCore (returning `VerifyAllReport`, taking a progress + cancel hook) and the existing CLI `run()`
 reuses it (so AC5 parity is automatic and AC3 progress/cancel is possible); the re-hash runs on a
-**dedicated thread** (NOT the cooperative pool — [[swift-sync-async-bridge-cooperative-pool-deadlock]]);
+**real OS thread via `DispatchQueue.global().async`** (NOT `Task.detached`, which stays on the cooperative pool — [[swift-sync-async-bridge-cooperative-pool-deadlock]]);
 the per-file list + "Verify now" + progress + cancel live in a **dedicated Trust window** (reusing the
 shipped Add-Download `Window` + `@StateObject` root pattern), since the transient popover can't host them.
 
@@ -30,8 +30,8 @@ On popover open, a small trust load (off-main `allEntries()` read, published to 
 renders a one-line summary in the popover (e.g. "47 files tracked · last recorded: 45 verified · 2
 download-only"), explicitly "last recorded," not live. A "Verify…" button opens the Trust window
 (`Window(id:"trust")` + `@StateObject` root) showing the per-file list (path, sanitized URL, sha256,
-dates, at-rest status) and a "Verify now" button that runs the extracted `VerifyAllRunner` on a detached
-thread, streaming progress (n/total) into the window and supporting cancel; on completion it shows the
+dates, at-rest status) and a "Verify now" button that runs the extracted `VerifyAllRunner` via
+`DispatchQueue.global().async` (a real OS thread, off the cooperative pool), streaming progress (n/total) into the window and supporting cancel; on completion it shows the
 fresh OK/FAILED/MISSING summary (distinct from the at-rest labels). Empty ledger → "No downloads recorded
 yet" in both places.
 
@@ -121,4 +121,4 @@ Tools that bury status one click deep [UNVERIFIED].
 recorded" right in the popover (a cheap ledger read) is exactly that, while the heavy re-hash stays
 correctly windowed and backgrounded. B is strictly a subset of A — if the summary ever feels like noise
 we can drop it, but starting without it gives up the tray's main advantage. Both share the load-bearing
-parts (direct read, extracted runner, dedicated window, detached-thread verify).
+parts (direct read, extracted runner, dedicated window, `DispatchQueue.global().async` verify).
