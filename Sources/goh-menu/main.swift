@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ServiceManagement
 import SwiftUI
 import XPC
 
@@ -165,40 +166,68 @@ nonisolated private final class LiveProgressSubscription: @unchecked Sendable {
 
 @MainActor
 final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
+    let model: GohMenuViewModel = GohMenuViewModel(
+        client: LiveGohMenuClient(),
+        pasteboardText: { NSPasteboard.general.string(forType: .string) },
+        revealInFinder: { destination in
+            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
+        },
+        openTerminalDashboard: { openTopInTerminal() },
+        openDoctor: { openDoctorInTerminal() },
+        copyText: { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        })
+    let preferences: UserDefaultsMenuPreferences = UserDefaultsMenuPreferences()
+    let notificationService: LiveNotificationService = LiveNotificationService()
+    let loginItem: any GohMenuLoginItem = GohMenuAppDelegate.makeLoginItem()
+    private lazy var coordinator = GohNotificationCoordinator(preferences: preferences)
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
+
+        // Wire the notification feed BEFORE start() so the first (seed) delivery is captured.
+        model.onProgressSnapshots = { [weak self] snapshots in
+            guard let self else { return }
+            let toPost = self.coordinator.evaluate(snapshots)   // sync, ordered, MainActor
+            for content in toPost {
+                let service = self.notificationService
+                Task { await service.post(content) }
+            }
+        }
+
+        // Request notification authorization once (best-effort; never blocks start()).
+        Task { await notificationService.requestAuthorization() }
+
+        model.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.onProgressSnapshots = nil
+        model.stop()
+    }
+
+    private static func makeLoginItem() -> any GohMenuLoginItem {
+        // SMAppService requires a real .app bundle. Return UnsupportedLoginItem
+        // when running as a bare binary (no bundle identifier).
+        guard Bundle.main.bundleIdentifier != nil else {
+            return UnsupportedLoginItem()
+        }
+        return SMAppServiceLoginItem()
     }
 }
 
 @main
 struct GohMenuApp: App {
     @NSApplicationDelegateAdaptor(GohMenuAppDelegate.self) private var appDelegate
-    @StateObject private var model = GohMenuViewModel(
-        client: LiveGohMenuClient(),
-        pasteboardText: {
-            NSPasteboard.general.string(forType: .string)
-        },
-        revealInFinder: { destination in
-            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
-        },
-        openTerminalDashboard: {
-            openTopInTerminal()
-        },
-        openDoctor: {
-            openDoctorInTerminal()
-        },
-        copyText: { text in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        })
 
     var body: some Scene {
         MenuBarExtra {
             GohMenuView(
-                model: model,
-                quitApplication: {
-                    NSApplication.shared.terminate(nil)
-                })
+                model: appDelegate.model,
+                preferences: appDelegate.preferences,
+                loginItem: appDelegate.loginItem,
+                quitApplication: { NSApplication.shared.terminate(nil) })
         } label: {
             Label("goh", systemImage: "arrow.down.circle")
         }

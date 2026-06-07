@@ -2499,6 +2499,41 @@ debug dogfood exercises Swift's executor checks, and a top-level closure can
 inherit an executor expectation that traps when dispatch invokes it on a custom
 queue.
 
+### Menu-bar distribution (2026-06-06, Slice: tray-app-distribution)
+
+The tray app is distributed as part of the All-in-One PKG (Approach B).
+THE BET: versioning the engine and tray app together is acceptable for the
+tester phase (they move in lockstep; independent versioning deferred).
+
+**Bundle assembly:** `Scripts/package-app.sh <version>` hand-assembles
+`goh.app/Contents/{MacOS/goh-menu, Info.plist}` from the `swift build --release`
+output and the checked-in `Resources/app-Info.plist` template. `LSMinimumSystemVersion`
+in the template is `26.5`, matching the PKG `requirements.plist` `os` pin — single-
+sourced via the template file (spec §2 OS-floor note: if the PKG pin changes, the
+template changes with it).
+
+**PKG inclusion:** `Scripts/package-pkg.sh` sources
+`Scripts/_stage-app-payload.sh` to add `goh.app` to `/Applications` in the PKG
+payload. `private-release-candidate.sh` sources the same helper to ensure the two
+scripts are never out of sync (advisory E fix from spec §7.5).
+
+**Signing order (inside-out, post-credential):** `goh`, `gohd`, and
+`goh-menu` (inner Mach-O) are signed individually with `--timestamp -o runtime`
+(hardened runtime) first; `goh.app` is signed last. The PKG installer is signed
+with the Developer ID Installer certificate. The whole PKG is submitted to
+`notarytool` and stapled; the `.app` inside is covered by the PKG ticket.
+
+**Subscription lifecycle:** The progress subscription moves from popover-scoped
+(`.task`/`.onDisappear` in `GohMenuView`) to composition-root-owned
+(`GohMenuAppDelegate`). `start()` at `applicationDidFinishLaunching`;
+`stop()` at `applicationWillTerminate`. This keeps the notification coordinator
+running regardless of whether the popover is open.
+
+**Trust model:** No change. `XPCPeerRequirement + XPCRequirement.isFromSameTeam`
+is unchanged. The `#if RELEASE #error(...)` tripwire in `GohXPCService.peerValidationMode`
+is present and unmodified. The `.app`, `goh`, and `gohd` must be signed with the
+same Developer ID team so `.isFromSameTeam()` passes.
+
 ## Dependencies
 
 - **`apple/swift-http-types`** (pre-approved) — HTTP message modeling.

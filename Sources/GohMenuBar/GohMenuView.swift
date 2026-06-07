@@ -2,13 +2,20 @@ import SwiftUI
 
 public struct GohMenuView: View {
     @ObservedObject private var model: GohMenuViewModel
+    private let preferences: any GohMenuPreferences
+    private let loginItem: any GohMenuLoginItem
     private let quitApplication: () -> Void
+    @State private var showPreferences = false
 
     public init(
         model: GohMenuViewModel,
+        preferences: any GohMenuPreferences = UserDefaultsMenuPreferences(),
+        loginItem: any GohMenuLoginItem = UnsupportedLoginItem(),
         quitApplication: @escaping () -> Void
     ) {
         self.model = model
+        self.preferences = preferences
+        self.loginItem = loginItem
         self.quitApplication = quitApplication
     }
 
@@ -25,11 +32,7 @@ public struct GohMenuView: View {
         .frame(width: 380)
         .padding(12)
         .task {
-            model.start()
             await model.refreshClipboard()
-        }
-        .onDisappear {
-            model.stop()
         }
     }
 
@@ -136,6 +139,17 @@ public struct GohMenuView: View {
                 Label("Terminal", systemImage: "terminal")
             }
             .help("Open goh top in Terminal")
+
+            Button {
+                showPreferences = true
+            } label: {
+                Label("Preferences…", systemImage: "gearshape")
+            }
+            .accessibilityLabel("Open goh preferences")
+            .help("Open goh preferences")
+            .sheet(isPresented: $showPreferences) {
+                GohMenuPreferencesView(preferences: preferences, loginItem: loginItem)
+            }
 
             Spacer()
 

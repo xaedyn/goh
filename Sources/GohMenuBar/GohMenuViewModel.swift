@@ -26,6 +26,11 @@ public final class GohMenuViewModel: ObservableObject {
     private var snapshots: [ProgressSnapshot] = []
     private var clipboardURL: URL?
     private var progressTask: Task<Void, Never>?
+    /// Called synchronously at the end of every `applyProgressSnapshots` call (seed first, then
+    /// updates). Set this BEFORE calling `start()` so the seed delivery is captured. Plain closure
+    /// — no @Published / Combine — to prevent a replay of the initial `[]` that would defeat seed
+    /// suppression in GohNotificationCoordinator.
+    public var onProgressSnapshots: (([ProgressSnapshot]) -> Void)?
 
     public init(
         client: GohMenuClient,
@@ -166,6 +171,7 @@ public final class GohMenuViewModel: ObservableObject {
     private func applyProgressSnapshots(_ snapshots: [ProgressSnapshot]) {
         self.snapshots = snapshots
         render(health: .connected)
+        onProgressSnapshots?(snapshots)   // seed is the first call; hook must be set before start()
     }
 
     private func applyProgressError(_ error: any Error) {
