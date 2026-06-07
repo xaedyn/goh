@@ -385,15 +385,3 @@ extension GohMenuControl {
     }
 }
 
-private extension GohMenuJobRow {
-    var orderedControls: [GohMenuControl] {
-        [
-            .pause,
-            .resume,
-            .revealInFinder,
-            .copyURL,
-            .copyDestination,
-            .remove,
-        ].filter { controls.contains($0) }
-    }
-}

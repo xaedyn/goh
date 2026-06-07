@@ -112,6 +112,20 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
     }
 }
 
+extension GohMenuJobRow {
+    /// Controls ordered for display: pause/resume first, then utility controls, remove last.
+    var orderedControls: [GohMenuControl] {
+        [
+            .pause,
+            .resume,
+            .revealInFinder,
+            .copyURL,
+            .copyDestination,
+            .remove,
+        ].filter { controls.contains($0) }
+    }
+}
+
 nonisolated public struct GohMenuState: Sendable, Equatable {
     public var health: GohMenuHealth
     public var healthTitle: String
