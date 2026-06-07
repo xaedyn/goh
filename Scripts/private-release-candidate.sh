@@ -159,15 +159,12 @@ source "$script_dir/_stage-app-payload.sh"
 # The goh-menu binary inside the .app must be signed before the bundle seal.
 for binary in "$payload_root/usr/local/bin/goh" "$payload_root/usr/local/bin/gohd" \
               "$payload_root/Applications/goh.app/Contents/MacOS/goh-menu"; do
-  codesign --force --sign "$GOH_APP_SIGN_IDENTITY" \
-    --options runtime --timestamp --keychain "$keychain" "$binary"
+  codesign --force --sign "$GOH_APP_SIGN_IDENTITY" --options runtime --timestamp --keychain "$keychain" "$binary"
   codesign --verify --strict --verbose=2 "$binary"
 done
 
 # Sign the .app bundle last (after inner binary is signed).
-codesign --force --sign "$GOH_APP_SIGN_IDENTITY" \
-  --options runtime --timestamp --keychain "$keychain" \
-  "$payload_root/Applications/goh.app"
+codesign --force --sign "$GOH_APP_SIGN_IDENTITY" --options runtime --timestamp --keychain "$keychain" "$payload_root/Applications/goh.app"
 codesign --verify --strict --verbose=2 "$payload_root/Applications/goh.app"
 
 # POST-CREDENTIAL NOTE: after the PKG is notarized and stapled, the .app
