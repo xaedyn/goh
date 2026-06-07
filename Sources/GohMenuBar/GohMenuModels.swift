@@ -14,6 +14,21 @@ nonisolated public enum GohMenuError: Error, Sendable, Equatable {
     case protocolMismatch(String)
     case daemon(GohError)
     case malformedReply(String)
+
+    nonisolated public var userFacingMessage: String {
+        switch self {
+        case .daemonUnavailable:
+            return "goh's background service isn't reachable — run goh doctor."
+        case .peerValidation:
+            return "The background service failed peer validation — try reinstalling goh."
+        case .protocolMismatch:
+            return "The tray app and background service are on different versions — restart goh."
+        case .daemon(let error):
+            return "The background service reported an error: \(error.message ?? error.code.rawValue)."
+        case .malformedReply:
+            return "The background service sent an unexpected response — run goh doctor."
+        }
+    }
 }
 
 nonisolated public enum GohMenuControl: Sendable, Hashable {
