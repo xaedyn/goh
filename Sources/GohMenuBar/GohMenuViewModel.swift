@@ -14,6 +14,7 @@ public protocol GohMenuClient: AnyObject {
 @MainActor
 public final class GohMenuViewModel: ObservableObject {
     @Published public private(set) var state: GohMenuState
+    @Published public private(set) var trustOverview: GohTrustOverview = .empty
 
     private let client: GohMenuClient
     private let presenter: GohMenuPresenter
@@ -26,6 +27,7 @@ public final class GohMenuViewModel: ObservableObject {
     private var snapshots: [ProgressSnapshot] = []
     private var clipboardURL: URL?
     private var progressTask: Task<Void, Never>?
+    private let trustReader: (any ProvenanceReading)?
     /// Called synchronously at the end of every `applyProgressSnapshots` call (seed first, then
     /// updates). Set this BEFORE calling `start()` so the seed delivery is captured. Plain closure
     /// — no @Published / Combine — to prevent a replay of the initial `[]` that would defeat seed
@@ -40,7 +42,8 @@ public final class GohMenuViewModel: ObservableObject {
         revealInFinder: @escaping (String) -> Void,
         openTerminalDashboard: @escaping () -> Void,
         openDoctor: @escaping () -> Void = {},
-        copyText: @escaping (String) -> Void
+        copyText: @escaping (String) -> Void,
+        trustReader: (any ProvenanceReading)? = nil
     ) {
         self.client = client
         self.presenter = presenter
@@ -50,6 +53,7 @@ public final class GohMenuViewModel: ObservableObject {
         self.openTerminalDashboard = openTerminalDashboard
         self.openDoctorCommand = openDoctor
         self.copyText = copyText
+        self.trustReader = trustReader
         self.state = presenter.state(
             health: .connecting,
             snapshots: [],
@@ -80,6 +84,13 @@ public final class GohMenuViewModel: ObservableObject {
                 self?.applyProgressError(error)
             }
         }
+        Task { await loadTrustOverview() }
+    }
+
+    public func loadTrustOverview() async {
+        guard let reader = trustReader else { return }
+        let outcome = await Task.detached(priority: .utility) { reader.read() }.value
+        trustOverview = GohTrustPresenter().present(outcome).0
     }
 
     @discardableResult

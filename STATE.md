@@ -5,7 +5,40 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-06 (tray-app session, cont.) — **Richer-add "Add Download window" BUILT on `feat/tray-richer-add` (stacked on #97); final review APPROVED FOR MERGE; not yet PR'd**
+### 2026-06-07 (tray-app session, cont.) — **Trust layer in the tray BUILT on `feat/tray-trust-layer`; final review APPROVED FOR MERGE; PR open**
+
+Third tray slice. Surfaces goh's differentiator read-only in the tray: a popover **provenance
+summary** (files tracked + last-recorded status) + a **Trust window** with per-file detail and an
+on-demand **background verify** (re-hash → OK/FAILED/MISSING, with progress + cancel). Reads the
+ledger **directly** (unsandboxed, like the CLI — no daemon/XPC, works daemon-down); **read-only**
+(daemon stays sole writer). **780 tests pass; `swift build -warnings-as-errors` clean. Final
+stack-aware review APPROVED.** Built via `enterprise-pipeline` → `subagent-driven-development`.
+
+- **The extraction:** a shared `VerifyAllRunner` (GohCore) now does the re-hash; `GohVerifyAllCommand.run`
+  delegates to it — so the tray and `goh verify --all` verify **identically** (AC5 automatic) and the
+  CLI output is **byte-identical** (verified: the existing verify-all/JSON/attest tests + the
+  `verify-all-report-v1.json` golden fixture are UNCHANGED — `git diff` empty). A shared
+  `ProvenanceLedgerReader.read → ProvenanceReadOutcome{absent|entries|unreadable(reason)}` unifies the
+  corrupt/empty classification so a corrupt ledger shows "unavailable", never silently empty; the
+  structured `LedgerUnreadableReason` preserves the three frozen `--json` error codes.
+- **Concurrency (load-bearing):** the blocking re-hash runs on a **real OS thread**
+  (`DispatchQueue.global().async`) — NOT `Task.detached` (which stays on the cooperative pool and would
+  reproduce the #81 6-hour starvation). Cancel = a `Mutex<Bool>` boxed in `CancellationBox` (a
+  `final class`, since `Mutex`/`Atomic` are `~Copyable`); a `WeakRef` box for the `@Sendable` `[weak
+  self]` capture; progress hops to `@MainActor`. Closing the Trust window cancels an in-flight verify.
+- **Review catches (adversarial):** spec round 1 (4 blocks: `Task.detached` doesn't escape the pool;
+  unified reader; pinned cancel/progress contract), spec round 2 (2 blocks: structured error-code
+  preservation; non-optional path) — escalated, user accepted. Plan round 1 (1 block: test `@Sendable`
+  closures captured mutable `var`s → boxed via `RunnerTestBox`), plan round 2 APPROVED.
+- **New files:** GohCore `Provenance/ProvenanceLedgerReader.swift`, `CLI/VerifyAllRunner.swift`
+  (+ refactored `CLI/GohVerifyAllCommand.swift`); GohMenuBar `GohTrustModels.swift`,
+  `GohTrustPresenter.swift`, `TrustWindowViewModel.swift`, `TrustWindowView.swift` (+ `GohMenuView`/
+  `GohMenuViewModel` popover section + `goh-menu/main.swift` `LiveProvenanceReader`/`TrustWindowRoot`/
+  `Window(id:"trust")`); tests in `Tests/GohCoreTests/` + `Tests/GohMenuBarTests/`. Branch off `main`
+  (after #97+#98 merged). Live window behavior (progress/cancel UX) only confirmable in a running app;
+  value layer fully unit-tested.
+
+### 2026-06-06 (tray-app session, cont.) — **Richer-add "Add Download window" MERGED (#98); final review APPROVED**
 
 Second tray slice this session. Adds an **Add Download window** (opened from the popover):
 editable URL (prefilled from clipboard), a **folder picker**, and an **Automatic/connections
