@@ -300,6 +300,18 @@ struct TrustWindowRoot: View {
     }
 }
 
+/// Passes the shared GohMenuViewModel (owned by the app delegate) into DownloadsWindowView.
+/// Uses @ObservedObject — not @StateObject — because the model is owned externally.
+struct DownloadsWindowRoot: View {
+    @ObservedObject private var model: GohMenuViewModel
+
+    init(model: GohMenuViewModel) { self.model = model }
+
+    var body: some View {
+        DownloadsWindowView(model: model)
+    }
+}
+
 @main
 struct GohMenuApp: App {
     @NSApplicationDelegateAdaptor(GohMenuAppDelegate.self) private var appDelegate
@@ -331,6 +343,13 @@ struct GohMenuApp: App {
                     provenanceStorePath: appDelegate.provenancePath))
         }
         .windowResizability(.contentSize)
+        .defaultPosition(.center)
+
+        Window("Downloads", id: "downloads") {
+            DownloadsWindowRoot(model: appDelegate.model)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 600, height: 400)
         .defaultPosition(.center)
 
         Window("Preferences", id: "preferences") {
