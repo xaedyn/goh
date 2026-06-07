@@ -2534,6 +2534,31 @@ is unchanged. The `#if RELEASE #error(...)` tripwire in `GohXPCService.peerValid
 is present and unmodified. The `.app`, `goh`, and `gohd` must be signed with the
 same Developer ID team so `.isFromSameTeam()` passes.
 
+### Richer Add (2026-06-06, Slice: tray-richer-add)
+
+The tray app's "Add download…" button opens a persistent `Window` scene rather than a
+popover sheet. This is load-bearing: `NSOpenPanel` acquiring key focus dismisses
+`MenuBarExtra(.window)` popovers (FB11984872). The popover's role is launch-only.
+
+THE BET: a dedicated add window is acceptable UX for the choose-where/how case (the
+fast one-tap clipboard add stays in the popover for everyone else).
+
+**Window ownership:** `AddDownloadWindowRoot` (in `goh-menu`) owns the view model via
+`@StateObject` with an `@autoclosure @escaping` init so the vm is built exactly once and
+survives scene re-evaluation. `AddDownloadView` declares `@ObservedObject` (not
+`@StateObject`) — ownership is in the root, observation in the view.
+
+**Live picker placement:** `NSOpenPanelFolderPicker` lives in `goh-menu` only, keeping
+`GohMenuBar` AppKit-panel-free and unit-testable. The injectable `FolderPicker` protocol
+is the seam.
+
+**Factory pattern:** `GohMenuViewModel.makeAddDownloadViewModel(folderPicker:)` creates
+the vm without exposing the private `client` field, and pre-fills the URL field with the
+currently-detected clipboard URL.
+
+Approach B ("set-once defaults") is a future additive layer; this slice delivers
+per-download control via Approach A.
+
 ## Dependencies
 
 - **`apple/swift-http-types`** (pre-approved) — HTTP message modeling.
