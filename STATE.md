@@ -29,7 +29,14 @@ Added a local signing helper so the user can hand testers a clean double-click i
   — un-notarized is now high-friction; notarized+stapled clears silently (which is why we notarize).
 - **The user RUNS it** (their certs + Apple creds + network live on their Mac). One-time setup is in the
   script header: create the two Developer ID certs, then `xcrun notarytool store-credentials goh-notary …`.
-  Branch `chore/sign-tester-build`.
+- **PROVEN 2026-06-07:** the user produced a real signed+notarized+stapled tester PKG
+  (`goh-0.1.0-test-macos-arm64.pkg`) with it. Apple's notary queue took >30 min that day; the original
+  30-min wait timed out and left an un-stapled pkg + cryptic "status unknown." **Hardened in response:**
+  `GOH_NOTARY_TIMEOUT` (default 60m); a wait-timeout is now non-fatal (exit 75) and prints the exact
+  `notarytool wait <id>` + `stapler staple` recovery (app-specific password MASKED in the hint); `Invalid`
+  → exit 65 with the log. Learning: Apple notarization can exceed 30 min with a green status page — wait it
+  out; the submission completes server-side and only needs stapling. Gotcha: the dogfood daemon (earlier
+  sessions) shares the Mach service name — run `Scripts/dogfood-reset.sh` before installing the signed pkg.
 
 ### 2026-06-07 (tray-app session, cont.) — **Trust layer in the tray MERGED (#99); final review APPROVED**
 

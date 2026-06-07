@@ -33,7 +33,11 @@ set -euo pipefail
 # Alternative notary auth (instead of the profile): set APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD
 #   + APPLE_TEAM_ID and they will be used directly.
 #
-# Exit codes: 0 ok · 64 usage/config · 65 notarization failed · 1 signing/build error.
+# Exit codes: 0 ok · 64 usage/config · 65 notarization rejected (Invalid)/build error ·
+#   75 uploaded but Apple still processing past the wait (NOT a failure — the script prints
+#      the exact `notarytool wait …` + `stapler staple …` recovery to finish once Apple's done) ·
+#   1 signing error.
+# Tunable: GOH_NOTARY_TIMEOUT (default 60m) — how long to wait on Apple's notary queue.
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   echo "usage: Scripts/sign-tester-build.sh <version> [output-directory]" >&2
@@ -105,16 +109,24 @@ echo "  app:       $app_identity"
 echo "  installer: $installer_identity"
 
 # ── Resolve notarization credentials (keychain profile preferred) ──────────────────────────
+# Apple's notary queue is sometimes slow (20-45+ min even with a green status page), so the
+# wait is generous and a timeout is treated as "still pending," not a failure (see below).
+notary_timeout="${GOH_NOTARY_TIMEOUT:-60m}"
 notary_auth_args=()
+# notary_auth_display is a SECRET-SAFE rendering of the auth args for printing in the
+# recovery hint — it never includes the app-specific password.
+notary_auth_display=""
 if [[ -n "${APPLE_ID:-}" || -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
   for v in APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
     if [[ -z "${!v:-}" ]]; then echo "missing required env var: $v" >&2; exit 64; fi
   done
   notary_auth_args=(--apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID")
+  notary_auth_display="--apple-id $APPLE_ID --team-id $APPLE_TEAM_ID --password <your-app-specific-password>"
   echo "  notary:    Apple ID $APPLE_ID (team $APPLE_TEAM_ID)"
 else
   notary_profile="${GOH_NOTARY_PROFILE:-goh-notary}"
   notary_auth_args=(--keychain-profile "$notary_profile")
+  notary_auth_display="--keychain-profile $notary_profile"
   echo "  notary:    keychain profile '$notary_profile'"
   echo "             (set up once with: xcrun notarytool store-credentials $notary_profile …)"
 fi
@@ -206,23 +218,50 @@ pkgutil --check-signature "$pkg"
 # ── Notarize + staple ─────────────────────────────────────────────────────────────────────
 notary_submit_status=0
 xcrun notarytool submit "$pkg" \
-  --wait --timeout 30m --output-format json \
+  --wait --timeout "$notary_timeout" --output-format json \
   "${notary_auth_args[@]}" \
   > "$notary_submit_json" || notary_submit_status=$?
 
 submission_id="$(plutil -extract id raw -o - "$notary_submit_json" 2>/dev/null || true)"
 submission_status="$(plutil -extract status raw -o - "$notary_submit_json" 2>/dev/null || true)"
 
+# Download the log when there's a terminal status to explain (Accepted logs are empty-ish;
+# Invalid logs carry the reason). Best-effort.
 if [[ -n "$submission_id" ]]; then
-  xcrun notarytool log "$submission_id" "$notary_log_json" "${notary_auth_args[@]}" || \
-    echo "warning: could not download notarization log for $submission_id" >&2
+  xcrun notarytool log "$submission_id" "$notary_log_json" "${notary_auth_args[@]}" >/dev/null 2>&1 || true
 fi
 
-if [[ "$notary_submit_status" -ne 0 || "$submission_status" != "Accepted" ]]; then
-  echo "error: notarization status was ${submission_status:-unknown}; see $notary_log_json" >&2
+if [[ "$submission_status" == "Invalid" ]]; then
+  echo "error: notarization was REJECTED (Invalid). See the reason in:" >&2
+  echo "  $notary_log_json" >&2
+  echo "  (or: xcrun notarytool log $submission_id $notary_auth_display)" >&2
+  exit 65
+elif [[ "$submission_status" != "Accepted" ]]; then
+  # Not rejected, just not finished in time — Apple is still processing. The .pkg is built
+  # and signed; it only needs the ticket stapled once Apple finishes. This is NOT a failure.
+  if [[ -n "$submission_id" ]]; then
+    cat >&2 <<EOF
+
+────────────────────────────────────────────────────────────────────────────
+Apple is still processing notarization (didn't finish within $notary_timeout).
+This is normal on a slow notary queue — nothing is wrong. The .pkg is built and
+signed; it just needs the ticket stapled once Apple is done. Finish it with:
+
+  xcrun notarytool wait $submission_id $notary_auth_display
+  xcrun stapler staple "$pkg"
+  xcrun stapler validate "$pkg"
+  pkgutil --check-signature "$pkg"
+
+(submission id: $submission_id)
+────────────────────────────────────────────────────────────────────────────
+EOF
+    exit 75
+  fi
+  echo "error: notarization submission failed (no id returned); see $notary_submit_json" >&2
   exit 65
 fi
 
+# status == Accepted → staple the ticket.
 xcrun stapler staple "$pkg"
 
 # ── Verify ────────────────────────────────────────────────────────────────────────────────
