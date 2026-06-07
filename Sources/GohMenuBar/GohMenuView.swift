@@ -27,6 +27,7 @@ public struct GohMenuView: View {
             recoveryAction
             primaryAction
             addDownloadButton
+            trustSection
             Divider()
             jobs
             Divider()
@@ -115,6 +116,40 @@ public struct GohMenuView: View {
         .controlSize(.large)
         .accessibilityLabel("Open Add Download window")
         .help("Open the Add Download window to choose folder and connection count")
+    }
+
+    @ViewBuilder
+    private var trustSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch model.trustOverview {
+            case .empty:
+                Text("No downloads recorded yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .unavailable:
+                Text("Trust data unavailable")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            case .summary(let s):
+                // AC1: explicitly "last recorded" — not a live check
+                Text("\(s.tracked) tracked · last recorded: \(s.verified) verified · \(s.downloadOnly) download-only")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "trust")
+            } label: {
+                Label("Trust…", systemImage: "checkmark.shield")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityLabel("Open Trust window")
+            .help("Open the Trust window to see provenance details and verify file integrity")
+        }
     }
 
     private func performRecovery(_ action: GohMenuRecoveryAction) {
