@@ -29,6 +29,7 @@ public struct GohMenuView: View {
             trustSection
             Divider()
             jobs
+            downloadsButton
             Divider()
             footer
         }
@@ -160,41 +161,48 @@ public struct GohMenuView: View {
         }
     }
 
+    @ViewBuilder
     private var jobs: some View {
-        Group {
-            if model.state.rows.isEmpty {
-                Text("No downloads.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
-            } else {
-                // Show top-5 in the popover; "Downloads…" opens the full window.
-                let topRows = Array(model.state.rows.prefix(5))
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(topRows) { row in
-                        GohMenuJobRowView(row: row, model: model)
-                    }
-                    if model.state.rows.count > 5 {
-                        Text("+ \(model.state.rows.count - 5) more — see Downloads")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+        if model.state.rows.isEmpty {
+            Text("No downloads.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+        } else {
+            // Show top-5 in the popover; "Downloads…" opens the full window.
+            let topRows = Array(model.state.rows.prefix(5))
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(topRows) { row in
+                    GohMenuJobRowView(row: row, model: model)
                 }
-                .frame(minHeight: 32)  // at least one row height, never collapses to zero
+                if model.state.rows.count > 5 {
+                    Text("+ \(model.state.rows.count - 5) more — see Downloads")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
-            Button {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "downloads")
-            } label: {
-                Label("Downloads…", systemImage: "arrow.down.circle")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .accessibilityLabel("Open Downloads window")
-            .help("Open the Downloads window to see all downloads")
+            // Take the rows' natural height and never let the popover compress this
+            // region — a flexible/min-height frame here gets squeezed in the
+            // content-hugging popover and the centered rows overflow onto the
+            // buttons above and below. fixedSize pins it to its ideal height.
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var downloadsButton: some View {
+        Button {
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "downloads")
+        } label: {
+            Label("Downloads…", systemImage: "arrow.down.circle")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityLabel("Open Downloads window")
+        .help("Open the Downloads window to see all downloads")
     }
 
     private var footer: some View {
