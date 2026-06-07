@@ -30,8 +30,13 @@ nonisolated public final class UserDefaultsMenuPreferences: GohMenuPreferences, 
     }
 
     /// Test initializer: uses a named suite so tests are isolated and removable.
+    /// Fails loudly on an invalid suite name rather than silently collapsing to
+    /// `.standard` (which would pollute the real defaults during tests).
     public nonisolated convenience init(suiteName: String) {
-        self.init(defaults: UserDefaults(suiteName: suiteName) ?? .standard)
+        guard let suite = UserDefaults(suiteName: suiteName) else {
+            preconditionFailure("invalid UserDefaults suite name: \(suiteName)")
+        }
+        self.init(defaults: suite)
     }
 
     private nonisolated init(defaults: UserDefaults) {

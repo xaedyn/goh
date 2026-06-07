@@ -2499,7 +2499,7 @@ debug dogfood exercises Swift's executor checks, and a top-level closure can
 inherit an executor expectation that traps when dispatch invokes it on a custom
 queue.
 
-#### Menu-bar distribution (2026-06-06, Slice: tray-app-distribution)
+### Menu-bar distribution (2026-06-06, Slice: tray-app-distribution)
 
 The tray app is distributed as part of the All-in-One PKG (Approach B).
 THE BET: versioning the engine and tray app together is acceptable for the

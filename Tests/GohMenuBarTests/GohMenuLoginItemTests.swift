@@ -27,7 +27,7 @@ struct GohMenuLoginItemTests {
     // AC3: unsupported register throws
     @Test func unsupportedRegisterThrows() throws {
         let item = UnsupportedLoginItem()
-        #expect(throws: (any Error).self) {
+        #expect(throws: GohLoginItemError.unsupported) {
             try item.register()
         }
     }

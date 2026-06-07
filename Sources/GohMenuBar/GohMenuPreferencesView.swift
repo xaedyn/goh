@@ -91,7 +91,10 @@ public struct GohMenuPreferencesView: View {
             launchAtLoginEnabled = loginItemStatus == .enabled || loginItemStatus == .requiresApproval
         } catch GohLoginItemError.registrationFailed(let message) {
             loginItemError = "Could not update login item: \(message)"
-            preferences.launchAtLoginEnabled = loginItem.status() == .enabled
+            // Treat .requiresApproval as ON too (consistent with the success path),
+            // so a pending-approval state isn't misrendered as OFF.
+            let status = loginItem.status()
+            preferences.launchAtLoginEnabled = status == .enabled || status == .requiresApproval
             launchAtLoginEnabled = preferences.launchAtLoginEnabled
         } catch GohLoginItemError.unsupported {
             loginItemError = "Launch at login is not available when running as a bare binary."

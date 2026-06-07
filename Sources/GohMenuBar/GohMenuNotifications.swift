@@ -77,7 +77,9 @@ nonisolated public struct GohNotificationTransitionDetector: Sendable {
             }
 
             let fileName = URL(filePath: job.destination).lastPathComponent
-            let displayName = fileName.isEmpty ? job.destination : fileName
+            // Filename only — never fall back to the full local path (keeps the
+            // redaction discipline: no path leakage in user-facing notifications).
+            let displayName = fileName.isEmpty ? "your download" : fileName
 
             let content: GohNotificationContent
             switch currentState {
