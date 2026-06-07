@@ -6,7 +6,6 @@ public struct GohMenuView: View {
     private let preferences: any GohMenuPreferences
     private let loginItem: any GohMenuLoginItem
     private let quitApplication: () -> Void
-    @State private var showPreferences = false
     @Environment(\.openWindow) private var openWindow
 
     public init(
@@ -193,15 +192,13 @@ public struct GohMenuView: View {
             .help("Open goh top in Terminal")
 
             Button {
-                showPreferences = true
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "preferences")
             } label: {
                 Label("Preferences…", systemImage: "gearshape")
             }
             .accessibilityLabel("Open goh preferences")
             .help("Open goh preferences")
-            .sheet(isPresented: $showPreferences) {
-                GohMenuPreferencesView(preferences: preferences, loginItem: loginItem)
-            }
 
             Spacer()
 

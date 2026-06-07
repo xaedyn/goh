@@ -332,6 +332,14 @@ struct GohMenuApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+
+        Window("Preferences", id: "preferences") {
+            GohMenuPreferencesView(
+                preferences: appDelegate.preferences,
+                loginItem: appDelegate.loginItem)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 
