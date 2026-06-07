@@ -166,19 +166,34 @@ nonisolated private final class LiveProgressSubscription: @unchecked Sendable {
 
 @MainActor
 final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
-    let model: GohMenuViewModel = GohMenuViewModel(
-        client: LiveGohMenuClient(),
-        pasteboardText: { NSPasteboard.general.string(forType: .string) },
-        revealInFinder: { destination in
-            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
-        },
-        openTerminalDashboard: { openTopInTerminal() },
-        openDoctor: { openDoctorInTerminal() },
-        copyText: { text in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        })
+    /// Resolved once at startup; passed to both GohMenuViewModel and the Trust window.
+    /// Resolves to the canonical provenance.plist path without creating the directory
+    /// (`create: false` — the daemon owns creation). Falls back to "" on resolution
+    /// failure, causing LiveProvenanceReader to return .absent gracefully.
+    let provenancePath: String = {
+        (try? ProvenanceStoreLocation.defaultURL(create: false))?.path ?? ""
+    }()
+
+    let model: GohMenuViewModel
     let preferences: UserDefaultsMenuPreferences = UserDefaultsMenuPreferences()
+
+    override init() {
+        let path = (try? ProvenanceStoreLocation.defaultURL(create: false))?.path ?? ""
+        self.model = GohMenuViewModel(
+            client: LiveGohMenuClient(),
+            pasteboardText: { NSPasteboard.general.string(forType: .string) },
+            revealInFinder: { destination in
+                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
+            },
+            openTerminalDashboard: { openTopInTerminal() },
+            openDoctor: { openDoctorInTerminal() },
+            copyText: { text in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            },
+            trustReader: LiveProvenanceReader(path: path))
+        super.init()
+    }
     let notificationService: LiveNotificationService = LiveNotificationService()
     let loginItem: any GohMenuLoginItem = GohMenuAppDelegate.makeLoginItem()
     private lazy var coordinator = GohNotificationCoordinator(preferences: preferences)
@@ -259,6 +274,33 @@ struct AddDownloadWindowRoot: View {
     }
 }
 
+/// Live implementation of ProvenanceReading — reads provenance.plist directly.
+/// Unsandboxed; same access pattern as the CLI (goh which / goh verify --all).
+/// Read-only: never calls record/recordVerified.
+nonisolated private struct LiveProvenanceReader: ProvenanceReading, @unchecked Sendable {
+    private let path: String
+
+    init(path: String) { self.path = path }
+
+    nonisolated func read() -> ProvenanceReadOutcome {
+        ProvenanceLedgerReader.read(at: path)
+    }
+}
+
+/// Owns TrustWindowViewModel via @StateObject so it is built exactly once and its state
+/// persists across scene re-evaluation.
+struct TrustWindowRoot: View {
+    @StateObject private var viewModel: TrustWindowViewModel
+
+    init(makeViewModel: @autoclosure @escaping () -> TrustWindowViewModel) {
+        _viewModel = StateObject(wrappedValue: makeViewModel())
+    }
+
+    var body: some View {
+        TrustWindowView(viewModel: viewModel)
+    }
+}
+
 @main
 struct GohMenuApp: App {
     @NSApplicationDelegateAdaptor(GohMenuAppDelegate.self) private var appDelegate
@@ -279,6 +321,15 @@ struct GohMenuApp: App {
             AddDownloadWindowRoot(
                 makeViewModel: appDelegate.model.makeAddDownloadViewModel(
                     folderPicker: NSOpenPanelFolderPicker()))
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+
+        Window("Trust", id: "trust") {
+            TrustWindowRoot(
+                makeViewModel: TrustWindowViewModel(
+                    reader: LiveProvenanceReader(path: appDelegate.provenancePath),
+                    provenanceStorePath: appDelegate.provenancePath))
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
