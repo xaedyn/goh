@@ -5,7 +5,40 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-07 (tray-app session, cont.) — **Trust layer in the tray BUILT on `feat/tray-trust-layer`; final review APPROVED FOR MERGE; PR open**
+### 2026-06-07 (tester-signing session) — **Local tester-build signer added: `Scripts/sign-tester-build.sh` (signed+notarized all-in-one PKG from the login keychain)**
+
+User enrolled in the Apple Developer Program (Individual) but is **still in private testing — NO
+official/public deploy** (no brew tap, no launch post; see [[tester-phase-no-official-deploy]]).
+Added a local signing helper so the user can hand testers a clean double-click install.
+
+- **`Scripts/sign-tester-build.sh`** (new, reviewed ✅): the solo-dev counterpart to the CI-shaped
+  `private-release-candidate.sh`. Uses the **login-keychain** Developer ID identities directly (no
+  base64 cert import / no ephemeral keychain), reuses `_stage-app-payload.sh` + mirrors the CLI/daemon
+  payload staging, signs inside-out (`--options runtime --timestamp`), `pkgbuild`→`productbuild --sign`
+  (Developer ID **Installer**), `notarytool submit --wait` (keychain profile `goh-notary` by default, or
+  `APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID`), `stapler staple`, then `stapler validate` +
+  `pkgutil --check-signature` (hard) + `spctl` (advisory). Auto-detects the two identities (env override
+  `GOH_APP_SIGN_IDENTITY`/`GOH_INSTALLER_SIGN_IDENTITY`); refuses to guess on 0/>1.
+- **Approach verified against current (2026) Apple sources** before building: notarytool + 3 auth methods
+  still current; altool dead; Developer ID Application + Installer both required; inside-out + hardened
+  runtime + timestamp + staple is the flow; local signing uses login-keychain (no CI ceremony). Two
+  findings baked in: (1) **macOS 26 "Tahoe" `.pkg` `spctl` quirk** — a validly-stapled pkg can report
+  `spctl --type install: rejected` when the signing cert chain is incomplete (`unable to build chain to
+  self-signed root`); the script flags this advisory + points to the cert-chain fix, treating
+  stapler-validate + pkgutil-check-signature as authoritative. (2) Sequoia/Tahoe **removed right-click→Open**
+  — un-notarized is now high-friction; notarized+stapled clears silently (which is why we notarize).
+- **The user RUNS it** (their certs + Apple creds + network live on their Mac). One-time setup is in the
+  script header: create the two Developer ID certs, then `xcrun notarytool store-credentials goh-notary …`.
+- **PROVEN 2026-06-07:** the user produced a real signed+notarized+stapled tester PKG
+  (`goh-0.1.0-test-macos-arm64.pkg`) with it. Apple's notary queue took >30 min that day; the original
+  30-min wait timed out and left an un-stapled pkg + cryptic "status unknown." **Hardened in response:**
+  `GOH_NOTARY_TIMEOUT` (default 60m); a wait-timeout is now non-fatal (exit 75) and prints the exact
+  `notarytool wait <id>` + `stapler staple` recovery (app-specific password MASKED in the hint); `Invalid`
+  → exit 65 with the log. Learning: Apple notarization can exceed 30 min with a green status page — wait it
+  out; the submission completes server-side and only needs stapling. Gotcha: the dogfood daemon (earlier
+  sessions) shares the Mach service name — run `Scripts/dogfood-reset.sh` before installing the signed pkg.
+
+### 2026-06-07 (tray-app session, cont.) — **Trust layer in the tray MERGED (#99); final review APPROVED**
 
 Third tray slice. Surfaces goh's differentiator read-only in the tray: a popover **provenance
 summary** (files tracked + last-recorded status) + a **Trust window** with per-file detail and an
