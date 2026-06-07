@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 public struct GohMenuView: View {
@@ -6,6 +7,7 @@ public struct GohMenuView: View {
     private let loginItem: any GohMenuLoginItem
     private let quitApplication: () -> Void
     @State private var showPreferences = false
+    @Environment(\.openWindow) private var openWindow
 
     public init(
         model: GohMenuViewModel,
@@ -24,6 +26,7 @@ public struct GohMenuView: View {
             header
             recoveryAction
             primaryAction
+            addDownloadButton
             Divider()
             jobs
             Divider()
@@ -98,6 +101,20 @@ public struct GohMenuView: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
+    }
+
+    private var addDownloadButton: some View {
+        Button {
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "add-download")
+        } label: {
+            Label("Add download…", systemImage: "plus.circle")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .accessibilityLabel("Open Add Download window")
+        .help("Open the Add Download window to choose folder and connection count")
     }
 
     private func performRecovery(_ action: GohMenuRecoveryAction) {

@@ -217,6 +217,48 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// Live folder picker — AppKit, lives in goh-menu only so GohMenuBar stays testable.
+@MainActor
+final class NSOpenPanelFolderPicker: FolderPicker {
+    nonisolated init() {}
+
+    func chooseFolder() async -> String? {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose a destination folder"
+
+        // NSOpenPanel.begin is the async-safe pattern for accessory apps.
+        // Do NOT use runModal() — it blocks the cooperative pool.
+        let response = await withCheckedContinuation { (cont: CheckedContinuation<NSApplication.ModalResponse, Never>) in
+            panel.begin { response in
+                cont.resume(returning: response)
+            }
+        }
+
+        guard response == .OK, let url = panel.url else { return nil }
+        return url.path(percentEncoded: false)
+    }
+}
+
+// Owns AddDownloadViewModel via @StateObject so it is built exactly once and its state
+// persists across scene re-evaluation. The @autoclosure defers construction so
+// StateObject(wrappedValue:) invokes it a single time (not on every re-eval).
+struct AddDownloadWindowRoot: View {
+    @StateObject private var viewModel: AddDownloadViewModel
+
+    init(makeViewModel: @autoclosure @escaping () -> AddDownloadViewModel) {
+        _viewModel = StateObject(wrappedValue: makeViewModel())
+    }
+
+    var body: some View {
+        AddDownloadView(vm: viewModel)
+    }
+}
+
 @main
 struct GohMenuApp: App {
     @NSApplicationDelegateAdaptor(GohMenuAppDelegate.self) private var appDelegate
@@ -232,6 +274,14 @@ struct GohMenuApp: App {
             Label("goh", systemImage: "arrow.down.circle")
         }
         .menuBarExtraStyle(.window)
+
+        Window("Add Download", id: "add-download") {
+            AddDownloadWindowRoot(
+                makeViewModel: appDelegate.model.makeAddDownloadViewModel(
+                    folderPicker: NSOpenPanelFolderPicker()))
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 

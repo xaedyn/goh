@@ -161,6 +161,17 @@ public final class GohMenuViewModel: ObservableObject {
         openDoctorCommand()
     }
 
+    /// Factory that creates an AddDownloadViewModel without exposing the private client.
+    /// Pre-fills the URL field with the currently-detected clipboard URL if any.
+    public func makeAddDownloadViewModel(
+        folderPicker: any FolderPicker
+    ) -> AddDownloadViewModel {
+        AddDownloadViewModel(
+            initialURL: clipboardURL?.absoluteString,
+            client: client,
+            folderPicker: folderPicker)
+    }
+
     private func render(health: GohMenuHealth) {
         state = presenter.state(
             health: health,
