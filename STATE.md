@@ -5,6 +5,43 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-06 (tray-app session, cont.) — **Richer-add "Add Download window" BUILT on `feat/tray-richer-add` (stacked on #97); final review APPROVED FOR MERGE; not yet PR'd**
+
+Second tray slice this session. Adds an **Add Download window** (opened from the popover):
+editable URL (prefilled from clipboard), a **folder picker**, and an **Automatic/connections
+(1–16)** control — so downloads can be added with a chosen destination + connection count
+instead of defaults-only. The existing one-tap clipboard add is untouched. **Pure GUI change**
+(`AddRequest` already carries `destination`/`connectionCount`; reuses the existing `.add` XPC
+command — NO new IPC, no wire/protocolVersion change; `git diff -- Sources/GohCore` empty).
+**757 tests pass; `swift build -warnings-as-errors` clean. Final stack-aware review APPROVED.**
+
+- Built via `enterprise-pipeline` → `subagent-driven-development` (Approach A "Add Download
+  window"; THE BET = a dedicated window is fine for the choose-where/how case, fast one-tap stays).
+- **Folder picking from an `.accessory` app** must use a real window, not the transient popover
+  (which dismisses on focus loss): `NSOpenPanelFolderPicker` (live, in `goh-menu`) uses
+  `NSApp.activate(ignoringOtherApps:true)` + `NSOpenPanel.begin`; the form lives in a SwiftUI
+  `Window(id:"add-download")` scene whose `AddDownloadViewModel` is owned by a `@StateObject`
+  root (`AddDownloadWindowRoot`) so typed input survives scene re-eval.
+- **Review catches (adversarial):** spec round 1 (4 blocks) — reuse the shipped
+  `GohClipboardURLDetector` for validation + normalized submit URL; reusable
+  `GohMenuError.userFacingMessage` so errors are never raw; clamp `UInt8(min(16,max(1,n)))`.
+  Plan round 1 (2) — a tautological AC4 test (removed; the existing
+  `startsClipboardURLThroughDaemon` is the anchor) + the `@StateObject` ownership fix. Plan
+  round 2 (1) — missing `import AppKit` in `GohMenuView.swift` for `NSApp`.
+- **New files:** `Sources/GohMenuBar/{FolderPicker,AddDownloadViewModel,AddDownloadView}.swift`,
+  `Tests/GohMenuBarTests/AddDownloadViewModelTests.swift` (22 tests). Modified:
+  `GohMenuModels.swift` (+userFacingMessage), `GohMenuViewModel.swift` (+factory),
+  `GohMenuView.swift` (+button +import AppKit), `goh-menu/main.swift` (+live picker +Window
+  scene +@StateObject root), `DESIGN.md`. Commits: `5a607df` docs, `b03a6c7` Phase 1,
+  `581aca7`+`b231f49` Phase 2.
+
+**HANDOFF for this slice:** branch `feat/tray-richer-add` is **stacked on #97** (shares
+`main.swift`/`GohMenuView`/`GohMenuModels`). Not pushed/PR'd yet. Cleanest order: **merge #97
+first**, then this rebases onto main for its own PR (or open it now with base = the tray-app
+branch). Login-item/notification live testing still gated on the Apple Developer ID; the new
+folder-picker window's live behavior (NSOpenPanel focus, dismiss-on-submit) is only confirmable
+in a running app, not CI — the value layer (AC1–AC5) is unit-tested + green.
+
 ### 2026-06-06 (tray-app session) — **Tray-app distribution feature BUILT on `feat/tray-app-distribution` (11 tasks, all reviewed green, NOT yet merged/PR'd)**
 
 Turned the `goh-menu` companion into a distributable `.app`: app-bundle packaging,
