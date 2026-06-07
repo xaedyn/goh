@@ -7,7 +7,8 @@ nonisolated public struct GohMenuPresenter: Sendable {
     public func state(
         health: GohMenuHealth,
         snapshots: [ProgressSnapshot],
-        clipboardURL: URL?
+        clipboardURL: URL?,
+        ledgerOutcome: ProvenanceReadOutcome? = nil
     ) -> GohMenuState {
         let jobs = snapshots.map(\.job).sorted { $0.id < $1.id }
         let activeJobs = jobs.filter { $0.state == .active }
@@ -15,6 +16,14 @@ nonisolated public struct GohMenuPresenter: Sendable {
             $0 + $1.progress.bytesPerSecond
         }
         let healthCopy = copy(for: health)
+
+        let ledgerMap: [String: ProvenanceEntry]
+        if let outcome = ledgerOutcome, case .entries(let entries) = outcome {
+            ledgerMap = Dictionary(entries.map { ($0.destinationPath, $0) },
+                                   uniquingKeysWith: { _, last in last })
+        } else {
+            ledgerMap = [:]
+        }
 
         return GohMenuState(
             health: health,
@@ -26,7 +35,7 @@ nonisolated public struct GohMenuPresenter: Sendable {
                 clipboardURL: clipboardURL,
                 recoveryAction: healthCopy.recovery),
             recoveryAction: healthCopy.recovery,
-            rows: jobs.map(row(for:)))
+            rows: jobs.map { row(for: $0, ledgerMap: ledgerMap) })
     }
 
     private func primaryAction(
@@ -41,8 +50,42 @@ nonisolated public struct GohMenuPresenter: Sendable {
         }
     }
 
-    private func row(for job: JobSummary) -> GohMenuJobRow {
+    private func row(for job: JobSummary, ledgerMap: [String: ProvenanceEntry]) -> GohMenuJobRow {
         let destinationURL = URL(filePath: job.destination)
+
+        let progressFraction: Double? = job.progress.bytesTotal.map { total in
+            total > 0 ? min(1.0, Double(job.progress.bytesCompleted) / Double(total)) : 1.0
+        }
+
+        let etaText: String?
+        if job.state == .active, let total = job.progress.bytesTotal, job.progress.bytesPerSecond > 0 {
+            let remaining = total >= job.progress.bytesCompleted ? total - job.progress.bytesCompleted : 0
+            let eta = remaining / job.progress.bytesPerSecond
+            etaText = etaString(seconds: eta)
+        } else {
+            etaText = nil
+        }
+
+        let referenceDate: Date = job.completedAt ?? job.lastProgressAt ?? Date()
+        let elapsedSeconds = max(0, referenceDate.timeIntervalSince(job.createdAt))
+        let elapsedText: String? = elapsedSeconds > 0 ? elapsedString(seconds: elapsedSeconds) : nil
+
+        let connectionText: String? = job.actualConnectionCount > 0
+            ? "\(job.actualConnectionCount) connection\(job.actualConnectionCount == 1 ? "" : "s")"
+            : nil
+
+        let verifyStatus: String?
+        if job.state == .completed, let entry = ledgerMap[job.destination] {
+            if let verifiedAt = entry.verifiedAt {
+                let formatted = DateFormatter.localizedString(from: verifiedAt, dateStyle: .short, timeStyle: .none)
+                verifyStatus = "verified \(formatted)"
+            } else {
+                verifyStatus = "recorded"
+            }
+        } else {
+            verifyStatus = nil
+        }
+
         return GohMenuJobRow(
             id: job.id,
             title: destinationURL.lastPathComponent.isEmpty
@@ -54,7 +97,26 @@ nonisolated public struct GohMenuPresenter: Sendable {
             speedText: JobDisplayFormatter.formatBytes(job.progress.bytesPerSecond) + "/s",
             destination: job.destination,
             url: job.url,
-            controls: controls(for: job))
+            controls: controls(for: job),
+            progressFraction: progressFraction,
+            sizeText: JobDisplayFormatter.progressText(job.progress),
+            etaText: etaText,
+            elapsedText: elapsedText,
+            connectionText: connectionText,
+            verifyStatus: verifyStatus)
+    }
+
+    private func etaString(seconds: UInt64) -> String {
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+        return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+    }
+
+    private func elapsedString(seconds: Double) -> String {
+        let s = UInt64(seconds)
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s / 3600)h \((s % 3600) / 60)m"
     }
 
     private func stateDisplay(for state: JobState) -> String {

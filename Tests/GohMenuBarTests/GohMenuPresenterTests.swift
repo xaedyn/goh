@@ -105,18 +105,88 @@ struct GohMenuPresenterTests {
         #expect(state.recoveryAction == .openDoctor)
     }
 
+    // AC3: progressFraction is nil when bytesTotal is nil
+    @Test("progressFraction is nil when bytesTotal is nil")
+    func progressFractionNilWhenTotalUnknown() {
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [snapshot(id: 1, state: .active, completed: 500, total: nil, speed: 100)],
+            clipboardURL: nil)
+        #expect(state.rows[0].progressFraction == nil)
+    }
+
+    @Test("etaText is nil when bytesTotal is nil")
+    func etaTextNilWhenTotalUnknown() {
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [snapshot(id: 1, state: .active, completed: 500, total: nil, speed: 1000)],
+            clipboardURL: nil)
+        #expect(state.rows[0].etaText == nil)
+    }
+
+    @Test("etaText is nil for non-active (paused) jobs")
+    func etaTextNilForPausedJob() {
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [snapshot(id: 1, state: .paused, completed: 500, total: 1024, speed: 1000)],
+            clipboardURL: nil)
+        #expect(state.rows[0].etaText == nil)
+    }
+
+    @Test("completed row gets verifyStatus 'recorded' from ledger entry without verifiedAt")
+    func completedRowVerifyStatusRecorded() {
+        let entry = ProvenanceEntry(
+            url: "https://x.com/f.bin", sha256: "sha256:abc", size: 1024,
+            downloadedAt: Date(timeIntervalSince1970: 0), destinationPath: "/tmp/1.iso", verifiedAt: nil)
+        let outcome = ProvenanceReadOutcome.entries([entry])
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [snapshot(id: 1, state: .completed, completed: 1024, total: 1024, speed: 0,
+                                 destination: "/tmp/1.iso")],
+            clipboardURL: nil,
+            ledgerOutcome: outcome)
+        #expect(state.rows[0].verifyStatus == "recorded")
+    }
+
+    @Test("completed row gets verifyStatus 'verified <date>' from ledger entry with verifiedAt")
+    func completedRowVerifyStatusVerified() {
+        let verifiedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let entry = ProvenanceEntry(
+            url: "https://x.com/f.bin", sha256: "sha256:abc", size: 1024,
+            downloadedAt: verifiedDate, destinationPath: "/tmp/2.iso", verifiedAt: verifiedDate)
+        let outcome = ProvenanceReadOutcome.entries([entry])
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [snapshot(id: 1, state: .completed, completed: 1024, total: 1024, speed: 0,
+                                 destination: "/tmp/2.iso")],
+            clipboardURL: nil,
+            ledgerOutcome: outcome)
+        #expect(state.rows[0].verifyStatus?.hasPrefix("verified") == true)
+    }
+
+    @Test("completed row with no ledger entry has nil verifyStatus")
+    func completedRowVerifyStatusNilWhenAbsent() {
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [snapshot(id: 1, state: .completed, completed: 1024, total: 1024, speed: 0)],
+            clipboardURL: nil,
+            ledgerOutcome: .absent)
+        #expect(state.rows[0].verifyStatus == nil)
+    }
+
     private func snapshot(
         id: UInt64,
         state: JobState,
         completed: UInt64,
-        total: UInt64,
-        speed: UInt64
+        total: UInt64?,
+        speed: UInt64,
+        destination: String? = nil
     ) -> ProgressSnapshot {
         ProgressSnapshot(
             job: JobSummary(
                 id: id,
                 url: "https://example.com/\(id).iso",
-                destination: "/tmp/\(id).iso",
+                destination: destination ?? "/tmp/\(id).iso",
                 state: state,
                 progress: JobProgress(
                     bytesCompleted: completed,
