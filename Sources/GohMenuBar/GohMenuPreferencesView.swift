@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// Preferences sheet: two toggles — notifications and launch-at-login.
+/// Preferences window: two toggles — notifications and launch-at-login.
 /// Injected with GohMenuPreferences and GohMenuLoginItem so the view never
 /// touches UserDefaults or SMAppService directly (unit-test-safe contract).
 public struct GohMenuPreferencesView: View {
     private let preferences: any GohMenuPreferences
     private let loginItem: any GohMenuLoginItem
+
+    @Environment(\.dismiss) private var dismiss
 
     @State private var notificationsEnabled: Bool
     @State private var launchAtLoginEnabled: Bool
@@ -67,9 +69,18 @@ public struct GohMenuPreferencesView: View {
             }
 
             Spacer()
+
+            HStack {
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityLabel("Close Preferences window")
+            }
         }
         .padding(20)
-        .frame(width: 320, height: 200)
+        .frame(width: 320, height: 240)
         .onAppear {
             // Refresh status when the sheet opens (user may have approved in Settings).
             loginItemStatus = loginItem.status()
