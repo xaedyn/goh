@@ -2,7 +2,7 @@
 date: 2026-06-07
 feature: tray-download-dashboard
 phase: 1
-status: not-started
+status: complete
 tasks: [T1, T2]
 ---
 
@@ -69,3 +69,16 @@ Create `RollingRateSampler` and thread it through all six `Self.progress()` call
 - [ ] `swift test` — all ~780+ tests pass, 5 new RollingRateSamplerTests added
 - [ ] Governor block unchanged (grep confirms no diff in lines 786–826)
 - [ ] `JobProgress` struct fields unchanged (no new fields, no CodingKey changes)
+
+## Completion record (2026-06-07)
+
+- **T1** commit `b7c5a19` — `RollingRateSampler` + 5 tests (5/5 pass). Mutex-guarded, monotonic guard,
+  saturating subtraction, always-evict, span oldest→`now`. Reviewed: APPROVED, no block issues.
+- **T2** commit `80b95e4` — sampler threaded to all 6 display sites (resume final=`total`,
+  resume flush=`completedBeforeRange+written`, single in-flight=`completed`, single final=`completed`,
+  ranged final=`total`, consumeRange worker=`overall`). Sampler created exactly once in `run(job:)`,
+  captured by reference into concurrent workers. Reviewed: APPROVED — governor block (lines ~805–848)
+  proven byte-for-byte unchanged; `JobProgress` wire shape unchanged.
+- **Gate:** `swift build -Xswiftc -warnings-as-errors` clean; `swift test` 785/785 pass. Zero regressions.
+- **Contract for Phase 2:** GohMenuBar consumes the now-rolling `bytesPerSecond` via existing snapshots;
+  no Phase 1 symbol is referenced from GohMenuBar.

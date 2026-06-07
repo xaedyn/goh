@@ -2,7 +2,7 @@
 date: 2026-06-07
 feature: tray-download-dashboard
 phase: 3
-status: not-started
+status: complete
 tasks: [T5, T6, T7]
 depends-on: phase2
 ---

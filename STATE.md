@@ -5,6 +5,46 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-07 (tray-dashboard session) — **Professional download dashboard BUILT on `feat/tray-download-dashboard` (7 tasks, all reviewed green + final cross-cutting review APPROVED; NOT yet pushed/PR'd)**
+
+Addressed the three things the user flagged from the tray screenshot: the climbing speed number,
+downloads not appearing, and "make it look highly professional / show enough info." Full
+enterprise-pipeline (spec + plan, 2 adversarial review rounds each, USER GATE 2 approved) →
+subagent-driven-development (per-task implementer + review gates) → final cross-cutting Opus review.
+
+- **The speed fix (Approach A — engine-side, the user's chosen bet).** The displayed speed was a
+  cumulative average (`completed / elapsed`) that only ever climbs. Replaced with a **5-second rolling
+  window** (curl's convention) computed in a new `RollingRateSampler` (GohCore, Mutex-guarded,
+  `@unchecked Sendable`, monotonic guard + saturating subtraction → crash-safe for concurrent ranged
+  workers; always-evict so a stall decays the rate; span measured oldest→`now`). Created **once per
+  `run(job:)`** and threaded to **all 6 `Self.progress(...)` display sites** (resume final/flush,
+  single in-flight/final, ranged final, consumeRange worker). Fixes the metric **everywhere** — tray
+  AND `goh ls`/`goh top` inherit it (same `bytesPerSecond` field). **The BBR governor's separate
+  `ByteCounter`/`governor.record`/`governor.decide` sampler block is byte-for-byte UNTOUCHED**
+  (final review confirmed against the diff). `JobProgress` wire shape unchanged — only the runtime value.
+- **The dashboard.** Popover collapse fixed (maxHeight-only `ScrollView` → top-5 `VStack(minHeight:32)`
+  + overflow hint + "Downloads…" button). New **resizable `Window(id:"downloads")`** with rich two-line
+  rows: file-type icon + middle-truncated filename + hover controls, determinate `ProgressView`
+  (spinner when size unknown), secondary line = `downloaded/total · ETA · elapsed · N connections ·
+  verify status`. Completed/failed rows retained; completed rows join the provenance ledger
+  (`trustReader`) for a **verified <date> / recorded** badge. Six new `GohMenuJobRow` fields populated
+  by the presenter; `ledgerOutcome` wired through the viewmodel (off-main read preserved, re-render on
+  MainActor). `orderedControls` promoted to a module-internal extension in `GohMenuModels.swift`.
+- **Post-review fix folded in:** ledger lookup now canonicalizes the destination path
+  (`URL(fileURLWithPath:).standardizedFileURL.path`) on BOTH map-build and lookup, matching the daemon
+  write side + `ProvenanceStore.lookup` — a non-canonical `job.destination` no longer silently misses
+  the verify badge.
+- **Commits (branch `feat/tray-download-dashboard`, off `main` @ `581a7bb`):** `a26ccc0` docs →
+  `b7c5a19` T1 sampler → `80b95e4` T2 engine threading → `c81fa0d` T3 model → `4074eca` T4 presenter →
+  `bc49f0c` T5 popover → `a8ee44b` T6 window view → `7e6a147` T7 scene → `7db7d54` canonicalize fix.
+- **Gate:** `swift build -Xswiftc -warnings-as-errors` clean; `swift test` **791/791** (11 new: 5
+  sampler + 6 presenter). 11 new tests non-vacuous, no existing test weakened. NO `#available`, no
+  wire/protocolVersion/golden change. Final cross-cutting review: **APPROVED FOR MERGE**.
+- **NOT pushed / no PR yet** — awaiting user go-ahead (push-only-when-asked). **The installed
+  0.1.0-test PKG still has the OLD code + the buggy Preferences sheet** → to actually SEE the dashboard
+  the user must cut a fresh signed build (`Scripts/sign-tester-build.sh`) after this merges. Still in
+  the private testing phase — no public deploy ([[tester-phase-no-official-deploy]]).
+
 ### 2026-06-07 (tester-signing session) — **Local tester-build signer added: `Scripts/sign-tester-build.sh` (signed+notarized all-in-one PKG from the login keychain)**
 
 User enrolled in the Apple Developer Program (Individual) but is **still in private testing — NO
