@@ -36,156 +36,78 @@ public enum GohVerifyAllCommand {
         json: Bool = false,
         generatedAt: Date = Date()
     ) -> GohCommandLineResult {
-        let storeURL = URL(fileURLWithPath: provenanceStorePath)
 
-        // ── Step 1: Read the ledger (read-only; never creates a sidecar or resets) ──
-        guard FileManager.default.fileExists(atPath: provenanceStorePath) else {
-            if json {
-                return jsonResult(
-                    exitCode: 0,
-                    report: emptyReport(generatedAt: generatedAt))
-            }
-            return GohCommandLineResult(
-                exitCode: 0,
-                standardOutput: "0 recorded entries\n")
-        }
+        // ── Step 1: Classify ledger ────────────────────────────────────────────
+        let outcome = ProvenanceLedgerReader.read(at: provenanceStorePath)
 
-        guard let data = try? Data(contentsOf: storeURL) else {
+        switch outcome {
+        case .absent, .entries([]):
+            // Absent file OR empty entries array → exit 0, 0 recorded entries
             if json {
-                return jsonErrorResult(.ledgerUnreadable)
+                return jsonResult(exitCode: 0, report: emptyReport(generatedAt: generatedAt))
             }
+            return GohCommandLineResult(exitCode: 0, standardOutput: "0 recorded entries\n")
+
+        case .unreadable(.io):
+            if json { return jsonErrorResult(.ledgerUnreadable) }
+            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger unreadable\n")
+
+        case .unreadable(.corrupt):
+            if json { return jsonErrorResult(.ledgerCorrupt) }
+            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger corrupt\n")
+
+        case .unreadable(.versionUnknown(let found)):
+            if json { return jsonErrorResult(.ledgerVersionUnknown) }
             return GohCommandLineResult(
                 exitCode: 6,
-                standardOutput: "provenance ledger unreadable\n")
+                standardOutput: "provenance ledger version \(found) is unknown\n")
+
+        case .entries:
+            break  // fall through to re-hash
         }
 
-        let record: ProvenanceRecord
+        // ── Step 2: Re-hash via runner ────────────────────────────────────────
+        // VerifyAllRunner.verifyAll throws only on .unreadable — already handled above.
+        // The catch here is a defensive guard (should never trigger given the switch above).
+        let report: VerifyAllReport
         do {
-            record = try PropertyListDecoder().decode(ProvenanceRecord.self, from: data)
+            report = try VerifyAllRunner.verifyAll(
+                provenanceStorePath: provenanceStorePath,
+                generatedAt: generatedAt,
+                progress: nil,
+                isCancelled: nil)
         } catch {
-            // CLI does NOT copy-to-sidecar or reset — the daemon owns recovery.
-            if json {
-                return jsonErrorResult(.ledgerCorrupt)
-            }
-            return GohCommandLineResult(
-                exitCode: 6,
-                standardOutput: "provenance ledger corrupt\n")
+            if json { return jsonErrorResult(.ledgerUnreadable) }
+            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger unreadable\n")
         }
 
-        guard record.version == ProvenanceRecord.currentVersion else {
-            if json {
-                return jsonErrorResult(.ledgerVersionUnknown)
-            }
-            return GohCommandLineResult(
-                exitCode: 6,
-                standardOutput: "provenance ledger version \(record.version) is unknown\n")
-        }
-
-        // A4 — corruption boundary is "decodable + version-matched". A plist that decodes
-        // cleanly with version == currentVersion is treated as VALID even if individual
-        // entries are semantically odd (e.g. a malformed sha256 string or a nonsense path).
-        // Such entries enter the re-hash loop below and report FAILED/MISSING — NOT exit 6.
-        // Exit 6 is reserved for an unreadable/undecodable/unknown-version file. This is the
-        // accepted boundary for verify-only: structural decodability gates corruption.
-
-        // ── Step 2: Empty store ────────────────────────────────────────────────
-        if record.entries.isEmpty {
-            if json {
-                return jsonResult(
-                    exitCode: 0,
-                    report: emptyReport(generatedAt: generatedAt))
-            }
-            return GohCommandLineResult(
-                exitCode: 0,
-                standardOutput: "0 recorded entries\n")
-        }
-
-        // ── Step 3: Re-hash each entry — compute ONCE into [VerifyEntryResult] ─
-        //
-        // Bet: deriving both renderings from one result model keeps the JSON and
-        // human verdicts + exit codes consistent at zero ongoing cost; the existing
-        // byte-exact regression tests prove the human output stayed identical after
-        // the refactor.
-        var entries: [VerifyEntryResult] = []
-        var lines: [String] = []
-        var hasMissing = false
-        var hasFailed = false
-
-        for entry in record.entries {
-            let hash: String
-            do {
-                (hash, _) = try FileDigest.sha256WithSize(path: entry.destinationPath)
-            } catch FileDigest.DigestError.cannotOpen {
-                entries.append(VerifyEntryResult(
-                    path: entry.destinationPath,
-                    url: entry.url,
-                    status: .missing,
-                    expectedSha256: entry.sha256,
-                    actualSha256: nil))
-                lines.append("MISSING \(entry.destinationPath) (expected \(entry.sha256))\n")
-                hasMissing = true
-                continue
-            } catch {
-                entries.append(VerifyEntryResult(
-                    path: entry.destinationPath,
-                    url: entry.url,
-                    status: .missing,
-                    expectedSha256: entry.sha256,
-                    actualSha256: nil))
-                lines.append("MISSING \(entry.destinationPath) (expected \(entry.sha256))\n")
-                hasMissing = true
-                continue
-            }
-
-            if hash == entry.sha256 {
-                entries.append(VerifyEntryResult(
-                    path: entry.destinationPath,
-                    url: entry.url,
-                    status: .ok,
-                    expectedSha256: entry.sha256,
-                    actualSha256: nil))
-                lines.append("OK \(entry.destinationPath)\n")
-            } else {
-                entries.append(VerifyEntryResult(
-                    path: entry.destinationPath,
-                    url: entry.url,
-                    status: .failed,
-                    expectedSha256: entry.sha256,
-                    actualSha256: hash))
-                lines.append(
-                    "FAILED \(entry.destinationPath) expected \(entry.sha256) actual \(hash)\n")
-                hasFailed = true
-            }
-        }
-
-        // ── Step 4: Derive exit code from the SAME entries[] array ────────────
-        // (hasMissing/hasFailed booleans mirror entries[] — they are in sync by construction.)
+        // ── Step 3: Derive exit code ──────────────────────────────────────────
         let exitCode: Int32
-        if hasMissing {
+        if report.summary.missing > 0 {
             exitCode = 9
-        } else if hasFailed {
+        } else if report.summary.failed > 0 {
             exitCode = 2
         } else {
             exitCode = 0
         }
 
-        // ── Step 5: Render — JSON or human ────────────────────────────────────
+        // ── Step 4: Render ────────────────────────────────────────────────────
         if json {
-            // Summary is DERIVED by folding over the final entries[] array.
-            // This is the single source of truth — no parallel tally that could drift.
-            let summary = VerifySummary(
-                total: entries.count,
-                ok: entries.filter { $0.status == .ok }.count,
-                failed: entries.filter { $0.status == .failed }.count,
-                missing: entries.filter { $0.status == .missing }.count)
-            let report = VerifyAllReport(
-                reportVersion: 1,
-                generatedAt: generatedAt,
-                summary: summary,
-                entries: entries)
             return jsonResult(exitCode: exitCode, report: report)
         }
 
+        // Human: reconstruct lines[] from report.entries[] in order.
+        let lines = report.entries.map { entry -> String in
+            switch entry.status {
+            case .ok:
+                return "OK \(entry.path)\n"
+            case .failed:
+                let actual = entry.actualSha256 ?? ""
+                return "FAILED \(entry.path) expected \(entry.expectedSha256) actual \(actual)\n"
+            case .missing:
+                return "MISSING \(entry.path) (expected \(entry.expectedSha256))\n"
+            }
+        }
         return GohCommandLineResult(exitCode: exitCode, standardOutput: lines.joined())
     }
 
