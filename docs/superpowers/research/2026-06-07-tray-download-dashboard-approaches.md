@@ -125,3 +125,9 @@ fixable later as a small, isolated engine change (at which point the tray can ju
 rate and drop its local helper). Approach A is the "fix it once, everywhere" ideal, but it means surgery in
 goh's most critical, most-tested file for a *display* metric — not worth the blast radius in this slice when
 B delivers the user-visible result safely.
+
+**DECISION AT GATE (2026-06-07):** The user chose **Approach A** (engine-side) over this research
+recommendation of **Approach B**. THE BET: the governor is independent (verified against the diff at the
+final review — its sampler block is byte-for-byte untouched), and fixing the metric *everywhere* (CLI +
+tray) in one change is worth the engine hot-path touch. This doc is a frozen point-in-time research record;
+`STATE.md` and `docs/plans/2026-06-07-tray-download-dashboard-plan.md` reflect the implemented choice (A).
