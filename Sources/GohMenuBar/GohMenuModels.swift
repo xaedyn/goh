@@ -62,6 +62,21 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
     public var url: String
     public var controls: Set<GohMenuControl>
 
+    // Rich dashboard fields — all nonisolated Sendable Equatable (same convention).
+    /// bytesCompleted/bytesTotal as a fraction [0,1]; nil when bytesTotal is nil.
+    public var progressFraction: Double?
+    /// Human-readable "downloaded / total" or "downloaded/?" when total unknown.
+    public var sizeText: String
+    /// "ETA Xs" string; nil when total unknown, rate warming, or job not active.
+    public var etaText: String?
+    /// Human-readable elapsed time since createdAt (rounded to seconds).
+    public var elapsedText: String?
+    /// "N connections" string; nil when actualConnectionCount is 0.
+    public var connectionText: String?
+    /// Verify/provenance status for completed rows; nil for other states or when
+    /// the ledger entry is absent/unreadable.
+    public var verifyStatus: String?
+
     public init(
         id: UInt64,
         title: String,
@@ -71,7 +86,13 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         speedText: String,
         destination: String,
         url: String,
-        controls: Set<GohMenuControl>
+        controls: Set<GohMenuControl>,
+        progressFraction: Double? = nil,
+        sizeText: String = "",
+        etaText: String? = nil,
+        elapsedText: String? = nil,
+        connectionText: String? = nil,
+        verifyStatus: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -82,6 +103,26 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         self.destination = destination
         self.url = url
         self.controls = controls
+        self.progressFraction = progressFraction
+        self.sizeText = sizeText
+        self.etaText = etaText
+        self.elapsedText = elapsedText
+        self.connectionText = connectionText
+        self.verifyStatus = verifyStatus
+    }
+}
+
+extension GohMenuJobRow {
+    /// Controls ordered for display: pause/resume first, then utility controls, remove last.
+    var orderedControls: [GohMenuControl] {
+        [
+            .pause,
+            .resume,
+            .revealInFinder,
+            .copyURL,
+            .copyDestination,
+            .remove,
+        ].filter { controls.contains($0) }
     }
 }
 

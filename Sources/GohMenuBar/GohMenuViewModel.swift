@@ -26,6 +26,7 @@ public final class GohMenuViewModel: ObservableObject {
     private let copyText: (String) -> Void
     private var snapshots: [ProgressSnapshot] = []
     private var clipboardURL: URL?
+    private var ledgerOutcome: ProvenanceReadOutcome?
     private var progressTask: Task<Void, Never>?
     private let trustReader: (any ProvenanceReading)?
     /// Called synchronously at the end of every `applyProgressSnapshots` call (seed first, then
@@ -90,7 +91,9 @@ public final class GohMenuViewModel: ObservableObject {
     public func loadTrustOverview() async {
         guard let reader = trustReader else { return }
         let outcome = await Task.detached(priority: .utility) { reader.read() }.value
+        self.ledgerOutcome = outcome
         trustOverview = GohTrustPresenter().present(outcome).0
+        render(health: state.health)
     }
 
     @discardableResult
@@ -187,7 +190,8 @@ public final class GohMenuViewModel: ObservableObject {
         state = presenter.state(
             health: health,
             snapshots: snapshots,
-            clipboardURL: clipboardURL)
+            clipboardURL: clipboardURL,
+            ledgerOutcome: ledgerOutcome)
     }
 
     private func applyProgressSnapshots(_ snapshots: [ProgressSnapshot]) {

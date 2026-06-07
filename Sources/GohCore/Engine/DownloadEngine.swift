@@ -196,17 +196,22 @@ public struct DownloadEngine: Sendable {
         sleepAssertionController?.downloadStarted()
         defer { sleepAssertionController?.downloadFinished() }
         guard let job = store.job(id: jobID) else { return }
+        // Per-job rolling-rate sampler for the DISPLAY rate (5-second window).
+        // Separate from the governor's aggregate sampler; only overwrites the
+        // runtime VALUE of JobProgress.bytesPerSecond. @unchecked Sendable, so
+        // it captures safely into concurrent TaskGroup worker closures.
+        let sampler = RollingRateSampler()
         do {
             if let checkpointStore,
                let checkpoint = checkpointStore.load(jobID: jobID).checkpoint
             {
                 try await resume(
                     job: job, checkpoint: checkpoint, checkpointStore: checkpointStore,
-                    store: store, trace: EngineDiagnostics())
+                    store: store, trace: EngineDiagnostics(), sampler: sampler)
             } else {
                 try await download(
                     job: job, store: store, trace: EngineDiagnostics(),
-                    explicitConnectionCount: explicitConnectionCount)
+                    explicitConnectionCount: explicitConnectionCount, sampler: sampler)
             }
             try? checkpointStore?.delete(jobID: jobID)
         } catch let stop as DownloadControlStop {
@@ -236,7 +241,8 @@ public struct DownloadEngine: Sendable {
 
     private func download(
         job: JobSummary, store: JobStore, trace: EngineDiagnostics,
-        explicitConnectionCount: UInt8? = nil
+        explicitConnectionCount: UInt8? = nil,
+        sampler: RollingRateSampler
     ) async throws {
         guard let url = URL(string: job.url) else {
             throw GohError(code: .unsupportedURL, message: "could not parse URL: \(job.url)")
@@ -276,12 +282,12 @@ public struct DownloadEngine: Sendable {
             try await fetchRanged(
                 job: job, store: store, url: url, total: total, initialResponse: response,
                 firstRangeStream: stream, cancelFirstRangeStream: cancelStream, trace: trace,
-                explicitConnectionCount: explicitConnectionCount)
+                explicitConnectionCount: explicitConnectionCount, sampler: sampler)
         case 200..<300:
             try await fetchSingle(
                 job: job, store: store,
                 initialResponse: response, initialStream: stream,
-                cancelInitialStream: cancelStream)
+                cancelInitialStream: cancelStream, sampler: sampler)
         default:
             throw Self.httpFailure(statusCode: response.statusCode)
         }
@@ -354,7 +360,7 @@ public struct DownloadEngine: Sendable {
 
     private func resume(
         job: JobSummary, checkpoint: DownloadCheckpoint, checkpointStore: CheckpointStore,
-        store: JobStore, trace: EngineDiagnostics
+        store: JobStore, trace: EngineDiagnostics, sampler: RollingRateSampler
     ) async throws {
         guard checkpoint.startupResumeProgress(for: job) != nil,
               let total = checkpoint.totalBytes,
@@ -380,7 +386,8 @@ public struct DownloadEngine: Sendable {
                 completed += try await downloadResumeRange(
                     range: range, url: url, file: file, recorder: recorder,
                     validator: validator, job: job, store: store, total: total,
-                    completedBeforeRange: completed, clock: clock, started: started)
+                    completedBeforeRange: completed, clock: clock, started: started,
+                    sampler: sampler)
             }
 
             resumeDigest = try await verifyHash(file: file, total: total)
@@ -389,9 +396,10 @@ public struct DownloadEngine: Sendable {
             try? file.finish()
             throw error
         }
-        _ = try store.recordProgress(
-            id: job.id,
-            Self.progress(completed: total, total: total, elapsed: clock.now - started))
+        var resumeFinal = Self.progress(
+            completed: total, total: total, elapsed: clock.now - started)
+        resumeFinal.bytesPerSecond = sampler.record(bytesCompleted: total, now: clock.now)
+        _ = try store.recordProgress(id: job.id, resumeFinal)
         try complete(
             jobID: job.id, in: store,
             transferDuration: clock.now - started, isResume: true,
@@ -404,7 +412,8 @@ public struct DownloadEngine: Sendable {
         recorder: DownloadCheckpointRecorder, validator: String,
         job: JobSummary, store: JobStore, total: UInt64,
         completedBeforeRange: UInt64,
-        clock: ContinuousClock, started: ContinuousClock.Instant
+        clock: ContinuousClock, started: ContinuousClock.Instant,
+        sampler: RollingRateSampler
     ) async throws -> UInt64 {
         var request = request(for: url, job: job)
         let last = range.start + range.length - 1
@@ -435,12 +444,13 @@ public struct DownloadEngine: Sendable {
             try recorder.recordCompletedPiece(start: pieceStart, length: pieceLength)
             written += pieceLength
             buffer.removeAll(keepingCapacity: true)
-            recordProgress(
-                store: store, jobID: job.id,
-                Self.progress(
-                    completed: completedBeforeRange + written,
-                    total: total,
-                    elapsed: clock.now - started))
+            var p = Self.progress(
+                completed: completedBeforeRange + written,
+                total: total,
+                elapsed: clock.now - started)
+            p.bytesPerSecond = sampler.record(
+                bytesCompleted: completedBeforeRange + written, now: clock.now)
+            recordProgress(store: store, jobID: job.id, p)
             try control?.stopIfRequested(jobID: job.id)
         }
 
@@ -484,7 +494,8 @@ public struct DownloadEngine: Sendable {
         job: JobSummary, store: JobStore,
         initialResponse: HTTPURLResponse,
         initialStream: AsyncThrowingStream<Data, Error>,
-        cancelInitialStream: @escaping @Sendable () -> Void
+        cancelInitialStream: @escaping @Sendable () -> Void,
+        sampler: RollingRateSampler
     ) async throws {
         defer { cancelInitialStream() }
         guard (200..<300).contains(initialResponse.statusCode) else {
@@ -522,10 +533,11 @@ public struct DownloadEngine: Sendable {
                 buffer.append(chunk)
                 if buffer.count >= Self.bufferSize {
                     try flush()
-                    _ = try store.recordProgress(
-                        id: job.id,
-                        Self.progress(completed: completed, total: total,
-                                      elapsed: clock.now - started))
+                    var p = Self.progress(completed: completed, total: total,
+                                          elapsed: clock.now - started)
+                    p.bytesPerSecond = sampler.record(
+                        bytesCompleted: completed, now: clock.now)
+                    _ = try store.recordProgress(id: job.id, p)
                 }
             }
             try flush()
@@ -550,9 +562,10 @@ public struct DownloadEngine: Sendable {
             fatalError("unreachable: ChunkAssemblerResult has only .digest/.failed")
         }
         try file.finish()
-        _ = try store.recordProgress(
-            id: job.id,
-            Self.progress(completed: completed, total: total, elapsed: clock.now - started))
+        var singleFinal = Self.progress(
+            completed: completed, total: total, elapsed: clock.now - started)
+        singleFinal.bytesPerSecond = sampler.record(bytesCompleted: completed, now: clock.now)
+        _ = try store.recordProgress(id: job.id, singleFinal)
         try complete(
             jobID: job.id, in: store,
             transferDuration: clock.now - started, isResume: false,
@@ -568,7 +581,8 @@ public struct DownloadEngine: Sendable {
         cancelFirstRangeStream: @escaping @Sendable () -> Void,
         trace: EngineDiagnostics,
         explicitConnectionCount: UInt8? = nil,
-        clock: ContinuousClock = ContinuousClock()   // injected; default keeps callers unchanged
+        clock: ContinuousClock = ContinuousClock(),   // injected; default keeps callers unchanged
+        sampler: RollingRateSampler
     ) async throws {
         let file = try DownloadFile(path: job.destination, expectedSize: total)
         let assembler = ChunkAssembler(file: file, totalBytes: total)
@@ -671,6 +685,7 @@ public struct DownloadEngine: Sendable {
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
                                 clock: clock, started: started, trace: trace,
+                                sampler: sampler,
                                 stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
                             return slot
                         }
@@ -686,7 +701,8 @@ public struct DownloadEngine: Sendable {
                                 assembler: assembler, bytesWritten: bytesWritten,
                                 checkpointRecorder: checkpointRecorder,
                                 job: job, store: store, total: total,
-                                clock: clock, started: started, trace: trace)
+                                clock: clock, started: started, trace: trace,
+                                sampler: sampler)
                             return slot
                         }
                     }
@@ -753,6 +769,7 @@ public struct DownloadEngine: Sendable {
                                         checkpointRecorder: checkpointRecorder,
                                         job: job, store: store, total: total,
                                         clock: clock, started: started, trace: trace,
+                                        sampler: sampler,
                                         stream: firstRangeStream, cancelStream: cancelFirstRangeStream)
                                     return slot
                                 }
@@ -764,7 +781,8 @@ public struct DownloadEngine: Sendable {
                                         assembler: assembler, bytesWritten: bytesWritten,
                                         checkpointRecorder: checkpointRecorder,
                                         job: job, store: store, total: total,
-                                        clock: clock, started: started, trace: trace)
+                                        clock: clock, started: started, trace: trace,
+                                        sampler: sampler)
                                     return slot
                                 }
                             }
@@ -880,9 +898,10 @@ public struct DownloadEngine: Sendable {
             fatalError("unreachable: ChunkAssemblerResult has only .digest/.failed")
         }
         try file.finish()
-        _ = try store.recordProgress(
-            id: job.id,
-            Self.progress(completed: total, total: total, elapsed: clock.now - started))
+        var rangedFinal = Self.progress(
+            completed: total, total: total, elapsed: clock.now - started)
+        rangedFinal.bytesPerSecond = sampler.record(bytesCompleted: total, now: clock.now)
+        _ = try store.recordProgress(id: job.id, rangedFinal)
         let governorOutcome = governorEnabled ? governor.outcome : .governorOff
         try complete(
             jobID: job.id, in: store,
@@ -911,7 +930,8 @@ public struct DownloadEngine: Sendable {
         checkpointRecorder: DownloadCheckpointRecorder?,
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
-        trace: EngineDiagnostics
+        trace: EngineDiagnostics,
+        sampler: RollingRateSampler
     ) async throws {
         var request = request(for: url, job: job)
         let last = range.start + range.length - 1
@@ -932,6 +952,7 @@ public struct DownloadEngine: Sendable {
             checkpointRecorder: checkpointRecorder,
             job: job, store: store, total: total,
             clock: clock, started: started, trace: trace,
+            sampler: sampler,
             stream: stream, cancelStream: cancelStream)
     }
 
@@ -947,6 +968,7 @@ public struct DownloadEngine: Sendable {
         job: JobSummary, store: JobStore, total: UInt64,
         clock: ContinuousClock, started: ContinuousClock.Instant,
         trace: EngineDiagnostics,
+        sampler: RollingRateSampler,
         stream: AsyncThrowingStream<Data, Error>,
         cancelStream: @escaping @Sendable () -> Void
     ) async throws {
@@ -976,10 +998,10 @@ public struct DownloadEngine: Sendable {
                 // `overall` is the running total across ALL workers — monotonic
                 // and independent of chunk/worker count.
                 let overall = bytesWritten.add(pieceLength)
-                recordProgress(
-                    store: store, jobID: job.id,
-                    Self.progress(completed: overall, total: total,
-                                  elapsed: clock.now - started))
+                var p = Self.progress(completed: overall, total: total,
+                                      elapsed: clock.now - started)
+                p.bytesPerSecond = sampler.record(bytesCompleted: overall, now: clock.now)
+                recordProgress(store: store, jobID: job.id, p)
             }
             try control?.stopIfRequested(jobID: job.id)
         }
