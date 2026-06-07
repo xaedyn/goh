@@ -5,6 +5,56 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-06 (tray-app session) — **Tray-app distribution feature BUILT on `feat/tray-app-distribution` (11 tasks, all reviewed green, NOT yet merged/PR'd)**
+
+Turned the `goh-menu` companion into a distributable `.app`: app-bundle packaging,
+completion/failure notifications, launch-at-login (tray app only — daemon stays on
+`brew services`), and a preferences UI, delivered via an all-in-one signed PKG
+(Approach B). Built through the full `enterprise-pipeline` → `subagent-driven-development`.
+**735 tests pass; `swift build -warnings-as-errors` clean. Final cross-cutting
+stack-aware review APPROVED FOR MERGE. Branch NOT pushed / NO PR yet — awaiting user.**
+
+- **Scope decisions (user-gated):** launch-at-login is **tray-app-only** (`SMAppService.mainApp`);
+  the daemon's `brew services` registration is untouched (the ROADMAP §SMAppService daemon
+  migration / DESIGN §3.2 remains deferred). Distribution = **Approach B, all-in-one PKG**
+  (one double-click installs CLI+daemon+`goh.app`). THE BET: versioning engine+app together
+  is fine for the tester phase.
+- **Load-bearing design catches (from adversarial review):** (1) the progress subscription
+  was popover-scoped → notifications would be dead while the menu is closed; moved ownership
+  to `GohMenuAppDelegate` (always-on, started at `applicationDidFinishLaunching`). (2) a pure
+  `GohNotificationTransitionDetector` with nil-seed suppression + `job.id` dedup so pre-launch
+  terminal jobs are NOT re-notified on every launch, and a synchronous `onProgressSnapshots`
+  hook (NOT `@Published`/Combine, which would replay `[]` and defeat the seed). (3)
+  `LiveNotificationService` is `@MainActor` (a `nonisolated` method touching the non-Sendable
+  `UNUserNotificationCenter` fails to compile). Notifications post **locally** from the existing
+  stream — **NO new IPC surface**; the file-name only (no URL/host) is shown.
+- **Frozen contracts untouched** (verified: `git diff main..HEAD -- Sources/GohCore` is EMPTY).
+  No `protocolVersion`/XPC-envelope/`ProvenanceRecord`/`JobCatalog`/`gohfile.lock` change; the
+  `#if RELEASE #error` peer-relaxation tripwire is intact. The feature lives entirely in
+  `GohMenuBar`/`goh-menu` + packaging scripts + `DESIGN.md`.
+- **New files:** `Sources/GohMenuBar/{GohMenuPreferences,GohMenuNotifications,GohMenuNotificationsLive,GohNotificationCoordinator,GohMenuLoginItem,GohMenuLoginItemLive,GohMenuPreferencesView}.swift`;
+  tests in `Tests/GohMenuBarTests/`; `Resources/app-Info.plist` (id `dev.goh.menu`,
+  `LSUIElement`, `LSMinimumSystemVersion=26.5` == PKG `os` pin); `Scripts/package-app.sh`,
+  `Scripts/_stage-app-payload.sh` (shared staging helper used by BOTH `package-pkg.sh` and
+  `private-release-candidate.sh` — lockstep, no drift). `package-pkg.sh` now bundles `goh.app`
+  at `/Applications` (verified via `pkgutil --expand-full`); `private-release-candidate.sh` now
+  signs `goh-menu` + the `.app` inside-out (documented **post-credential seam** — only runs when
+  a Developer ID cert env is present). Design artifacts under `docs/superpowers/**` + plan at
+  `docs/plans/2026-06-06-tray-app-distribution-plan.md`.
+
+**NEXT-SESSION HANDOFF — tray app is built + reviewed; two external dependencies remain:**
+1. **Finish the branch:** decide PR vs keep-local (user was being asked at session end). When
+   PR'd: CodeRabbit + Socket will run per the usual flow.
+2. **Apple Developer ID (the real unlock, user is enrolling):** the signed+notarized PKG/DMG
+   for easy *tester* install needs the cert. Until it lands, the `.app` is testable only via the
+   local debug/dogfood path — and note the **login-item is `.unsupported` on the debug bare
+   binary** (SMAppService needs a real bundle id), so AC3 is only exercisable from the signed
+   `.app`. The signing seam in `private-release-candidate.sh` is ready to wire `goh-menu` + `.app`
+   + notarization the day the cert exists.
+3. **Advisories carried (non-blocking):** notification posting is best-effort/silent (matches
+   `SpotlightMetadataTagger`); preferences test suites don't `removeSuite` (tiny plist litter);
+   `GohMenuPreferencesView` reads `loginItem.status()` a few times in init (cosmetic).
+
 ### 2026-06-06 (audit + launch-doc session) — **Whole-codebase security/code-quality audit MERGED across 3 PRs (#93 / #94 / #95); SECURITY/CONTRIBUTING/CODE_OF_CONDUCT drafted (local-only, gitignored)**
 
 A multi-agent security + code-quality audit of the entire codebase ran this
