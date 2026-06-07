@@ -17,10 +17,16 @@ nonisolated public struct GohMenuPresenter: Sendable {
         }
         let healthCopy = copy(for: health)
 
+        // Key the ledger by the canonical destination path (matches the daemon's
+        // write side and ProvenanceStore.lookup, which both canonicalize via
+        // URL(fileURLWithPath:).standardizedFileURL.path). Looking up below with the
+        // same canonicalization guarantees a hit regardless of trailing slashes,
+        // "..", or symlink segments in either path.
         let ledgerMap: [String: ProvenanceEntry]
         if let outcome = ledgerOutcome, case .entries(let entries) = outcome {
-            ledgerMap = Dictionary(entries.map { ($0.destinationPath, $0) },
-                                   uniquingKeysWith: { _, last in last })
+            ledgerMap = Dictionary(
+                entries.map { (Self.canonicalPath($0.destinationPath), $0) },
+                uniquingKeysWith: { _, last in last })
         } else {
             ledgerMap = [:]
         }
@@ -75,7 +81,7 @@ nonisolated public struct GohMenuPresenter: Sendable {
             : nil
 
         let verifyStatus: String?
-        if job.state == .completed, let entry = ledgerMap[job.destination] {
+        if job.state == .completed, let entry = ledgerMap[Self.canonicalPath(job.destination)] {
             if let verifiedAt = entry.verifiedAt {
                 let formatted = DateFormatter.localizedString(from: verifiedAt, dateStyle: .short, timeStyle: .none)
                 verifyStatus = "verified \(formatted)"
@@ -117,6 +123,12 @@ nonisolated public struct GohMenuPresenter: Sendable {
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m \(s % 60)s" }
         return "\(s / 3600)h \((s % 3600) / 60)m"
+    }
+
+    /// Canonicalize a filesystem path for ledger-key matching, mirroring the
+    /// daemon's write side and `ProvenanceStore.lookup`.
+    private static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     private func stateDisplay(for state: JobState) -> String {
