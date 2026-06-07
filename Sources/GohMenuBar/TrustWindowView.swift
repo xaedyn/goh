@@ -19,6 +19,7 @@ public struct TrustWindowView: View {
         .frame(minWidth: 480, minHeight: 300)
         .padding(16)
         .task { await viewModel.loadOverview() }
+        .onDisappear { viewModel.reset() }
     }
 
     // MARK: - Header
