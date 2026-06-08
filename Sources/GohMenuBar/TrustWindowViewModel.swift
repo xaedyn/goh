@@ -33,6 +33,16 @@ nonisolated public enum TrustRunState: Sendable, Equatable {
     case failed(String)               // plain-English error message
 }
 
+/// Display statistics computed from a live `VerifyProgress` snapshot.
+public struct VerifyLiveStats: Equatable {
+    /// 0...1 overall fraction (bytesHashed / totalBytes); 0 when totalBytes == 0.
+    public let fraction: Double
+    /// e.g. "53.1 GB / 68.0 GB"; empty when totalBytes == 0.
+    public let byteText: String
+    /// e.g. "ETA 1m 12s"; nil during warm-up, when totalBytes == 0, or when rate == 0.
+    public let etaText: String?
+}
+
 /// @MainActor view model for the Trust window.
 ///
 /// Responsibilities:
@@ -50,6 +60,11 @@ public final class TrustWindowViewModel: ObservableObject {
     private let provenanceStorePath: String
     private let presenter: GohTrustPresenter
     private var cancellationBox: CancellationBox?
+
+    /// Wall-clock timestamp at which the current verify run started.
+    /// Set when transitioning to `.running`; cleared on run end and `reset()`.
+    /// Exposed as `internal` so unit tests can inject a fixed start time.
+    internal var verifyStartedAt: Date?
 
     public init(
         reader: any ProvenanceReading,
@@ -83,10 +98,11 @@ public final class TrustWindowViewModel: ObservableObject {
 
         let box = CancellationBox()
         cancellationBox = box
+        let now = Date()
+        verifyStartedAt = now
         runState = .running(VerifyProgress(completed: 0, total: rows.count, currentPath: nil))
 
         let path = provenanceStorePath
-        let now = Date()
 
         // Capture self weakly before the @Sendable dispatch.
         // A @Sendable closure cannot capture a weak var by reference — we capture
@@ -116,6 +132,7 @@ public final class TrustWindowViewModel: ObservableObject {
                         vm.runState = .finished(report)
                     }
                     vm.cancellationBox = nil
+                    vm.verifyStartedAt = nil
                 }
             } catch let VerifyAllRunnerError.ledgerUnreadable(reason) {
                 let message: String
@@ -127,11 +144,13 @@ public final class TrustWindowViewModel: ObservableObject {
                 Task { @MainActor in
                     weakSelf.value?.runState = .failed(message)
                     weakSelf.value?.cancellationBox = nil
+                    weakSelf.value?.verifyStartedAt = nil
                 }
             } catch {
                 Task { @MainActor in
                     weakSelf.value?.runState = .failed("verify failed: \(error)")
                     weakSelf.value?.cancellationBox = nil
+                    weakSelf.value?.verifyStartedAt = nil
                 }
             }
         }
@@ -146,6 +165,47 @@ public final class TrustWindowViewModel: ObservableObject {
     public func reset() {
         cancellationBox?.cancel()
         cancellationBox = nil
+        verifyStartedAt = nil
         runState = .idle
+    }
+
+    // MARK: - Live stats
+
+    /// Compute display statistics from a live `VerifyProgress` snapshot.
+    /// Uses wall-clock elapsed since `verifyStartedAt` for the ETA calculation.
+    public func liveStats(for p: VerifyProgress) -> VerifyLiveStats {
+        liveStats(for: p, now: Date())
+    }
+
+    /// Testable overload — accepts an injected `now` so tests can pin the clock.
+    internal func liveStats(for p: VerifyProgress, now: Date) -> VerifyLiveStats {
+        guard p.totalBytes > 0 else {
+            return VerifyLiveStats(fraction: 0, byteText: "", etaText: nil)
+        }
+        let fraction = min(1.0, Double(p.bytesHashed) / Double(p.totalBytes))
+        let byteText = JobDisplayFormatter.formatBytes(UInt64(max(0, p.bytesHashed)))
+            + " / " + JobDisplayFormatter.formatBytes(UInt64(max(0, p.totalBytes)))
+
+        var etaText: String? = nil
+        if let started = verifyStartedAt {
+            let elapsed = now.timeIntervalSince(started)
+            // Warm-up guard: need at least 0.5s elapsed and some bytes for a sane rate.
+            if elapsed >= 0.5, p.bytesHashed > 0 {
+                let rate = Double(p.bytesHashed) / elapsed   // bytes/sec
+                if rate > 0 {
+                    let remaining = Double(max(0, p.totalBytes - p.bytesHashed))
+                    let secs = remaining / rate
+                    etaText = "ETA " + Self.formatDuration(secs)
+                }
+            }
+        }
+        return VerifyLiveStats(fraction: fraction, byteText: byteText, etaText: etaText)
+    }
+
+    private static func formatDuration(_ seconds: Double) -> String {
+        let s = Int(seconds.rounded())
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s / 3600)h \((s % 3600) / 60)m"
     }
 }
