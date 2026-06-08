@@ -4,8 +4,19 @@ import Foundation
 /// At-rest SHA-256 streaming digest for a file on disk.
 ///
 /// The re-hash entry point for `goh sync`/`goh verify`. Distinct from
-/// ChunkAssembler (download-bound). Streams the file in 1 MiB chunks to
-/// keep peak memory flat regardless of file size.
+/// ChunkAssembler (download-bound). Streams the file in 1 MiB chunks,
+/// draining an `autoreleasepool` every chunk, to keep peak memory flat
+/// regardless of file size.
+///
+/// The per-chunk `autoreleasepool` is load-bearing, not cosmetic:
+/// `FileHandle.read(upToCount:)` returns `Data` backed by an autoreleased
+/// buffer. This loop runs inside one long `DispatchQueue.global().async`
+/// block (the tray verify, and `goh verify`/`goh sync`), whose autorelease
+/// pool is only drained when the whole block returns. Without an inner pool,
+/// every chunk's backing buffer accumulates for the entire read — tens of GB
+/// on a multi-GB file — until the OS jetsam-kills the process (a silent
+/// SIGKILL with no crash report). Draining per chunk frees each buffer
+/// immediately, so peak memory really is flat.
 public struct FileDigest {
 
     // MARK: - Error
@@ -32,10 +43,17 @@ public struct FileDigest {
         let chunkSize = 1 << 20  // 1 MiB
 
         while true {
-            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
-            totalBytes += chunk.count
+            // Drain the autorelease pool every chunk so the autoreleased buffer
+            // backing FileHandle.read(upToCount:) is freed immediately rather than
+            // accumulating for the whole (possibly multi-GB) read. See the type doc.
+            let reachedEOF = try autoreleasepool { () throws -> Bool in
+                let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+                if chunk.isEmpty { return true }
+                hasher.update(data: chunk)
+                totalBytes += chunk.count
+                return false
+            }
+            if reachedEOF { break }
         }
 
         let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
