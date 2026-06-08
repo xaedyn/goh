@@ -23,16 +23,31 @@ public struct FileDigest {
 
     public enum DigestError: Error, Equatable {
         case cannotOpen(String)
+        /// The caller's `isCancelled` closure returned `true` mid-read. Thrown
+        /// before reading the next chunk so a multi-GB hash can be aborted partway.
+        case cancelled
     }
 
     // MARK: - Public API
 
     /// Streams `path` through SHA-256.
     ///
+    /// - Parameters:
+    ///   - path: Absolute path of the file to hash.
+    ///   - onBytesHashed: Optional, called after each chunk is hashed with THIS chunk's
+    ///     byte count. Lets the caller report streaming intra-file progress. Nil disables it
+    ///     (zero extra work on the hot path).
+    ///   - isCancelled: Optional, checked BEFORE reading each chunk. Returning `true` aborts
+    ///     the hash mid-file by throwing `DigestError.cancelled`. Nil disables cancellation.
     /// - Returns: A tuple of `("sha256:<lowercase-hex>", byteCount)`.
     /// - Throws: `DigestError.cannotOpen` when the file cannot be opened for reading;
+    ///   `DigestError.cancelled` when `isCancelled` returns true mid-read;
     ///   re-throws `FileHandle` read errors (e.g. I/O errors on partially-written files).
-    public static func sha256WithSize(path: String) throws -> (String, Int) {
+    public static func sha256WithSize(
+        path: String,
+        onBytesHashed: ((Int) -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil
+    ) throws -> (String, Int) {
         guard let handle = FileHandle(forReadingAtPath: path) else {
             throw DigestError.cannotOpen(path)
         }
@@ -47,10 +62,14 @@ public struct FileDigest {
             // backing FileHandle.read(upToCount:) is freed immediately rather than
             // accumulating for the whole (possibly multi-GB) read. See the type doc.
             let reachedEOF = try autoreleasepool { () throws -> Bool in
+                // Check cancellation BEFORE reading the next chunk so a long hash can
+                // be aborted partway rather than only between files.
+                if isCancelled?() == true { throw DigestError.cancelled }
                 let chunk = try handle.read(upToCount: chunkSize) ?? Data()
                 if chunk.isEmpty { return true }
                 hasher.update(data: chunk)
                 totalBytes += chunk.count
+                onBytesHashed?(chunk.count)
                 return false
             }
             if reachedEOF { break }

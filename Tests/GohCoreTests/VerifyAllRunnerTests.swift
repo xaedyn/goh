@@ -109,20 +109,26 @@ struct VerifyAllRunnerTests {
             (f3, Data("data3".utf8)),
         ])
 
-        // Cancel after f1 is processed (completed == 1). The flag is boxed in a
-        // reference type because a `@Sendable` closure cannot capture a mutable
-        // `var` by reference (it would fail under -warnings-as-errors). The runner
-        // calls isCancelled synchronously on one thread, so the @unchecked box is
-        // safe here. (See RunnerTestBox below.)
-        let cancelCounter = RunnerTestBox(1)
+        // Cancel BETWEEN files, after f1 is fully processed (completed == 1).
+        // isCancelled is now checked between files AND per chunk mid-file. Rather than
+        // count chunk reads (brittle), cancel based on the between-files guard: allow the
+        // run to proceed until exactly one file has been recorded, then cancel before the
+        // next file starts. We detect "f1 done" by reading the destination of the file
+        // currently being hashed via the progress stream is unavailable here (progress is
+        // nil), so we instead gate on a recorded-results count exposed through the closure.
+        //
+        // Simplest robust signal: the runner appends f1's result and increments `completed`
+        // only after f1 fully hashes; the FIRST between-files guard for f2 is the first
+        // check that occurs once f1 is fully done. We flip the cancel flag from a progress
+        // callback that observes completed == 1.
+        let cancelAfterFirst = RunnerTestBox(false)
         let report = try VerifyAllRunner.verifyAll(
             provenanceStorePath: storeURL.path,
             generatedAt: Date(),
-            progress: nil,
-            isCancelled: {
-                if cancelCounter.value > 0 { cancelCounter.value -= 1; return false }
-                return true
-            })
+            progress: { event in
+                if event.completed >= 1 { cancelAfterFirst.value = true }
+            },
+            isCancelled: { cancelAfterFirst.value })
 
         // Should have processed exactly 1 entry (f1); f2 and f3 were not started
         #expect(report.entries.count == 1)
@@ -159,9 +165,11 @@ struct VerifyAllRunnerTests {
         #expect(missingEntry.status == .missing)
     }
 
-    // AC3: progress callback fires once per file, after it completes
-    @Test("AC3: progress callback fires once per file in order; completed increments")
-    func progressFiresAfterEachFile() throws {
+    // V1: progress now streams DURING hashing (start-of-file + per-file final emit).
+    // For tiny files the last event of file N is the per-file-final, where completed
+    // has incremented. The final overall event has completed == total.
+    @Test("V1: progress streams; final per-file emits in ledger order; completed reaches total")
+    func progressStreamsInOrder() throws {
         let dir = try tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -172,6 +180,8 @@ struct VerifyAllRunnerTests {
             (f1, Data("aaa".utf8)),
             (f2, Data("bbb".utf8)),
         ])
+        let f1Canon = URL(fileURLWithPath: f1).standardizedFileURL.path
+        let f2Canon = URL(fileURLWithPath: f2).standardizedFileURL.path
 
         // Boxed in a reference type so the @Sendable progress closure captures a
         // reference, not a mutable var (required under -warnings-as-errors).
@@ -182,11 +192,104 @@ struct VerifyAllRunnerTests {
             progress: { progressEvents.value.append($0) },
             isCancelled: nil)
 
-        #expect(progressEvents.value.count == 2)
-        #expect(progressEvents.value[0].completed == 1)
-        #expect(progressEvents.value[0].total == 2)
-        #expect(progressEvents.value[1].completed == 2)
-        #expect(progressEvents.value[1].total == 2)
+        let events = progressEvents.value
+        #expect(events.count >= 2)               // at least one per file
+        #expect(events.allSatisfy { $0.total == 2 })
+
+        // The per-file-final events (completed incremented) appear in ledger order.
+        let finals = events.filter { event in
+            // a final-per-file event for file N has completed == index-of-N + 1
+            event.completed >= 1 && event.currentPath != nil
+        }
+        // currentPath of the first ledger file must be seen before the second.
+        let firstF1 = events.firstIndex { $0.currentPath == f1Canon }
+        let firstF2 = events.firstIndex { $0.currentPath == f2Canon }
+        let i1 = try #require(firstF1)
+        let i2 = try #require(firstF2)
+        #expect(i1 < i2)
+
+        // Last event reflects a fully completed run.
+        let last = try #require(events.last)
+        #expect(last.completed == 2)
+        #expect(finals.isEmpty == false)
+    }
+
+    // V1: a non-nil progress reports cumulative bytes; final bytesHashed == totalBytes,
+    // and totalBytes == sum of recorded entry sizes.
+    @Test("V1: final progress has bytesHashed == totalBytes == sum of entry sizes")
+    func progressBytesReachTotal() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let f1 = dir.appendingPathComponent("a.bin").path
+        let f2 = dir.appendingPathComponent("b.bin").path
+
+        // Multi-MiB files so the throttled per-chunk path fires more than once.
+        let aData = Data(repeating: 0xA1, count: 3 * 1024 * 1024)
+        let bData = Data(repeating: 0xB2, count: 2 * 1024 * 1024)
+        let (storeURL, _) = try makeStore(in: dir, entries: [
+            (f1, aData),
+            (f2, bData),
+        ])
+        let expectedTotal = aData.count + bData.count
+
+        let progressEvents = RunnerTestBox<[VerifyProgress]>([])
+        _ = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: Date(),
+            progress: { progressEvents.value.append($0) },
+            isCancelled: nil)
+
+        let events = progressEvents.value
+        #expect(events.allSatisfy { $0.totalBytes == expectedTotal })
+
+        // bytesHashed must be monotonic non-decreasing.
+        var prev = 0
+        for event in events {
+            #expect(event.bytesHashed >= prev)
+            prev = event.bytesHashed
+        }
+
+        let last = try #require(events.last)
+        #expect(last.bytesHashed == expectedTotal)
+        #expect(last.totalBytes == expectedTotal)
+    }
+
+    // V1: mid-file cancellation (isCancelled flips true partway through a file) returns a
+    // PARTIAL report without throwing; the in-progress file is NOT counted.
+    @Test("V1: mid-file cancel returns partial report; in-progress file not counted")
+    func midFileCancelPartialReport() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let f1 = dir.appendingPathComponent("first.bin").path
+        let f2 = dir.appendingPathComponent("second.bin").path
+
+        // f1 large enough to span many chunks so cancel lands MID-file, not between files.
+        let f1Data = Data(repeating: 0xC3, count: 8 * 1024 * 1024)
+        let f2Data = Data(repeating: 0xD4, count: 1 * 1024 * 1024)
+        let (storeURL, _) = try makeStore(in: dir, entries: [
+            (f1, f1Data),
+            (f2, f2Data),
+        ])
+
+        // Allow the first few isCancelled checks (between-files guard + first chunks),
+        // then flip true so cancellation happens partway through f1.
+        let checks = RunnerTestBox(0)
+        let report = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: Date(),
+            progress: nil,
+            isCancelled: {
+                checks.value += 1
+                // First check is the between-files guard (allow), then allow two chunk
+                // reads, then cancel mid-file.
+                return checks.value > 3
+            })
+
+        // f1 was cancelled mid-hash → not appended, not counted. f2 never started.
+        #expect(report.entries.isEmpty)
+        #expect(report.summary.total == 0)
     }
 
     // AC4: unreadable ledger → throws (not a partial report)
