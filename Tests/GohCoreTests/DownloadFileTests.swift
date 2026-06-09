@@ -50,6 +50,31 @@ struct DownloadFileTests {
         try file.finish()
     }
 
+    // Capture≡compare parity: the fstat baseline captured at finalization (the
+    // write path) MUST equal a later lstat probe of the same file (the read/
+    // fast-check path). If these two `struct stat → FileStat` mappings ever drift,
+    // every freshly-downloaded file would silently read back as `.changed`. This
+    // locks the load-bearing invariant of the whole rapid-trust feature.
+    @Test("fileStat() baseline equals a later LiveFileStatProbe lstat of the same file")
+    func fileStatMatchesLstatProbe() throws {
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let path = tmpDir.appendingPathComponent("goh-parity-\(UUID().uuidString).bin").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let file = try DownloadFile(path: path, expectedSize: nil)
+        try file.write(Data(repeating: 0xCD, count: 4096), at: 0)
+        let captured = try file.fileStat()   // fstat on the open fd (baseline/write path)
+        try file.finish()                    // fsync + close (does not alter mtime/size/inode)
+
+        let probed = LiveFileStatProbe().probe(path: path)  // lstat on the path (compare path)
+        guard case .stat(let viaLstat) = probed else {
+            Issue.record("expected .stat from LiveFileStatProbe, got \(probed)")
+            return
+        }
+        #expect(captured == viaLstat,
+            "fstat baseline must equal lstat compare — divergence would mark every fresh download .changed")
+    }
+
     @Test("opening a destination creates missing parent directories")
     func createsMissingParentDirectories() throws {
         let root = FileManager.default.temporaryDirectory
