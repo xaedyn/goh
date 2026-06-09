@@ -151,7 +151,9 @@ public enum FastCheckRunner {
 GohMenuBar gains a distinct display status the UI renders from; `.unchanged` and the
 deep-verify result MUST be different cases so a future UI change cannot collapse them:
 ```swift
-public enum TrustDisplayStatus: Sendable, Equatable {
+// nonisolated to match the existing GohMenuBar trust types (constructible from the
+// presenter's nonisolated seam and from tests).
+nonisolated public enum TrustDisplayStatus: Sendable, Equatable {
     case verified(at: Date)        // deep re-hash matched (the cryptographic claim)
     case looksUnchanged           // rapid heuristic only — NOT a proof
     case changed(FastChangeReason)
@@ -162,6 +164,10 @@ public enum TrustDisplayStatus: Sendable, Equatable {
 }
 ```
 AC8 test asserts `verified` and `looksUnchanged` produce different label + icon tokens.
+`.notBaselined` renders **neutral/informational** (never an alert color) — on first release
+a Trust window can be entirely `.notBaselined` (pre-feature entries have no baseline), and
+that is normal, not alarming. Its label: "no baseline recorded — re-download to enable the
+rapid check."
 `--quick` CLI help text and the `looksUnchanged` label state the limitation ("looks
 unchanged since <date> — not a full integrity check; run a deep verify to detect bit-rot or
 tampering that preserves size & timestamp").
@@ -174,18 +180,44 @@ it captures in §6. The XPC `VerifiedProvenanceEntry` (sync skip-path) is Decisi
 ## 6. Capture path — baseline = hashed bytes (closes TOCTOU)
 
 Round-1 flagged: statting at *record* time (after the file handle closed) opens a window
-where the file could be replaced between hash-finalize and stat, so the baseline could
-describe different bytes than the recorded sha256. Fix: capture the baseline with **`fstat`
-on the still-open file descriptor at the moment SHA-256 is finalized**, inside the download
-engine (single/ranged/resume finalization points), and thread it alongside the existing
-sha256 into `completedDownloadHandler` → `ProvenanceEntry`. Because it is the same open fd
-that produced the hashed bytes, the baseline and the hash describe the same file state — no
-TOCTOU window.
+where the file could be replaced between hash-finalize and stat. Fix: capture the baseline
+with **`fstat` on the engine's still-open file descriptor at the moment SHA-256 is
+finalized**. Verified against the real code: `DownloadFile` opens `job.destination`
+directly and writes in place via `pwrite` (no `.part`+`rename(2)`), so the open fd and the
+final on-disk file are the **same inode** — an `fstat` at finalize matches a later `lstat`
+(inode/size/mtime stable). The three concrete seams to add (the round-1 spec hand-waved
+these; here are the exact contracts against the current engine):
 
-If `fstat` fails at finalize (should not happen on a just-written open fd) → store nil
-baseline → the entry reads back as `.notBaselined` (graceful; never blocks recording or the
-download). The daemon does **not** add a separate path `stat` (avoids both the extra syscall
-and the TOCTOU window).
+**6.1 `DownloadFile.fileStat()` accessor.** `DownloadFile` holds `private let descriptor:
+Int32`. Add:
+```swift
+public func fileStat() throws -> FileStat   // fstat(descriptor); maps struct stat → FileStat
+```
+Call it at each finalization point **while the fd is still open, before `file.finish()`**:
+single (~`DownloadEngine.swift` L552–564), ranged-assembly (~L889–900), resume (~L393–394).
+Use `try? file.fileStat()` → an `FileStat?` (nil on the should-never-happen fstat failure →
+`.notBaselined`, never blocks the download).
+
+**6.2 Widen the completion seam.** The real handler is
+`completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, String?, GovernorOutcome)
+-> Void)`, invoked from `complete(jobID:in:transferDuration:isResume:sha256:governorOutcome:)`
+*after* `file.finish()` closes the fd. Append the captured baseline:
+- `complete(... , governorOutcome:, fileStat: FileStat?)` gains a trailing `fileStat`
+  parameter (the value captured in 6.1 before `finish()`).
+- `completedDownloadHandler` becomes `(JobSummary, Duration, Bool, String?, GovernorOutcome,
+  FileStat?)` — additive trailing arg.
+
+**6.3 Route into `ProvenanceEntry`.** The daemon's `record(entry:)` handler
+(`gohd/main.swift`) constructs the `ProvenanceEntry` from the handler's `FileStat?`:
+populate `recordedStatSize`/`recordedMtimeSeconds`/`recordedMtimeNanoseconds`/`recordedInode`/
+`recordedDevice` from it, or leave all nil when the baseline is nil. The daemon does **NOT**
+add its own path `stat` — that would reopen the TOCTOU window *and* race the post-completion
+Spotlight `setxattr` (see §9). The baseline must arrive via the handler from the engine fd.
+
+**6.4 Sync path (D4).** For `recordVerifiedProvenance`, the daemon can `fstat` is not
+available (no engine fd); it may `lstat` the path itself at record time (the file is at rest,
+already hash-verified by `goh sync`) or leave the baseline nil → `.notBaselined`. Decision
+D4; v1 default = `.notBaselined` for sync-skip entries.
 
 ## 7. Rollout & compatibility
 
@@ -230,6 +262,12 @@ and the TOCTOU window).
   is clearly the stronger claim.
 - **TOCTOU:** closed at capture time by fstat-at-finalize (§6); the baseline provably
   describes the hashed bytes.
+- **ctime vs mtime / post-completion `setxattr`:** after the engine closes the fd, the daemon
+  runs `tagCompletedDownload` which issues Spotlight `setxattr` calls on the destination.
+  `setxattr` bumps only `st_ctime`, not `st_mtimespec`/`st_size`/`st_ino`/`st_dev` — so the
+  baseline (mtime, not ctime) is stable across the tagging. This is the concrete reason the
+  baseline uses mtime, and the concrete reason §6.3 forbids a daemon path-`stat` (it would
+  race that `setxattr` and could capture a post-tag ctime/timestamp skew).
 - **Inode/device:** compared as a `(st_ino, st_dev)` pair (not inode alone) to avoid
   cross-volume collisions. APFS clone/CoW copy → new inode → `.changed(.identity)` (correct:
   a new instance). A backup/restore that changes inode without content change → false
