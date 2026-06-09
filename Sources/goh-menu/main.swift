@@ -190,10 +190,16 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
 
     let model: GohMenuViewModel
     let preferences: UserDefaultsMenuPreferences = UserDefaultsMenuPreferences()
+    /// Shared client for both the menu view model and TrustWindowViewModel.
+    /// Stored as a let so the Window @autoclosure can reference it without
+    /// constructing a new instance per evaluation.
+    let menuClientForTrust: LiveGohMenuClient
 
     override init() {
+        let menuClient = LiveGohMenuClient()
+        self.menuClientForTrust = menuClient
         self.model = GohMenuViewModel(
-            client: LiveGohMenuClient(),
+            client: menuClient,
             pasteboardText: { NSPasteboard.general.string(forType: .string) },
             revealInFinder: { destination in
                 NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
@@ -355,7 +361,8 @@ struct GohMenuApp: App {
                 makeViewModel: TrustWindowViewModel(
                     reader: LiveProvenanceReader(path: appDelegate.provenancePath),
                     provenanceStorePath: appDelegate.provenancePath,
-                    probe: LiveFileStatProbe()))
+                    probe: LiveFileStatProbe(),
+                    client: appDelegate.menuClientForTrust))  // shared stored let
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)

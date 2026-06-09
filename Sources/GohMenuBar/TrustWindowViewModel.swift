@@ -2,6 +2,14 @@ import Foundation
 import Synchronization
 import GohCore
 
+/// Collects VerifiedBaseline values from the @Sendable onVerified closure.
+/// Reference-type box so the @Sendable closure can capture a reference (not a mutable var).
+nonisolated private final class BaselineCollectionBox: @unchecked Sendable {
+    private let mutex = Mutex<[VerifiedBaseline]>([])
+    nonisolated func append(_ b: VerifiedBaseline) { mutex.withLock { $0.append(b) } }
+    nonisolated func drain() -> [VerifiedBaseline] { mutex.withLock { let v = $0; $0 = []; return v } }
+}
+
 /// Wraps a weak reference in a Sendable box for safe capture in @Sendable closures.
 /// A @Sendable closure cannot capture a `weak var` directly — this box is captured
 /// by value (the box is the strong reference; `value` is the weak back-reference).
@@ -67,6 +75,9 @@ public final class TrustWindowViewModel: ObservableObject {
     /// a stub in tests.
     private let probe: any FileStatProbing
     private var cancellationBox: CancellationBox?
+    /// Injected client for best-effort baseline sends after a verify run.
+    /// Nil in test contexts that do not exercise backfill.
+    private let menuClient: (any GohMenuClient)?
 
     /// Wall-clock timestamp at which the current verify run started.
     /// Set when transitioning to `.running`; cleared on run end and `reset()`.
@@ -77,12 +88,14 @@ public final class TrustWindowViewModel: ObservableObject {
         reader: any ProvenanceReading,
         provenanceStorePath: String,
         presenter: GohTrustPresenter = GohTrustPresenter(),
-        probe: any FileStatProbing = LiveFileStatProbe()
+        probe: any FileStatProbing = LiveFileStatProbe(),
+        client: (any GohMenuClient)? = nil
     ) {
         self.reader = reader
         self.provenanceStorePath = provenanceStorePath
         self.presenter = presenter
         self.probe = probe
+        self.menuClient = client
     }
 
     // MARK: - Load overview (off-main)
@@ -129,6 +142,10 @@ public final class TrustWindowViewModel: ObservableObject {
         // A @Sendable closure cannot capture a weak var by reference — we capture
         // the weak reference as a Sendable reference-type box instead.
         let weakSelf = WeakRef(self)
+        let collectionBox = BaselineCollectionBox()
+        // Check whether a client is wired before leaving MainActor; store a Bool
+        // (Sendable) rather than the client itself (not Sendable across the thread boundary).
+        let hasClient = menuClient != nil
 
         DispatchQueue.global(qos: .userInitiated).async { [box] in
             do {
@@ -143,7 +160,33 @@ public final class TrustWindowViewModel: ObservableObject {
                             }
                         }
                     },
-                    isCancelled: { box.isCancelled() })
+                    isCancelled: { box.isCancelled() },
+                    onVerified: { baseline in collectionBox.append(baseline) })
+
+                // Send collected baselines best-effort — BEFORE updating runState,
+                // so AC9 (cancelled run backfills) works for both .finished and .cancelled.
+                // Access the @MainActor-isolated client via weakSelf on the MainActor Task.
+                let baselines = collectionBox.drain()
+                if hasClient, !baselines.isEmpty {
+                    let entries = baselines.map { b in
+                        VerifiedProvenanceEntry(
+                            url: b.url,
+                            sha256: b.sha256,
+                            size: b.hashedByteCount,         // display/download byte count
+                            destinationPath: b.destinationPath,
+                            verifiedAt: now,
+                            recordedStatSize: b.stat.size,   // B1: ALWAYS stat.size
+                            recordedMtimeSeconds: b.stat.mtimeSeconds,
+                            recordedMtimeNanoseconds: b.stat.mtimeNanoseconds,
+                            recordedInode: b.stat.inode,
+                            recordedDevice: b.stat.device)
+                    }
+                    Task { @MainActor [weakSelf] in
+                        // Best-effort: error is swallowed — never block or error the UI.
+                        guard let vm = weakSelf.value else { return }
+                        try? await vm.menuClient?.recordVerifiedProvenance(entries)
+                    }
+                }
 
                 Task { @MainActor in
                     guard let vm = weakSelf.value else { return }
