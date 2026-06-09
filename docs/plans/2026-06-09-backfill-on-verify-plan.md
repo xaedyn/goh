@@ -1,7 +1,7 @@
 ---
 date: 2026-06-09
 feature: backfill-on-verify
-plan-status: pending-adversarial-review
+plan-status: approved
 branch: feat/backfill-on-verify
 ---
 
@@ -37,8 +37,9 @@ fstat captured during that hash (TOCTOU-tight, `fstat` on the open handle before
 **Data path:**
 ```
 FileDigest.sha256WithSizeAndStat
-    ↓ (sha256, size, FileStat)
+    ↓ (sha256, size, FileStat?)   ← stat is optional; fstat failure → nil, not garbage
 VerifyAllRunner.hashEntry  →  onVerified(@Sendable (VerifiedBaseline) → Void)?
+    ↓ fires ONLY when stat != nil (VerifiedBaseline.stat is non-optional FileStat)
     ↓ (side channel, not VerifyAllReport)
 GohVerifyAllCommand.run(send:)  / TrustWindowViewModel
     ↓ RecordVerifiedProvenanceRequest [VerifiedProvenanceEntry with 5 stat fields]
@@ -76,7 +77,9 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter <Su
   totalBytes)`.
 - New method to add: `sha256WithSizeAndStat` — same loop, adds `fstat` on
   `handle.fileDescriptor` after EOF, before defer fires, returns
-  `(sha256: String, size: Int, stat: FileStat)`.
+  `(sha256: String, size: Int, stat: FileStat?)`. The hash always succeeds; the
+  stat is optional so an fstat failure degrades the baseline to nil without
+  failing the verify.
 
 ### VerifyAllRunner.swift (GohCore)
 - `verifyAll(provenanceStorePath:generatedAt:progress:isCancelled:) throws ->
@@ -88,8 +91,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter <Su
   hashedBytes = `size` from digest call.
 - To add: `onVerified: (@Sendable (VerifiedBaseline) -> Void)? = nil` param to
   both `verifyAll` and `hashEntry`. Fire in `hashEntry` at the `.ok` branch,
-  AFTER confirming `hash == entry.sha256`, with the FileStat from
-  `sha256WithSizeAndStat`.
+  AFTER confirming `hash == entry.sha256`, with the `FileStat?` from
+  `sha256WithSizeAndStat`. `onVerified` fires ONLY when `stat != nil` (complete
+  baseline). When hash matches but stat is nil, the entry is still `.ok` in the
+  report but no baseline is emitted (file stays `.notBaselined`). `VerifiedBaseline.stat`
+  stays a non-optional `FileStat` — it is only constructed when stat is present.
 
 ### VerifyReportTypes.swift (GohCore) — FROZEN
 - `VerifyEntryResult`, `VerifySummary`, `VerifyAllReport` — NO new fields.
@@ -198,7 +204,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter <Su
 
 | Action | File | Key new symbols |
 |--------|------|-----------------|
-| Modify | `Sources/GohCore/TrustCore/FileDigest.swift` | `sha256WithSizeAndStat(path:onBytesHashed:isCancelled:) throws -> (sha256:String, size:Int, stat:FileStat)` |
+| Modify | `Sources/GohCore/TrustCore/FileDigest.swift` | `sha256WithSizeAndStat(path:onBytesHashed:isCancelled:) throws -> (sha256:String, size:Int, stat:FileStat?)` |
 | Create | `Sources/GohCore/CLI/VerifiedBaseline.swift` | `nonisolated public struct VerifiedBaseline: Sendable, Equatable { destinationPath, url, sha256, hashedByteCount, stat }` |
 | Modify | `Sources/GohCore/CLI/VerifyAllRunner.swift` | `onVerified: (@Sendable (VerifiedBaseline) -> Void)? = nil` param on `verifyAll` + `hashEntry`; `sha256WithSizeAndStat` call; fire `onVerified` per `.ok` |
 | Modify | `Sources/GohCore/Model/Command.swift` | 5 additive-optional fields on `VerifiedProvenanceEntry`; updated init |
@@ -270,6 +276,9 @@ struct FileDigestStatTests {
 
     // AC4: fstat on the open handle describes the hashed inode.
     // Compare digest's FileStat to an independent lstat of the unchanged file.
+    // A valid open fd always produces a non-nil stat; the failure→nil path is
+    // defensive (no external test can force fstat to fail on a valid open fd)
+    // and is covered by code inspection / the guard in the implementation.
     @Test("AC4: captured FileStat matches independent lstat of hashed file")
     func capturedStatMatchesLstat() throws {
         let tmp = FileManager.default.temporaryDirectory
@@ -279,18 +288,18 @@ struct FileDigestStatTests {
 
         let result = try FileDigest.sha256WithSizeAndStat(path: tmp.path)
 
+        // A real file's fstat always succeeds on a valid open fd.
+        let s = try #require(result.stat, "fstat must succeed on a valid open fd")
+
         // Independent lstat of the same path.
         var st = stat()
         let rc = tmp.path.withCString { Darwin.lstat($0, &st) }
         #expect(rc == 0)
-        let lstatSize = Int64(st.st_size)
-        let lstatMtimeSec = Int64(st.st_mtimespec.tv_sec)
-        let lstatInode = UInt64(st.st_ino)
 
-        #expect(result.stat.size == lstatSize)
-        #expect(result.stat.mtimeSeconds == lstatMtimeSec)
-        #expect(result.stat.inode == lstatInode)
-        #expect(result.stat.isRegularFile == true)
+        #expect(s.size == Int64(st.st_size))
+        #expect(s.mtimeSeconds == Int64(st.st_mtimespec.tv_sec))
+        #expect(s.inode == UInt64(st.st_ino))
+        #expect(s.isRegularFile == true)
     }
 
     // AC10: recordedStatSize source is stat.size, not hashedByteCount.
@@ -306,15 +315,18 @@ struct FileDigestStatTests {
 
         let result = try FileDigest.sha256WithSizeAndStat(path: tmp.path)
 
+        // A real file's fstat always succeeds on a valid open fd.
+        let s = try #require(result.stat, "fstat must succeed on a valid open fd")
+
         var st = stat()
         let rc = tmp.path.withCString { Darwin.lstat($0, &st) }
         #expect(rc == 0)
         // stat.size is the fstat st_size — the source for recordedStatSize.
-        #expect(result.stat.size == Int64(st.st_size))
+        #expect(s.size == Int64(st.st_size))
         // hashedByteCount is the streaming byte count — separate field.
         #expect(result.size == content.count)
         // For a normal regular file they are equal; the fields are distinct.
-        #expect(result.stat.size == Int64(result.size))
+        #expect(s.size == Int64(result.size))
     }
 
     // isRegularFile derives from (st_mode & S_IFMT) == S_IFREG (NOT S_ISREG macro).
@@ -325,7 +337,9 @@ struct FileDigestStatTests {
         try Data("data".utf8).write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
         let result = try FileDigest.sha256WithSizeAndStat(path: tmp.path)
-        #expect(result.stat.isRegularFile == true)
+        // A real file's fstat always succeeds on a valid open fd.
+        let s = try #require(result.stat)
+        #expect(s.isRegularFile == true)
     }
 
     // Missing file still throws cannotOpen (same as sha256WithSize).
@@ -369,7 +383,9 @@ In `Sources/GohCore/TrustCore/FileDigest.swift`, after the existing `sha256WithS
 ///   - path: Absolute path of the file to hash.
 ///   - onBytesHashed: Optional chunk callback (same semantics as `sha256WithSize`).
 ///   - isCancelled: Optional cancellation check (same semantics as `sha256WithSize`).
-/// - Returns: A named tuple of `(sha256: "sha256:<hex>", size: byteCount, stat: FileStat)`.
+/// - Returns: A named tuple of `(sha256: "sha256:<hex>", size: byteCount, stat: FileStat?)`.
+///   The hash always succeeds. `stat` is non-nil when fstat succeeds (always true for a
+///   valid open fd); nil on fstat failure (defensive — does not fail the verify).
 ///   `stat.size` is the `fstat` `st_size` — the source for `recordedStatSize`. `size` is the
 ///   streaming byte count — the source for `VerifiedProvenanceEntry.size` (display).
 /// - Throws: `DigestError.cannotOpen` when the file cannot be opened; `DigestError.cancelled`
@@ -378,7 +394,7 @@ public static func sha256WithSizeAndStat(
     path: String,
     onBytesHashed: ((Int) -> Void)? = nil,
     isCancelled: (() -> Bool)? = nil
-) throws -> (sha256: String, size: Int, stat: FileStat) {
+) throws -> (sha256: String, size: Int, stat: FileStat?) {
     guard let handle = FileHandle(forReadingAtPath: path) else {
         throw DigestError.cannotOpen(path)
     }
@@ -402,20 +418,26 @@ public static func sha256WithSizeAndStat(
     }
 
     // fstat on the still-open handle — TOCTOU-tight. Describes the inode whose bytes
-    // were just hashed. Uses (st_mode & S_IFMT) == S_IFREG (not S_ISREG, a C macro
-    // that cannot be imported into Swift — see FileStat.swift).
+    // were just hashed. Captured BEFORE defer { close } fires.
+    // Uses (st_mode & S_IFMT) == S_IFREG (not S_ISREG, a C macro that cannot be
+    // imported into Swift — see FileStat.swift).
+    // Guard the return code: on failure, return nil stat (no garbage baseline).
     var st = Darwin.stat()
-    _ = Darwin.fstat(handle.fileDescriptor, &st)
-    let fileStat = FileStat(
-        size: Int64(st.st_size),
-        mtimeSeconds: Int64(st.st_mtimespec.tv_sec),
-        mtimeNanoseconds: Int64(st.st_mtimespec.tv_nsec),
-        inode: UInt64(st.st_ino),
-        device: Int64(st.st_dev),
-        isRegularFile: (st.st_mode & S_IFMT) == S_IFREG)
+    let statResult: FileStat?
+    if Darwin.fstat(handle.fileDescriptor, &st) == 0 {
+        statResult = FileStat(
+            size: Int64(st.st_size),
+            mtimeSeconds: Int64(st.st_mtimespec.tv_sec),
+            mtimeNanoseconds: Int64(st.st_mtimespec.tv_nsec),
+            inode: UInt64(st.st_ino),
+            device: Int64(st.st_dev),
+            isRegularFile: (st.st_mode & S_IFMT) == S_IFREG)
+    } else {
+        statResult = nil
+    }
 
     let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    return (sha256: "sha256:" + hex, size: totalBytes, stat: fileStat)
+    return (sha256: "sha256:" + hex, size: totalBytes, stat: statResult)
 }
 ```
 
@@ -742,7 +764,7 @@ private static func hashEntry(
 ) throws -> (VerifyEntryResult, Int) {
     let hash: String
     let size: Int
-    let fileStat: FileStat
+    let fileStat: FileStat?   // Optional: fstat failure → nil, does not fail verify
     do {
         var bytesIntoThisFile = 0
         var bytesSinceLastEmit = 0
@@ -764,7 +786,7 @@ private static func hashEntry(
             isCancelled: isCancelled)
         hash = result.sha256
         size = result.size
-        fileStat = result.stat
+        fileStat = result.stat   // FileStat? — nil on fstat failure (defensive)
     } catch FileDigest.DigestError.cancelled {
         throw FileDigest.DigestError.cancelled
     } catch FileDigest.DigestError.cannotOpen {
@@ -785,15 +807,17 @@ private static func hashEntry(
 
     if hash == entry.sha256 {
         // Fire onVerified at the moment the entry passes — BEFORE returning.
-        // AC9: this fires per-.ok immediately, so a cancelled run still backfills
-        // all entries verified before the cancel.
-        if let onVerified {
+        // AC9: fires per-.ok immediately so cancelled runs still backfill.
+        // Only emit a baseline when stat is non-nil (complete metadata).
+        // When hash matches but stat is nil, the entry is still .ok in the report
+        // but stays .notBaselined — no garbage is written.
+        if let onVerified, let stat = fileStat {
             let baseline = VerifiedBaseline(
                 destinationPath: entry.destinationPath,
                 url: entry.url,
                 sha256: hash,
                 hashedByteCount: size,
-                stat: fileStat)
+                stat: stat)
             onVerified(baseline)
         }
         return (VerifyEntryResult(
@@ -1351,9 +1375,10 @@ import Testing
 import XPC
 @testable import GohCore
 
-/// Spy sender: records RecordVerifiedProvenanceRequest batches sent to it.
-/// @unchecked Sendable: mutated only from the @Sendable closure,
-/// which is called synchronously within verifyAll on one thread.
+/// Spy sender: records RecordVerifiedProvenanceRequest batches sent via GohCommandClient.
+/// Mirrors the spy pattern used in GohSyncCommand tests — decodes the XPC envelope,
+/// captures the Command payload, returns a valid AckReply envelope.
+/// @unchecked Sendable: mutated only from the @Sendable closure (single-threaded here).
 private final class SpySender: @unchecked Sendable {
     var sentEntries: [[VerifiedProvenanceEntry]] = []
     var shouldThrow = false
@@ -1364,17 +1389,14 @@ private final class SpySender: @unchecked Sendable {
         if case .recordVerifiedProvenance(let req) = envelope.payload {
             sentEntries.append(req.entries)
         }
-        // Return a minimal .ack reply envelope.
-        return try GohEnvelope<EmptyReply>(
+        // Return a well-formed AckReply envelope (same shape GohCommandClient expects).
+        return try GohEnvelope<AckReply>(
             protocolVersion: CommandService.protocolVersion,
             requestID: envelope.requestID,
             messageType: .reply,
-            payload: EmptyReply()).xpcDictionary()
+            payload: AckReply()).xpcDictionary()
     }
 }
-
-// Placeholder for empty-reply decoding if needed.
-private struct EmptyReply: Codable, Sendable {}
 
 @Suite("GohVerifyAllCommand backfill")
 struct GohVerifyAllCommandBackfillTests {
@@ -1533,7 +1555,7 @@ struct GohVerifyAllCommandBackfillTests {
 }
 ```
 
-**Note on SpySender:** The spy decodes the XPC dictionary as a `GohEnvelope<Command>`. If the existing test infrastructure for this pattern differs, adapt to use `GohCommandClient` directly or a simpler closure-based spy that records calls. The key requirement is: the send closure captures the `VerifiedProvenanceEntry` entries for assertion.
+**Note on SpySender:** The spy mirrors the pattern used in `GohSyncCommand` tests — it decodes the XPC dictionary as a `GohEnvelope<Command>`, captures the `.recordVerifiedProvenance` payload, and returns a well-formed `AckReply` envelope. `GohCommandClient` inside `run` calls `send` with this dictionary; the spy captures the decoded entries. `import XPC` is required in the test file.
 
 **Step 2 — Run expecting failure:**
 ```
@@ -1615,6 +1637,7 @@ After Step 2, before Step 3 (derive exit code), add the best-effort send:
 ```swift
 // ── Step 2.5: Best-effort backfill send ──────────────────────────────────────
 // AC7: send failure never changes exit code or report. AC5: send is nil for attest.
+// Uses GohCommandClient (mirrors GohSyncCommand's pattern at ~L139).
 if let send, let baselines = collector?.baselines, !baselines.isEmpty {
     let entries = baselines.map { b in
         VerifiedProvenanceEntry(
@@ -1623,21 +1646,18 @@ if let send, let baselines = collector?.baselines, !baselines.isEmpty {
             size: b.hashedByteCount,               // display/download byte count
             destinationPath: b.destinationPath,
             verifiedAt: generatedAt,
-            recordedStatSize: b.stat.size,          // B1: ALWAYS stat.size
+            recordedStatSize: b.stat.size,          // B1: ALWAYS stat.size (non-optional on VerifiedBaseline)
             recordedMtimeSeconds: b.stat.mtimeSeconds,
             recordedMtimeNanoseconds: b.stat.mtimeNanoseconds,
             recordedInode: b.stat.inode,
             recordedDevice: b.stat.device)
     }
-    let request = GohEnvelope(
-        protocolVersion: CommandService.protocolVersion,
-        requestID: UUID(),
-        messageType: .request,
-        payload: Command.recordVerifiedProvenance(
-            request: RecordVerifiedProvenanceRequest(entries: entries)))
     do {
-        let dict = try request.xpcDictionary()
-        _ = try send(XPCDictionary(dict))
+        let client = GohCommandClient(send: send)
+        _ = try client.send(
+            .recordVerifiedProvenance(
+                request: RecordVerifiedProvenanceRequest(entries: entries)),
+            expecting: AckReply.self)
     } catch {
         // AC7: best-effort. Log warning to stderr; never change exit code.
         fputs("goh verify --all: provenance backfill failed (daemon may be stopped): \(error)\n",
@@ -2112,7 +2132,30 @@ public func startVerify() {
 }
 ```
 
-Also update `goh-menu/main.swift`'s `TrustWindowRoot` / `TrustWindowViewModel` construction to pass `client: LiveGohMenuClient()`. Find the construction site:
+Also update `goh-menu/main.swift`'s `TrustWindowRoot` / `TrustWindowViewModel` construction to pass the shared `LiveGohMenuClient`.
+
+**Critical (Advisory T7):** `GohMenuAppDelegate` must store `menuClientForTrust` as a stored `let` property — not inline-constructed. This is the only safe pattern because `TrustWindowViewModel` is initialized inside a SwiftUI `@autoclosure`-backed `Window` builder; constructing `LiveGohMenuClient()` inline there would create a separate, ephemeral instance. The delegate constructs one shared instance and hands it to both `GohMenuViewModel` and `TrustWindowViewModel`.
+
+`appDelegate.model.client` is `private let` on `GohMenuViewModel` and is not accessible externally. The fix: hoist `LiveGohMenuClient` construction to `GohMenuAppDelegate.init` and store it as a `let`:
+
+In `GohMenuAppDelegate` (add a stored `let` property):
+
+```swift
+// Shared client for both the menu view model and TrustWindowViewModel.
+// Stored as a let so the Window @autoclosure can reference it without
+// constructing a new instance per evaluation.
+let menuClientForTrust: LiveGohMenuClient
+```
+
+In `GohMenuAppDelegate.init`:
+
+```swift
+let menuClient = LiveGohMenuClient()
+self.menuClientForTrust = menuClient
+self.model = GohMenuViewModel(client: menuClient, ...)
+```
+
+And in the `Window("Trust")` construction site in `goh-menu/main.swift`:
 
 ```swift
 Window("Trust", id: "trust") {
@@ -2121,28 +2164,8 @@ Window("Trust", id: "trust") {
             reader: LiveProvenanceReader(path: appDelegate.provenancePath),
             provenanceStorePath: appDelegate.provenancePath,
             probe: LiveFileStatProbe(),
-            client: appDelegate.model.client))  // inject the shared client
+            client: appDelegate.menuClientForTrust))  // shared stored let
 }
-```
-
-Note: `appDelegate.model.client` is `private` on `GohMenuViewModel`. The simplest approach is to store the `LiveGohMenuClient` on the app delegate and pass it to both `GohMenuViewModel` and `TrustWindowViewModel`. Pre-task read of `GohMenuAppDelegate` init and `GohMenuViewModel` shows `client` is stored as `private let`. Change: store `LiveGohMenuClient` on `GohMenuAppDelegate` and pass it to both.
-
-In `GohMenuAppDelegate.init`:
-
-```swift
-let menuClient = LiveGohMenuClient()
-self.model = GohMenuViewModel(client: menuClient, ...)
-self.menuClientForTrust = menuClient
-```
-
-And in the `Window("Trust")`:
-
-```swift
-makeViewModel: TrustWindowViewModel(
-    reader: LiveProvenanceReader(path: appDelegate.provenancePath),
-    provenanceStorePath: appDelegate.provenancePath,
-    probe: LiveFileStatProbe(),
-    client: appDelegate.menuClientForTrust))
 ```
 
 **Step 4 — Run expecting pass:**
@@ -2230,8 +2253,10 @@ under `-warnings-as-errors`. T6 adds `recordVerifiedProvenance` to all three
 before any Phase 2 compilation. Non-negotiable.
 
 **A3 — AC10 spy strategy:** T1 uses a direct `fstat` lstat comparison to verify
-`stat.size` source (not a contrived differing-size file). The test explicitly
-asserts `result.stat.size == Int64(st.st_size)` and names the purpose.
+`stat.size` source (not a contrived differing-size file). Tests use
+`let s = try #require(result.stat)` then assert `s.size == Int64(st.st_size)`.
+The fstat-failure→nil path is defensive and not externally forceable on a valid
+open fd; it is covered by code inspection and the explicit guard in the implementation.
 
 **A4 — `verifiedAt` reader sweep:** Confirmed in Phase 0:
 `GohTrustPresenter.displayStatus` uses `verifiedAt != nil → .verified(at:)`
@@ -2241,7 +2266,9 @@ intended effect per spec §9.
 
 **B1 — recordedStatSize source:** Every site that builds `VerifiedProvenanceEntry`
 uses `b.stat.size` for `recordedStatSize` and `b.hashedByteCount` for `size`.
-The field names and comments make the distinction explicit. Tests T1 and T5
+`VerifiedBaseline.stat` is a non-optional `FileStat` (the guard in `hashEntry`
+ensures `onVerified` fires only when stat is present), so `b.stat.size` is always
+safe. The field names and comments make the distinction explicit. Tests T1 and T5
 assert the correct source.
 
 **B2 — all-or-nothing:** `hasBaseline` predicate in T4 covers all three merge
@@ -2251,6 +2278,23 @@ branches. Tests cover the partial-nil case and the absent-baseline-preserves-exi
 passes (before returning from `hashEntry`). Both the CLI (T5) and tray (T7)
 collect into a box; the box is drained and sent regardless of run completion
 status (`.finished` or `.cancelled`).
+
+**FM1 — fstat guard (block fix):** `sha256WithSizeAndStat` returns `FileStat?`.
+The fstat return code is guarded; on failure, `statResult = nil` (no garbage
+baseline). `hashEntry` fires `onVerified` only when `stat != nil` (via
+`if let onVerified, let stat = fileStat`). `VerifiedBaseline.stat` remains
+non-optional — it is only constructed when the guard passes. T1 tests use
+`try #require(result.stat)` to unwrap and assert the success path.
+
+**FM2 — GohCommandClient (advisory fix):** T5's send block uses
+`GohCommandClient(send: send)` + `client.send(.recordVerifiedProvenance(...), expecting: AckReply.self)`
+instead of a hand-rolled envelope. Mirrors `GohSyncCommand` exactly. `SpySender`
+returns a well-formed `AckReply` envelope for the client to decode.
+
+**FM3 — menuClientForTrust stored let (advisory fix):** `GohMenuAppDelegate`
+stores `let menuClientForTrust: LiveGohMenuClient`. Constructed once in `init`,
+passed to both `GohMenuViewModel` and `TrustWindowViewModel`. No inline
+construction in the `Window` builder.
 
 ---
 
