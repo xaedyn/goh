@@ -176,7 +176,8 @@ public struct GohCommandLine {
                 // BLOCK-1: resolve at dispatch via the injected resolver (create:false in production).
                 return GohVerifyAllCommand.run(
                     provenanceStorePath: provenanceStorePathResolver() ?? "",
-                    json: json)
+                    json: json,
+                    send: send)  // Pass the live sender; attest uses nil-send form.
 
             case .verifyQuick:
                 return GohVerifyQuickCommand.run(
