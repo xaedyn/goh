@@ -385,6 +385,12 @@ private final class FakeMenuClient: GohMenuClient {
         removedRequests.append(RemoveRequest(jobID: jobID, keepPartialFile: keepPartialFile))
     }
 
+    private(set) var recordedVerifiedEntries: [[VerifiedProvenanceEntry]] = []
+
+    func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws {
+        recordedVerifiedEntries.append(entries)
+    }
+
     func enqueue(_ event: FakeStreamEvent) {
         streamEvents.append(event)
     }
@@ -457,4 +463,5 @@ private final class LongLivedMenuClient: GohMenuClient {
     func pause(jobID: UInt64) async throws {}
     func resume(jobID: UInt64) async throws {}
     func remove(jobID: UInt64, keepPartialFile: Bool) async throws {}
+    func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws {}
 }

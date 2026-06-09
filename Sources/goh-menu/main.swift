@@ -69,6 +69,20 @@ final class LiveGohMenuClient: GohMenuClient {
         }
     }
 
+    func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws {
+        do {
+            // .ack reply has no payload; send as a fire-and-forget one-shot.
+            // The daemon returns .ack; we decode it as AckReply (a void-like Codable type).
+            _ = try await Self.sendOneShot(
+                .recordVerifiedProvenance(
+                    request: RecordVerifiedProvenanceRequest(entries: entries)),
+                expecting: AckReply.self,
+                validationMode: validationMode)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private nonisolated static func makeSubscription(
         validationMode: PeerValidationMode
     ) throws -> LiveProgressSubscription {
