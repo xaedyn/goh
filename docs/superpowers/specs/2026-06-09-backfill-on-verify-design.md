@@ -64,14 +64,22 @@ backfill, done in the one way that keeps the baseline meaningful.
 - **AC4** The captured `FileStat` describes the hashed bytes (fstat on the open hash handle,
   before close) — a test asserts the digest's FileStat equals an independent lstat of the
   unchanged file.
-- **AC5** `goh attest` performs **no** ledger write (passes nil sender; a test asserts the
-  ledger is byte-unchanged across an attest run).
+- **AC5** `goh attest` performs **no** ledger write (it calls verify-all twice, both without a
+  sender; a test asserts the ledger is byte-unchanged across a full attest run).
 - **AC6** `VerifyAllReport` / `--json` output is byte-identical to before (golden fixture +
   `--json` tests unchanged) — the baseline is never in the report.
 - **AC7** With the daemon stopped / no sender, `goh verify --all` still completes and reports
   correctly (backfill is best-effort, silently skipped) — verify is never blocked by backfill.
 - **AC8** `protocolVersion` stays 4; old/new peers interoperate (additive-optional wire
   fields).
+- **AC9** A deep verify CANCELLED partway still backfills the `.ok` entries verified before
+  the cancel (each was cryptographically confirmed); entries not reached get nothing.
+- **AC10** The written `recordedStatSize` equals the file's `fstat` `st_size`, independent of
+  the hashed byte count (a test uses a file where they could differ, or asserts the source is
+  `stat.size`); a subsequent `verify --quick` returns `.unchanged`.
+- **AC11** Re-running a deep verify on an already-baselined file is idempotent — it overwrites
+  with the same 5 values (same fstat → same baseline); the ledger entry is value-unchanged
+  apart from `verifiedAt`.
 
 ## 5. Interface contracts
 
@@ -90,26 +98,58 @@ Maps `fstat(handle.fileDescriptor)` → `FileStat` exactly as `LiveFileStatProbe
 callers that don't need the stat.
 
 ### 5.2 `VerifyAllRunner` (side channel)
-`VerifyAllReport` stays frozen. The runner gains an optional collector so callers that want
-baselines get them without touching the report:
+`VerifyAllReport` stays frozen. The runner gains an optional **`@Sendable` callback** (NOT an
+`inout` array — `verifyAll` runs on a real OS thread off the cooperative pool, and its
+existing `progress`/`isCancelled` callbacks are already `@Sendable`; an `inout` can't cross
+that boundary):
 ```swift
 public struct VerifiedBaseline: Sendable, Equatable {
     public let destinationPath: String
     public let url: String
-    public let sha256: String
-    public let size: Int
-    public let stat: FileStat
+    public let sha256: String        // "sha256:"-prefixed, the confirmed hash
+    public let hashedByteCount: Int  // FileDigest byte count → VerifiedProvenanceEntry.size (display)
+    public let stat: FileStat        // fstat of the hashed handle; stat.size → recordedStatSize
 }
-// verifyAll gains an optional out-collection (e.g. an inout array or an onVerified
-// callback) populated ONLY for .ok entries. Default nil → today's behavior, zero overhead.
+// verifyAll gains:  onVerified: (@Sendable (VerifiedBaseline) -> Void)? = nil
+// Fired ONCE per .ok entry, AT THE MOMENT that entry passes (not batched at the end), so a
+// cancelled/partial run still surfaces the entries verified before the cancel. Default nil →
+// today's behavior, zero overhead. .failed/.missing entries NEVER fire it.
 ```
+**Source-of-truth rule (B1):** `recordedStatSize` is ALWAYS `stat.size` (the fstat `st_size`),
+NEVER `hashedByteCount`. The fast check compares `lstat`'s `st_size` against
+`recordedStatSize`, so the baseline's size MUST be the stat size for parity. `hashedByteCount`
+feeds only the existing `VerifiedProvenanceEntry.size` (display/download semantics, unchanged).
+For a normal regular file the two are equal; they are kept distinct so the wiring is
+unambiguous and an edge case (e.g. a sparse file) can't silently mis-baseline.
+
+**Cancellation (B3):** both the tray `.finished` and `.cancelled` paths, and the CLI on a
+partial run, send whatever baselines `onVerified` collected — every collected entry is a fully
+cryptographically-verified `.ok`, so backfilling it is correct even if the overall run was
+cancelled. AC9 covers this.
 
 ### 5.3 Wire + store (additive-optional)
 `VerifiedProvenanceEntry` gains `recordedStatSize: Int64?`, `recordedMtimeSeconds: Int64?`,
 `recordedMtimeNanoseconds: Int64?`, `recordedInode: UInt64?`, `recordedDevice: Int64?` (all
 defaulted nil — Codable backward-compatible, no `protocolVersion` bump; daemon+CLI ship
-together). `ProvenanceStore.recordVerified` populates the entry's `recordedStat*` from them
-(all-or-nothing). `CommandDispatcher` validation unchanged except it forwards the new fields.
+together). `recordedStatSize` is sourced from `VerifiedBaseline.stat.size` (§5.2 B1 rule).
+
+**All-or-nothing baseline (B2):** the daemon treats the incoming baseline as present iff ALL
+FIVE wire fields are non-nil; if any is nil (e.g. a mixed-version peer), it writes NONE of
+them (never a partial baseline → the entry would read `.notBaselined`, which is correct).
+
+**`ProvenanceStore.recordVerified` per-branch behavior (B2)** — today it ignores
+`recordedStat*`; this feature makes each branch carry them:
+- **same path + same sha256** (the primary backfill path — re-verifying a pre-#104 file):
+  preserve `downloadedAt`, set `verifiedAt`, refresh `url`/`size`, and **OVERWRITE all 5
+  `recordedStat*`** with the incoming baseline when it is present (all-or-nothing). When the
+  incoming baseline is absent, leave the existing `recordedStat*` untouched (don't null them).
+- **same path + different sha256** and **new path**: the freshly-constructed `ProvenanceEntry`
+  MUST pass all 5 `recordedStat*` from the incoming baseline (or all nil if absent) — today's
+  code omits them, which would leave these entries `.notBaselined`; the feature must add them.
+
+`CommandDispatcher` forwards the 5 new fields; it performs NO additional validation on them
+(decision A2 — they come from a same-team peer that just hashed the bytes; the existing
+sha256-prefix + non-empty-path filter is unchanged).
 
 ### 5.4 CLI / tray write path
 - `GohVerifyQuickCommand` unchanged. `GohVerifyAllCommand.run(...)` gains
@@ -151,8 +191,19 @@ time (which would reopen a TOCTOU window). Same design as #104's fstat-at-finali
   against the recorded hash. Backfill never trusts unverified metadata — this is the core
   safety property. A `.failed` file gets nothing (AC2).
 - `verifiedAt` is now also set by deep verify (previously only `goh sync`). This is correct —
-  it *is* a verification — and matches the "verified <date>" claim's meaning. The tray's
-  `verified` vs `looksUnchanged` distinction (#104) is unaffected.
+  it *is* a verification. Consumer sweep: the only code that reads `verifiedAt` for a decision
+  is the tray presenter's `displayStatus` precedence (`verifiedAt != nil → .verified`, #104).
+  Lighting up `.verified` for a deep-verified-but-never-synced file is the intended effect; no
+  code path treats `verifiedAt != nil` as "synced specifically." `goh which` displays it but
+  branches no logic on it.
+- **Idempotency:** re-running a deep verify overwrites the baseline with the same fstat values
+  (same file → identical 5 fields), so it is idempotent apart from refreshing `verifiedAt`
+  (AC11).
+- **Best-effort surfaces:** a backfill send failure NEVER changes verify's exit code/report
+  (AC7). The CLI logs a one-line warning to stderr (matching `goh sync`'s best-effort
+  provenance warning); the tray drops it silently (no stderr in the app) — it must never block
+  or error the UI. Backfill failure leaves the file `.notBaselined`, recoverable by the next
+  successful verify.
 - No new attack surface: reuses the existing authenticated `recordVerifiedProvenance` daemon
   command (same-team peer validation). The CLI→daemon send is the same channel `goh sync`
   already uses.
