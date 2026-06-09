@@ -30,6 +30,26 @@ struct DownloadFileTests {
         #expect(try Data(contentsOf: url) == payload)
     }
 
+    // fileStat() returns a FileStat with correct size for a written file.
+    @Test("fileStat() returns accurate size and isRegularFile for a written file")
+    func fileStatReturnsAccurateSize() throws {
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let path = tmpDir.appendingPathComponent("goh-fileStat-test-\(UUID().uuidString).bin").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let file = try DownloadFile(path: path, expectedSize: nil)
+        let payload = Data(repeating: 0xAB, count: 1024)
+        try file.write(payload, at: 0)
+
+        let stat = try file.fileStat()
+        #expect(stat.size == 1024)
+        #expect(stat.isRegularFile == true)
+        #expect(stat.inode > 0)
+        #expect(stat.device != 0)
+
+        try file.finish()
+    }
+
     @Test("opening a destination creates missing parent directories")
     func createsMissingParentDirectories() throws {
         let root = FileManager.default.temporaryDirectory

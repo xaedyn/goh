@@ -107,6 +107,29 @@ public final class DownloadFile: Sendable {
         bytesSinceSync.withLock { $0 = 0 }
     }
 
+    /// Captures the current file metadata via `fstat(2)` on the open descriptor.
+    ///
+    /// Call this BEFORE `finish()` — the descriptor is closed inside `finish()`.
+    /// Maps `struct stat` fields to `FileStat` exactly as `LiveFileStatProbe.probe` does.
+    ///
+    /// - Throws: `DownloadFileError.syncFailed(errno:)` on `fstat` failure.
+    ///   This should never happen on a successfully opened, written file. The caller
+    ///   should use `try? file.fileStat()` so a should-never-happen failure leaves the
+    ///   baseline nil (→ `.notBaselined`), never blocking the download.
+    public func fileStat() throws -> FileStat {
+        var st = stat()
+        guard Darwin.fstat(descriptor, &st) == 0 else {
+            throw DownloadFileError.syncFailed(errno: errno)
+        }
+        return FileStat(
+            size: Int64(st.st_size),
+            mtimeSeconds: Int64(st.st_mtimespec.tv_sec),
+            mtimeNanoseconds: Int64(st.st_mtimespec.tv_nsec),
+            inode: UInt64(st.st_ino),
+            device: Int64(st.st_dev),
+            isRegularFile: (st.st_mode & S_IFMT) == S_IFREG)
+    }
+
     /// fsyncs and closes the file.
     public func finish() throws {
         let shouldClose = closed.withLock { closed in
