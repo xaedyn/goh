@@ -90,8 +90,37 @@ public struct VerifiedProvenanceEntry: Codable, Sendable, Equatable {
     /// `URL(fileURLWithPath:).standardizedFileURL.path`.
     public var destinationPath: String
     public var verifiedAt: Date
-    public init(url: String, sha256: String, size: Int, destinationPath: String, verifiedAt: Date) {
-        self.url = url; self.sha256 = sha256; self.size = size
-        self.destinationPath = destinationPath; self.verifiedAt = verifiedAt
+
+    // Additive-optional baseline fields (all-or-nothing: any nil → write none).
+    // Sourced from FileDigest.sha256WithSizeAndStat FileStat, NOT the streaming byte count.
+    // B1: recordedStatSize is ALWAYS stat.size (fstat st_size), NEVER hashedByteCount.
+    public var recordedStatSize: Int64?           // st_size (off_t)
+    public var recordedMtimeSeconds: Int64?       // st_mtimespec.tv_sec
+    public var recordedMtimeNanoseconds: Int64?   // st_mtimespec.tv_nsec
+    public var recordedInode: UInt64?             // st_ino
+    public var recordedDevice: Int64?             // st_dev widened to Int64
+
+    public init(
+        url: String,
+        sha256: String,
+        size: Int,
+        destinationPath: String,
+        verifiedAt: Date,
+        recordedStatSize: Int64? = nil,
+        recordedMtimeSeconds: Int64? = nil,
+        recordedMtimeNanoseconds: Int64? = nil,
+        recordedInode: UInt64? = nil,
+        recordedDevice: Int64? = nil
+    ) {
+        self.url = url
+        self.sha256 = sha256
+        self.size = size
+        self.destinationPath = destinationPath
+        self.verifiedAt = verifiedAt
+        self.recordedStatSize = recordedStatSize
+        self.recordedMtimeSeconds = recordedMtimeSeconds
+        self.recordedMtimeNanoseconds = recordedMtimeNanoseconds
+        self.recordedInode = recordedInode
+        self.recordedDevice = recordedDevice
     }
 }

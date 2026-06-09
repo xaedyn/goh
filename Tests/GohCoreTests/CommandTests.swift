@@ -149,3 +149,77 @@ struct CommandTests {
         #expect(try wire(TransferLaneState.failed) == "\"failed\"")
     }
 }
+
+// ── AC8: VerifiedProvenanceEntry additive-optional wire fields ───────────────
+
+@Suite("VerifiedProvenanceEntry wire fields")
+struct VerifiedProvenanceEntryWireTests {
+
+    // AC8: protocolVersion stays 4.
+    @Test("AC8: CommandService protocolVersion stays 4")
+    func protocolVersionUnchanged() {
+        #expect(CommandService.protocolVersion == 4)
+    }
+
+    // AC8: new fields default nil; Codable round-trip preserves them.
+    @Test("AC8: additive-optional fields survive Codable round-trip")
+    func additiveOptionalRoundTrip() throws {
+        let entry = VerifiedProvenanceEntry(
+            url: "https://example.com/file.bin",
+            sha256: "sha256:" + String(repeating: "a", count: 64),
+            size: 1024,
+            destinationPath: "/Users/u/Downloads/file.bin",
+            verifiedAt: Date(timeIntervalSince1970: 1_748_000_000),
+            recordedStatSize: 1024,
+            recordedMtimeSeconds: 1_748_000_000,
+            recordedMtimeNanoseconds: 123_456_789,
+            recordedInode: 987654321,
+            recordedDevice: 16777220)
+
+        let data = try CommandCoding.encoder.encode(entry)
+        let decoded = try CommandCoding.decoder.decode(VerifiedProvenanceEntry.self, from: data)
+
+        #expect(decoded.recordedStatSize == 1024)
+        #expect(decoded.recordedMtimeSeconds == 1_748_000_000)
+        #expect(decoded.recordedMtimeNanoseconds == 123_456_789)
+        #expect(decoded.recordedInode == 987654321)
+        #expect(decoded.recordedDevice == 16777220)
+    }
+
+    // AC8: nil fields are absent from JSON (backward-compatible).
+    @Test("AC8: nil stat fields absent from encoded JSON")
+    func nilFieldsAbsentFromJSON() throws {
+        let entry = VerifiedProvenanceEntry(
+            url: "https://example.com/f.bin",
+            sha256: "sha256:" + String(repeating: "b", count: 64),
+            size: 512,
+            destinationPath: "/tmp/f.bin",
+            verifiedAt: Date(timeIntervalSince1970: 1_000_000_000))
+        // All 5 recordedStat* default nil.
+        let data = try CommandCoding.encoder.encode(entry)
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(!json.contains("recordedStatSize"))
+        #expect(!json.contains("recordedMtimeSeconds"))
+    }
+
+    // AC10: recordedStatSize is sourced from stat.size (Int64), not the display size (Int).
+    // Verify the type is Int64 (the fstat field type).
+    @Test("AC10: recordedStatSize field type is Int64 (matching fstat st_size)")
+    func recordedStatSizeIsInt64() throws {
+        let statSize: Int64 = 73_741_824  // 70.3 MB
+        let entry = VerifiedProvenanceEntry(
+            url: "https://example.com/large.bin",
+            sha256: "sha256:" + String(repeating: "c", count: 64),
+            size: Int(statSize),  // happens to be equal for a normal file
+            destinationPath: "/tmp/large.bin",
+            verifiedAt: Date(timeIntervalSince1970: 1_748_000_000),
+            recordedStatSize: statSize,
+            recordedMtimeSeconds: 1_748_000_000,
+            recordedMtimeNanoseconds: 0,
+            recordedInode: 12345,
+            recordedDevice: 16777220)
+        let data = try CommandCoding.encoder.encode(entry)
+        let decoded = try CommandCoding.decoder.decode(VerifiedProvenanceEntry.self, from: data)
+        #expect(decoded.recordedStatSize == statSize)
+    }
+}
