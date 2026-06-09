@@ -319,3 +319,175 @@ struct VerifyAllRunnerTests {
         }
     }
 }
+
+// ── Backfill: onVerified callback (AC2, AC3, AC6, AC9) ─────────────────────
+
+@Suite("VerifyAllRunner.onVerified")
+struct VerifyAllRunnerOnVerifiedTests {
+
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("goh-runner-ov-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func makeStore(
+        in dir: URL,
+        entries: [(path: String, content: Data)]
+    ) throws -> (storeURL: URL, sha256s: [String]) {
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+        var sha256s: [String] = []
+        for (path, content) in entries {
+            try content.write(to: URL(fileURLWithPath: path))
+            let (sha256, _) = try FileDigest.sha256WithSize(path: path)
+            sha256s.append(sha256)
+            try store.record(entry: ProvenanceEntry(
+                url: "https://example.com/\(URL(fileURLWithPath: path).lastPathComponent)",
+                sha256: sha256,
+                size: content.count,
+                downloadedAt: Date(timeIntervalSince1970: 1_748_000_000),
+                destinationPath: URL(fileURLWithPath: path).standardizedFileURL.path))
+        }
+        return (storeURL, sha256s)
+    }
+
+    // AC2: .failed entry does NOT fire onVerified.
+    @Test("AC2: failed entry does not fire onVerified")
+    func failedEntryNoCallback() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let f = dir.appendingPathComponent("mutated.bin").path
+        let (storeURL, _) = try makeStore(in: dir, entries: [(f, Data("original".utf8))])
+        try Data("MUTATED".utf8).write(to: URL(fileURLWithPath: f))
+
+        let fired = RunnerTestBox<[VerifiedBaseline]>([])
+        _ = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: Date(),
+            progress: nil,
+            isCancelled: nil,
+            onVerified: { fired.value.append($0) })
+
+        #expect(fired.value.isEmpty, "onVerified must not fire for a failed entry")
+    }
+
+    // AC3: .missing entry does NOT fire onVerified.
+    @Test("AC3: missing entry does not fire onVerified")
+    func missingEntryNoCallback() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let f = dir.appendingPathComponent("willbedeleted.bin").path
+        let (storeURL, _) = try makeStore(in: dir, entries: [(f, Data("content".utf8))])
+        try FileManager.default.removeItem(atPath: f)
+
+        let fired = RunnerTestBox<[VerifiedBaseline]>([])
+        _ = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: Date(),
+            progress: nil,
+            isCancelled: nil,
+            onVerified: { fired.value.append($0) })
+
+        #expect(fired.value.isEmpty, "onVerified must not fire for a missing entry")
+    }
+
+    // AC6: VerifyAllReport is unchanged when onVerified is wired (frozen contract).
+    @Test("AC6: report is byte-identical with and without onVerified")
+    func reportUnchangedWithCallback() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let f = dir.appendingPathComponent("ok.bin").path
+        let (storeURL, _) = try makeStore(in: dir, entries: [(f, Data("ok-content".utf8))])
+        let fixedDate = Date(timeIntervalSince1970: 1_714_262_400)
+
+        let reportWithout = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: fixedDate,
+            progress: nil,
+            isCancelled: nil)
+
+        let reportWith = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: fixedDate,
+            progress: nil,
+            isCancelled: nil,
+            onVerified: { _ in })
+
+        #expect(reportWith == reportWithout,
+            "VerifyAllReport must be unchanged when onVerified is present (AC6 — frozen contract)")
+    }
+
+    // AC9: cancelled run fires onVerified for entries verified before the cancel.
+    @Test("AC9: cancelled run backfills entries verified before cancel")
+    func cancelledRunFiresCollectedBaselines() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let f1 = dir.appendingPathComponent("first.bin").path
+        let f2 = dir.appendingPathComponent("second.bin").path
+        let (storeURL, _) = try makeStore(in: dir, entries: [
+            (f1, Data("data1".utf8)),
+            (f2, Data("data2".utf8)),
+        ])
+
+        // Cancel after f1 is processed.
+        let cancelAfterFirst = RunnerTestBox(false)
+        let fired = RunnerTestBox<[VerifiedBaseline]>([])
+        _ = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: Date(),
+            progress: { event in
+                if event.completed >= 1 { cancelAfterFirst.value = true }
+            },
+            isCancelled: { cancelAfterFirst.value },
+            onVerified: { fired.value.append($0) })
+
+        // f1 was verified before cancel → onVerified fired once.
+        #expect(fired.value.count == 1, "onVerified must fire for entries verified before cancel")
+        #expect(fired.value[0].sha256.hasPrefix("sha256:"))
+    }
+
+    // Happy path: onVerified fires once per .ok entry, with the correct fields.
+    @Test("onVerified fires once per ok entry with correct sha256 and stat")
+    func firesPerOkEntry() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let f1 = dir.appendingPathComponent("a.bin").path
+        let f2 = dir.appendingPathComponent("b.bin").path
+        let (storeURL, sha256s) = try makeStore(in: dir, entries: [
+            (f1, Data("aaaa".utf8)),
+            (f2, Data("bbbb".utf8)),
+        ])
+
+        let fired = RunnerTestBox<[VerifiedBaseline]>([])
+        _ = try VerifyAllRunner.verifyAll(
+            provenanceStorePath: storeURL.path,
+            generatedAt: Date(),
+            progress: nil,
+            isCancelled: nil,
+            onVerified: { fired.value.append($0) })
+
+        #expect(fired.value.count == 2)
+        let paths = fired.value.map(\.destinationPath)
+        let f1Canon = URL(fileURLWithPath: f1).standardizedFileURL.path
+        let f2Canon = URL(fileURLWithPath: f2).standardizedFileURL.path
+        #expect(paths.contains(f1Canon))
+        #expect(paths.contains(f2Canon))
+        // sha256s match recorded hashes.
+        for baseline in fired.value {
+            #expect(sha256s.contains(baseline.sha256))
+        }
+        // stat fields are populated.
+        for baseline in fired.value {
+            #expect(baseline.stat.size > 0)
+            #expect(baseline.stat.isRegularFile == true)
+        }
+    }
+}
