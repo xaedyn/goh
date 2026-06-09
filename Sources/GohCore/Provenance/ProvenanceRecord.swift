@@ -55,13 +55,32 @@ public struct ProvenanceEntry: Codable, Sendable, Equatable {
     /// serialize without this key. `ProvenanceRecord.currentVersion` stays 1 — no format bump.
     public var verifiedAt: Date?
 
+    /// Stat baseline captured by `fstat(2)` on the engine's file descriptor at the
+    /// moment SHA-256 finalization completes. All five fields are present iff the
+    /// engine ran `DownloadFile.fileStat()` successfully; any nil → `.notBaselined`.
+    ///
+    /// Stored as raw integers (exact through binary plist — Swift `Date` would lose
+    /// `st_mtimespec` nanoseconds to a Double). Additive-optional: absent from old
+    /// records (decode to nil); nil fields serialize without the key.
+    /// `ProvenanceRecord.currentVersion` stays 1.
+    public var recordedStatSize: Int64?          // st_size (off_t)
+    public var recordedMtimeSeconds: Int64?      // st_mtimespec.tv_sec
+    public var recordedMtimeNanoseconds: Int64?  // st_mtimespec.tv_nsec
+    public var recordedInode: UInt64?            // st_ino (ino_t = __uint64_t)
+    public var recordedDevice: Int64?            // st_dev (dev_t = Int32) widened losslessly
+
     public init(
         url: String,
         sha256: String,
         size: Int,
         downloadedAt: Date,
         destinationPath: String,
-        verifiedAt: Date? = nil
+        verifiedAt: Date? = nil,
+        recordedStatSize: Int64? = nil,
+        recordedMtimeSeconds: Int64? = nil,
+        recordedMtimeNanoseconds: Int64? = nil,
+        recordedInode: UInt64? = nil,
+        recordedDevice: Int64? = nil
     ) {
         self.url = url
         self.sha256 = sha256
@@ -69,5 +88,10 @@ public struct ProvenanceEntry: Codable, Sendable, Equatable {
         self.downloadedAt = downloadedAt
         self.destinationPath = destinationPath
         self.verifiedAt = verifiedAt
+        self.recordedStatSize = recordedStatSize
+        self.recordedMtimeSeconds = recordedMtimeSeconds
+        self.recordedMtimeNanoseconds = recordedMtimeNanoseconds
+        self.recordedInode = recordedInode
+        self.recordedDevice = recordedDevice
     }
 }

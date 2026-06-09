@@ -178,6 +178,10 @@ public struct GohCommandLine {
                     provenanceStorePath: provenanceStorePathResolver() ?? "",
                     json: json)
 
+            case .verifyQuick:
+                return GohVerifyQuickCommand.run(
+                    provenanceStorePath: provenanceStorePathResolver() ?? "")
+
             case .attest(let outputPath):
                 let storePathOrEmpty = provenanceStorePathResolver() ?? ""
                 let locations = attestKeyLocationResolver()
@@ -303,6 +307,7 @@ private enum ParsedCommand: Equatable {
     case which(path: String)
     case verify(lockPath: String, strictUntracked: Bool)
     case verifyAll(json: Bool)
+    case verifyQuick
     case attest(outputPath: String?)
     case verifyAttestation(
         artifactPath: String,
@@ -365,6 +370,15 @@ extension GohCommandLine {
         }
         if arguments.first == "verify" {
             let rest = Array(arguments.dropFirst())
+
+            if rest.first == "--quick" {
+                let after = Array(rest.dropFirst())
+                guard after.isEmpty else {
+                    throw ParseError(
+                        message: "--quick does not accept additional arguments: \(after.joined(separator: " "))")
+                }
+                return .verifyQuick
+            }
 
             // --all is parsed to a distinct case; it is incompatible with --strict-untracked
             // and a positional lockfile path (which are lock-directory concepts with no
@@ -710,6 +724,7 @@ extension GohCommandLine {
           goh sync [<manifest>] [--base <dir>] [--accept-changed]   (--base is cwd-relative)
           goh verify [<path-to-gohfile.lock>] [--strict-untracked]
           goh verify --all [--json]   (exit: 0 ok · 2 changed · 9 missing · 6 ledger error)
+          goh verify --quick   (exit: 0 ok/no-baseline · 2 changed · 9 missing · 11 unreadable · 6 ledger error)
           goh attest [--output <file>]   (exit: 0 ok · 2 changed · 9 missing · 5 attest-failed · 6 ledger-error)
           goh verify-attestation <file> [--expect-key <full-pubkey|sha256-fingerprint>] [--allow-untrusted-key] [--json]
             (exit: 0 valid+trusted · 1 valid-unverified · 2 invalid · 3 key-mismatch · 6 malformed · 64 usage)

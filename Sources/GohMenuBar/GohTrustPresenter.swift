@@ -37,6 +37,54 @@ nonisolated public struct GohTrustPresenter: Sendable {
         }
     }
 
+    /// Maps a single `ProvenanceEntry` and its optional fast-check result to a
+    /// `TrustDisplayStatus` for rendering.
+    ///
+    /// Mapping:
+    /// - `entry.verifiedAt` non-nil → `.verified(at:)` (deep proof wins)
+    /// - fast `.unchanged` → `.looksUnchanged`
+    /// - fast `.changed(r)` → `.changed(r)`
+    /// - fast `.missing` → `.missing`
+    /// - fast `.indeterminate` → `.indeterminate`
+    /// - fast `.notBaselined` → `.notBaselined`
+    /// - `fastStatus == nil` and `verifiedAt == nil` → `.recordedOnly`
+    public static func displayStatus(
+        entry: ProvenanceEntry,
+        fastStatus: FastCheckStatus?
+    ) -> TrustDisplayStatus {
+        if let verifiedAt = entry.verifiedAt {
+            return .verified(at: verifiedAt)
+        }
+        guard let fast = fastStatus else {
+            return .recordedOnly
+        }
+        switch fast {
+        case .unchanged:    return .looksUnchanged
+        case .changed(let r): return .changed(r)
+        case .missing:      return .missing
+        case .indeterminate: return .indeterminate
+        case .notBaselined: return .notBaselined
+        }
+    }
+
+    /// Convenience overload for call sites that already have `verifiedAt: Date?`
+    /// (e.g. `TrustWindowView` which reads from `GohTrustEntryRow.verifiedAt`
+    /// without needing to reconstruct a full `ProvenanceEntry`).
+    public static func displayStatus(
+        verifiedAt: Date?,
+        fastStatus: FastCheckStatus?
+    ) -> TrustDisplayStatus {
+        if let verifiedAt { return .verified(at: verifiedAt) }
+        guard let fast = fastStatus else { return .recordedOnly }
+        switch fast {
+        case .unchanged:    return .looksUnchanged
+        case .changed(let r): return .changed(r)
+        case .missing:      return .missing
+        case .indeterminate: return .indeterminate
+        case .notBaselined: return .notBaselined
+        }
+    }
+
     // MARK: - Private
 
     private func makeRow(_ entry: ProvenanceEntry) -> GohTrustEntryRow {

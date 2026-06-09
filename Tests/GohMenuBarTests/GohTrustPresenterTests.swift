@@ -102,6 +102,90 @@ struct GohTrustPresenterTests {
         #expect(rows.map(\.displayPath) == ["/z.bin", "/a.bin"])
     }
 
+    // displayStatus: verifiedAt + .unchanged fast → .verified(at:)
+    @Test("displayStatus: verifiedAt non-nil → .verified(at:) regardless of fast status")
+    func displayStatusVerifiedAtWins() {
+        let verifiedDate = Date(timeIntervalSince1970: 2_000_000)
+        let entry = makeEntry(path: "/a.bin", verifiedAt: verifiedDate)
+        let status = GohTrustPresenter.displayStatus(entry: entry, fastStatus: .unchanged)
+        guard case .verified(let at) = status else {
+            Issue.record("Expected .verified, got \(status)")
+            return
+        }
+        #expect(at == verifiedDate)
+    }
+
+    // displayStatus: no verifiedAt, fast .unchanged → .looksUnchanged
+    @Test("displayStatus: no verifiedAt + fast .unchanged → .looksUnchanged")
+    func displayStatusLooksUnchanged() {
+        let entry = makeEntry(path: "/a.bin", verifiedAt: nil)
+        let status = GohTrustPresenter.displayStatus(entry: entry, fastStatus: .unchanged)
+        #expect(status == .looksUnchanged)
+    }
+
+    // displayStatus: no verifiedAt, fast .changed → .changed
+    @Test("displayStatus: no verifiedAt + fast .changed(.size) → .changed(.size)")
+    func displayStatusChanged() {
+        let entry = makeEntry(path: "/a.bin", verifiedAt: nil)
+        let status = GohTrustPresenter.displayStatus(entry: entry, fastStatus: .changed(.size))
+        #expect(status == .changed(.size))
+    }
+
+    // displayStatus: no verifiedAt, fast .missing → .missing
+    @Test("displayStatus: no verifiedAt + fast .missing → .missing")
+    func displayStatusMissing() {
+        let entry = makeEntry(path: "/a.bin", verifiedAt: nil)
+        let status = GohTrustPresenter.displayStatus(entry: entry, fastStatus: .missing)
+        #expect(status == .missing)
+    }
+
+    // displayStatus: no verifiedAt, fast .notBaselined → .notBaselined
+    @Test("displayStatus: no verifiedAt + fast .notBaselined → .notBaselined")
+    func displayStatusNotBaselined() {
+        let entry = makeEntry(path: "/a.bin", verifiedAt: nil)
+        let status = GohTrustPresenter.displayStatus(entry: entry, fastStatus: .notBaselined)
+        #expect(status == .notBaselined)
+    }
+
+    // displayStatus: no verifiedAt, nil fast status → .recordedOnly
+    @Test("displayStatus: no verifiedAt + nil fast status → .recordedOnly")
+    func displayStatusRecordedOnly() {
+        let entry = makeEntry(path: "/a.bin", verifiedAt: nil)
+        let status = GohTrustPresenter.displayStatus(entry: entry, fastStatus: nil)
+        #expect(status == .recordedOnly)
+    }
+
+    // AC8: .looksUnchanged and .verified(at:) must be DISTINCT display tokens.
+    // This test asserts the model layer enforces non-collapsibility — a future
+    // UI change cannot accidentally present a heuristic result as a cryptographic proof.
+    @Test("AC8: TrustDisplayStatus.looksUnchanged and .verified(at:) have distinct label and icon")
+    func looksUnchangedAndVerifiedAreDistinctTokens() {
+        let verifiedDate = Date(timeIntervalSince1970: 1_748_000_000)
+
+        let verifiedToken = TrustDisplayStatus.verified(at: verifiedDate)
+        let looksUnchangedToken = TrustDisplayStatus.looksUnchanged
+
+        // The two cases must not be equal (enforces model-layer distinctness).
+        #expect(verifiedToken != looksUnchangedToken)
+
+        // Their labels must be different strings.
+        #expect(verifiedToken.label != looksUnchangedToken.label)
+
+        // Their system image names must be different strings.
+        #expect(verifiedToken.systemImage != looksUnchangedToken.systemImage)
+
+        // Sanity: looksUnchanged label must mention "looks" or "unchanged" to
+        // communicate the heuristic limitation.
+        let label = looksUnchangedToken.label.lowercased()
+        #expect(label.contains("looks") || label.contains("unchanged"),
+            "looksUnchanged label must communicate the heuristic limitation")
+
+        // Sanity: verified label must mention "verified" or the date.
+        let verifiedLabel = verifiedToken.label.lowercased()
+        #expect(verifiedLabel.contains("verif"),
+            "verified label must communicate the cryptographic claim")
+    }
+
     // Helper
     private func makeEntry(
         path: String,

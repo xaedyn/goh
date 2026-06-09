@@ -69,3 +69,83 @@ nonisolated public protocol ProvenanceReading: Sendable {
     /// Returns the read outcome — never throws (errors mapped to .unreadable).
     func read() -> ProvenanceReadOutcome
 }
+
+// MARK: - Trust display status
+
+/// The display status of one provenance entry in the Trust window.
+///
+/// Safety invariant (AC8): `.looksUnchanged` and `.verified(at:)` MUST be
+/// distinct cases — a heuristic result must never read as a cryptographic proof.
+/// This is enforced at the model layer, not just in copy or UI layout.
+nonisolated public enum TrustDisplayStatus: Sendable, Equatable {
+    /// Deep re-hash confirmed the bytes match the recorded SHA-256.
+    /// The cryptographic integrity claim.
+    case verified(at: Date)
+
+    /// All five stat fields (size, mtime, inode, device) match the baseline.
+    /// HEURISTIC ONLY — not a proof; cannot detect silent bit-rot or a tamper
+    /// that preserves size and timestamp. Label must communicate this limitation.
+    case looksUnchanged
+
+    /// At least one stat field differs. The file likely changed.
+    case changed(FastChangeReason)
+
+    /// The file is missing from disk.
+    case missing
+
+    /// `lstat` failed — file present but unreadable (EACCES, ELOOP, etc.).
+    case indeterminate
+
+    /// No baseline recorded — pre-feature entry or baseline capture failed.
+    /// Neutral/informational; not an alert state.
+    case notBaselined
+
+    /// No fast-check run yet and `verifiedAt == nil` (downloaded, never verified
+    /// or fast-checked this session).
+    case recordedOnly
+
+    /// A human-readable label for the Trust window row chip.
+    /// The `looksUnchanged` label MUST communicate the heuristic limitation.
+    public var label: String {
+        switch self {
+        case .verified(let date):
+            return "verified \(date.formatted(date: .abbreviated, time: .omitted))"
+        case .looksUnchanged:
+            return "looks unchanged"
+        case .changed(let reason):
+            switch reason {
+            case .identity: return "changed (replaced)"
+            case .size:     return "changed (size)"
+            case .mtime:    return "changed (modified)"
+            }
+        case .missing:
+            return "missing"
+        case .indeterminate:
+            return "unreadable"
+        case .notBaselined:
+            return "no baseline"
+        case .recordedOnly:
+            return "downloaded"
+        }
+    }
+
+    /// SF Symbol name for the Trust window row chip icon.
+    public var systemImage: String {
+        switch self {
+        case .verified:
+            return "checkmark.shield.fill"
+        case .looksUnchanged:
+            return "checkmark.circle"
+        case .changed:
+            return "exclamationmark.triangle.fill"
+        case .missing:
+            return "questionmark.circle.fill"
+        case .indeterminate:
+            return "lock.slash"
+        case .notBaselined:
+            return "minus.circle"
+        case .recordedOnly:
+            return "arrow.down.circle"
+        }
+    }
+}
