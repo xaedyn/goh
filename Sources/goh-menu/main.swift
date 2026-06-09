@@ -340,7 +340,8 @@ struct GohMenuApp: App {
             TrustWindowRoot(
                 makeViewModel: TrustWindowViewModel(
                     reader: LiveProvenanceReader(path: appDelegate.provenancePath),
-                    provenanceStorePath: appDelegate.provenancePath))
+                    provenanceStorePath: appDelegate.provenancePath,
+                    probe: LiveFileStatProbe()))
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
