@@ -136,7 +136,7 @@ do {
             importedCookies.header(forJobID: jobID)
         },
         sleepAssertionController: sleepAssertions,
-        completedDownloadHandler: { completed, transferDuration, isResume, sha256, governorOutcome in
+        completedDownloadHandler: { completed, transferDuration, isResume, sha256, governorOutcome, completedFileStat in
             // D5/D8 gates — all must hold to record a valid observation.
             // wasSolo is checked BEFORE end() runs (end() is in a defer in
             // run(), which fires after this handler returns) — so the
@@ -177,7 +177,12 @@ do {
                             downloadedAt: completed.completedAt ?? Date(),
                             // THE one canonicalization (spec §5.3, BLOCK-1)
                             destinationPath: URL(fileURLWithPath: completed.destination)
-                                .standardizedFileURL.path))
+                                .standardizedFileURL.path,
+                            recordedStatSize: completedFileStat.map { Int64($0.size) },
+                            recordedMtimeSeconds: completedFileStat.map { $0.mtimeSeconds },
+                            recordedMtimeNanoseconds: completedFileStat.map { $0.mtimeNanoseconds },
+                            recordedInode: completedFileStat.map { $0.inode },
+                            recordedDevice: completedFileStat.map { $0.device }))
                 } catch {
                     warn("job \(completed.id) completed but provenance recording failed: \(error)")
                 }
