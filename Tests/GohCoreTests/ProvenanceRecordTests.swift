@@ -81,6 +81,60 @@ struct ProvenanceRecordTests {
         #expect(decoded == record)
     }
 
+    // AC9: adding the 5 optional baseline fields does NOT break the golden fixture.
+    // The fixture must still decode (nil baseline), round-trip unchanged, and
+    // ProvenanceRecord.currentVersion must remain 1.
+    @Test("AC9: golden fixture still round-trips after adding 5 optional baseline fields")
+    func baselineFieldsAreAdditivePONilDecodes() throws {
+        // Re-read the fixture.
+        let fixtureURL = Bundle.module.url(
+            forResource: "provenance-v1", withExtension: "plist",
+            subdirectory: "Fixtures")
+        let fixtureData = try Data(contentsOf: #require(fixtureURL))
+        let decoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: fixtureData)
+
+        // Version must not have changed.
+        #expect(ProvenanceRecord.currentVersion == 1)
+        #expect(decoded.version == 1)
+
+        // All five new fields must decode as nil (not present in the old fixture).
+        for entry in decoded.entries {
+            #expect(entry.recordedStatSize == nil,
+                "recordedStatSize should be nil for pre-feature entries")
+            #expect(entry.recordedMtimeSeconds == nil,
+                "recordedMtimeSeconds should be nil for pre-feature entries")
+            #expect(entry.recordedMtimeNanoseconds == nil,
+                "recordedMtimeNanoseconds should be nil for pre-feature entries")
+            #expect(entry.recordedInode == nil,
+                "recordedInode should be nil for pre-feature entries")
+            #expect(entry.recordedDevice == nil,
+                "recordedDevice should be nil for pre-feature entries")
+        }
+
+        // Round-trip the decoded value — encode→decode must be identity.
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let reencoded = try encoder.encode(decoded)
+        let redecoded = try PropertyListDecoder().decode(ProvenanceRecord.self, from: reencoded)
+        #expect(redecoded == decoded)
+
+        // Round-trip an entry WITH baseline fields set — they must survive.
+        var entryWithBaseline = decoded.entries[0]
+        entryWithBaseline.recordedStatSize = 1_048_576
+        entryWithBaseline.recordedMtimeSeconds = 1_748_000_000
+        entryWithBaseline.recordedMtimeNanoseconds = 123_456_789
+        entryWithBaseline.recordedInode = 42_000
+        entryWithBaseline.recordedDevice = 1
+        let recordWithBaseline = ProvenanceRecord(version: 1, entries: [entryWithBaseline])
+        let data2 = try encoder.encode(recordWithBaseline)
+        let decoded2 = try PropertyListDecoder().decode(ProvenanceRecord.self, from: data2)
+        #expect(decoded2.entries[0].recordedStatSize == 1_048_576)
+        #expect(decoded2.entries[0].recordedMtimeSeconds == 1_748_000_000)
+        #expect(decoded2.entries[0].recordedMtimeNanoseconds == 123_456_789)
+        #expect(decoded2.entries[0].recordedInode == 42_000)
+        #expect(decoded2.entries[0].recordedDevice == 1)
+    }
+
     // AC5: verifiedAt is additive-optional — nil encodes identically to no key;
     // re-decoded verifiedAt is nil; existing golden fixture bytes decode unchanged.
     @Test("AC5: verifiedAt nil round-trips stably; existing entries decode with verifiedAt==nil")
