@@ -102,6 +102,37 @@ struct GohTrustPresenterTests {
         #expect(rows.map(\.displayPath) == ["/z.bin", "/a.bin"])
     }
 
+    // AC8: .looksUnchanged and .verified(at:) must be DISTINCT display tokens.
+    // This test asserts the model layer enforces non-collapsibility — a future
+    // UI change cannot accidentally present a heuristic result as a cryptographic proof.
+    @Test("AC8: TrustDisplayStatus.looksUnchanged and .verified(at:) have distinct label and icon")
+    func looksUnchangedAndVerifiedAreDistinctTokens() {
+        let verifiedDate = Date(timeIntervalSince1970: 1_748_000_000)
+
+        let verifiedToken = TrustDisplayStatus.verified(at: verifiedDate)
+        let looksUnchangedToken = TrustDisplayStatus.looksUnchanged
+
+        // The two cases must not be equal (enforces model-layer distinctness).
+        #expect(verifiedToken != looksUnchangedToken)
+
+        // Their labels must be different strings.
+        #expect(verifiedToken.label != looksUnchangedToken.label)
+
+        // Their system image names must be different strings.
+        #expect(verifiedToken.systemImage != looksUnchangedToken.systemImage)
+
+        // Sanity: looksUnchanged label must mention "looks" or "unchanged" to
+        // communicate the heuristic limitation.
+        let label = looksUnchangedToken.label.lowercased()
+        #expect(label.contains("looks") || label.contains("unchanged"),
+            "looksUnchanged label must communicate the heuristic limitation")
+
+        // Sanity: verified label must mention "verified" or the date.
+        let verifiedLabel = verifiedToken.label.lowercased()
+        #expect(verifiedLabel.contains("verif"),
+            "verified label must communicate the cryptographic claim")
+    }
+
     // Helper
     private func makeEntry(
         path: String,
