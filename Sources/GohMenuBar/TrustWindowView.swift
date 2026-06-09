@@ -64,7 +64,12 @@ public struct TrustWindowView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(viewModel.rows, id: \.displayPath) { row in
-                        TrustEntryRowView(row: row, liveResult: liveResult(for: row))
+                        TrustEntryRowView(
+                            row: row,
+                            liveResult: liveResult(for: row),
+                            displayStatus: GohTrustPresenter.displayStatus(
+                                verifiedAt: row.verifiedAt,
+                                fastStatus: viewModel.fastStatuses[row.displayPath]))
                     }
                 }
             }
@@ -198,6 +203,7 @@ public struct TrustWindowView: View {
 private struct TrustEntryRowView: View {
     let row: GohTrustEntryRow
     let liveResult: VerifyStatus?
+    let displayStatus: TrustDisplayStatus   // fast-check or at-rest status (Task 3.1)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -207,7 +213,7 @@ private struct TrustEntryRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
-                atRestStatusChip
+                displayStatusChip(displayStatus)
                 if let live = liveResult {
                     liveStatusChip(live)
                 }
@@ -228,26 +234,33 @@ private struct TrustEntryRowView: View {
         .accessibilityLabel(accessibilityDescription)
     }
 
-    /// At-rest status chip — labelled "last recorded" semantics (AC1).
+    /// Fast-check / at-rest status chip. Visually distinct from `liveStatusChip`.
+    /// `looksUnchanged` uses teal (heuristic); `verified` uses green (cryptographic proof).
     @ViewBuilder
-    private var atRestStatusChip: some View {
-        if let verifiedAt = row.verifiedAt {
-            Text("verified \(verifiedAt.formatted(date: .abbreviated, time: .omitted))")
-                .font(.caption2)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(Color.green.opacity(0.15))
-                .cornerRadius(4)
-                .foregroundStyle(.green)
-        } else {
-            Text("downloaded")
-                .font(.caption2)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(Color.secondary.opacity(0.1))
-                .cornerRadius(4)
-                .foregroundStyle(.secondary)
+    private func displayStatusChip(_ status: TrustDisplayStatus) -> some View {
+        let (label, bg, fg): (String, Color, Color) = switch status {
+        case .verified:
+            (status.label, Color.green.opacity(0.15), Color.green)
+        case .looksUnchanged:
+            (status.label, Color.teal.opacity(0.12), Color.teal)
+        case .changed:
+            (status.label, Color.orange.opacity(0.15), Color.orange)
+        case .missing:
+            (status.label, Color.red.opacity(0.12), Color.red)
+        case .indeterminate:
+            (status.label, Color.orange.opacity(0.10), Color.orange)
+        case .notBaselined:
+            (status.label, Color.secondary.opacity(0.1), Color.secondary)
+        case .recordedOnly:
+            (status.label, Color.secondary.opacity(0.1), Color.secondary)
         }
+        Text(label)
+            .font(.caption2)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(bg)
+            .cornerRadius(4)
+            .foregroundStyle(fg)
     }
 
     /// Live verify status chip — visually distinct from at-rest labels (AC1).
@@ -270,8 +283,7 @@ private struct TrustEntryRowView: View {
 
     private var accessibilityDescription: String {
         let file = URL(fileURLWithPath: row.displayPath).lastPathComponent
-        let status = row.verifiedAt != nil ? "verified" : "downloaded only"
         let live = liveResult.map { "live: \($0.rawValue)" } ?? ""
-        return "\(file), \(status)\(live.isEmpty ? "" : ", \(live)")"
+        return "\(file), \(displayStatus.label)\(live.isEmpty ? "" : ", \(live)")"
     }
 }
