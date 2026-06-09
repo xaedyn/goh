@@ -5,7 +5,20 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-07 (tray-dashboard session) — **Professional download dashboard BUILT on `feat/tray-download-dashboard` (7 tasks, all reviewed green + final cross-cutting review APPROVED; NOT yet pushed/PR'd)**
+### 2026-06-08 (verify-responsive session) — **Dashboard MERGED (#102); responsive deep verify + two fixes MERGED (#103); NEXT = tiered "rapid trust" design pass**
+
+Continuation of the tray work. Two PRs landed on `main`:
+- **#102** (squash `e8865f3`) — the professional download dashboard (the 7-task slice below). Confirmed working by the user on a real signed build.
+- **#103** (squash `2a0eadf`) — responsive deep verify + two fixes found during testing:
+  1. **Popover overlap fix** — job-rows VStack used `.frame(minHeight: 32)` (flexible + centered); in the content-hugging popover it squeezed to 32pt and rows overflowed onto the Trust/Downloads buttons. Fixed with `.fixedSize(vertical:)` + moved the Downloads button to its own slot.
+  2. **Large-file verify OOM** — `FileDigest.sha256WithSize` streamed in 1 MiB chunks but never drained the autorelease pool; inside the long `DispatchQueue.global` verify block the autoreleased `FileHandle.read` buffers accumulated to tens of GB on a multi-GB file → silent jetsam SIGKILL (no crash report), app vanished. Fixed by wrapping each chunk in `autoreleasepool`. Affects tray verify AND CLI `goh verify`/`goh sync`.
+  3. **Responsive deep verify** — `FileDigest` gains `onBytesHashed`+`isCancelled` (per-chunk, throws `DigestError.cancelled`); `VerifyProgress` gains cumulative `bytesHashed`+`totalBytes`; `VerifyAllRunner` streams progress (throttled ~16 MiB) + honors mid-file cancel (returns partial report, never throws); frozen `VerifyAllReport` v1 shape + entry order preserved, CLI golden tests unchanged. Trust window shows a live byte bar + "X GB / Y GB" + cumulative-rate ETA + working Cancel.
+- **Gate:** `swift build -Xswiftc -warnings-as-errors` clean; `swift test` 800/800. User confirmed end-to-end on a real **68GB** file: live bar + ETA, app stays memory-flat, cancel instant.
+- **Tester build:** user cut `goh-0.1.0-test5-macos-arm64.pkg` (signed+notarized+stapled) and validated the whole flow. Still private testing — no public deploy ([[tester-phase-no-official-deploy]]).
+
+**NEXT SLICE — tiered "rapid trust" (design pass).** Key insight: full re-hashing answers *integrity* ("unchanged since recorded?"), inherently O(file size) — no fast cryptographic shortcut for a 68GB file. *Trust* is mostly established at download (ledger already records sha256; `goh attest` adds SE attestation). So the model is tiered: (a) **instant routine check** = `stat` size+mtime+inode vs recorded → "looks intact / changed" (heuristic, not proof; misses bit-rot); (b) **deep verify** = the now-responsive full re-hash, on demand/scheduled; (c) optional bigger win = chunked/BLAKE3 for parallel + localizable deep verify. **Format research done (2026-06-08):** `ProvenanceEntry` is `url, sha256, size:Int, downloadedAt:Date, destinationPath:String, verifiedAt:Date?`; `ProvenanceRecord{version=1, entries}`, binary plist, reader tolerates unknown keys + missing optionals. So adding `mtime`+`inode` as **additive-optional** fields keeps `version=1`, golden fixture intact, and per the project's own rule needs NO four-round pass (the `verifiedAt` precedent). Daemon write path (`gohd/main.swift` ~172) needs ONE new `stat(2)` on the destination (no open fd; `size` currently comes from the byte counter, not `fstat`). Attestation is fully decoupled (separate `dev.goh.attest/`). New trust *semantics* (a heuristic fast-check) still merit a spec + adversarial-spec-review before code. User approved direction; NO code until design approved at the gate.
+
+### 2026-06-07 (tray-dashboard session) — **Professional download dashboard BUILT on `feat/tray-download-dashboard` (7 tasks, all reviewed green + final cross-cutting review APPROVED; MERGED via #102)**
 
 Addressed the three things the user flagged from the tray screenshot: the climbing speed number,
 downloads not appearing, and "make it look highly professional / show enough info." Full
