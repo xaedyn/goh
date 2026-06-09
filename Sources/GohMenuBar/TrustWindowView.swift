@@ -98,20 +98,49 @@ public struct TrustWindowView: View {
             .accessibilityLabel("Start integrity verification of all recorded files")
 
         case .running(let progress):
-            HStack(spacing: 10) {
-                ProgressView(
-                    value: Double(progress.completed),
-                    total: Double(max(progress.total, 1)))
-                    .frame(maxWidth: 200)
-                Text("\(progress.completed) / \(progress.total)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Cancel") {
-                    viewModel.cancelVerify()
+            let stats = viewModel.liveStats(for: progress)
+            VStack(alignment: .leading, spacing: 6) {
+                if let path = progress.currentPath {
+                    Text("Verifying \(URL(fileURLWithPath: path).lastPathComponent)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Cancel verify run")
+                HStack(spacing: 10) {
+                    if progress.totalBytes > 0 {
+                        ProgressView(value: stats.fraction)
+                            .frame(maxWidth: 220)
+                            .accessibilityLabel(
+                                "Verification progress \(Int(stats.fraction * 100)) percent")
+                    } else {
+                        ProgressView(
+                            value: Double(progress.completed),
+                            total: Double(max(progress.total, 1)))
+                            .frame(maxWidth: 220)
+                            .accessibilityLabel(
+                                "Verification progress, file \(progress.completed) of \(progress.total)")
+                    }
+                    Spacer()
+                    Button("Cancel") {
+                        viewModel.cancelVerify()
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Cancel verify run")
+                }
+                HStack(spacing: 8) {
+                    Text("\(progress.completed) / \(progress.total) files")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if !stats.byteText.isEmpty {
+                        Text("·").font(.caption).foregroundStyle(.secondary)
+                        Text(stats.byteText).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let eta = stats.etaText {
+                        Text("·").font(.caption).foregroundStyle(.secondary)
+                        Text(eta).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
 
         case .finished(let report):
