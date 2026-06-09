@@ -5,7 +5,20 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-08 (verify-responsive session) — **Dashboard MERGED (#102); responsive deep verify + two fixes MERGED (#103); NEXT = tiered "rapid trust" design pass**
+### 2026-06-09 (tiered-trust session) — **Tiered rapid-trust BUILT on `design/tiered-rapid-trust` (full pipeline: spec 2 rounds + plan 2 rounds + 12 tasks + final review APPROVED FOR MERGE)**
+
+Full enterprise-pipeline from the "is full re-hashing the best way to determine trust rapidly?" question. Design → spec (2 adversarial rounds; round 1 caught the mtime-precision blocker) → plan (custom-writing-plans, 2 rounds; round 1 caught the `S_ISREG`-not-importable blocker) → subagent-driven-development (3 phases / 12 tasks, per-task review gates) → final cross-cutting review APPROVED.
+
+- **What it adds:** an instant `lstat`-based fast-check ("does this file still look like what I recorded?") alongside the existing O(size) deep verify. Tiered trust: origin (sha256/attestation at download) + integrity (deep re-hash, on demand) + **rapid liveness (new: stat size+mtime+inode/device)**.
+- **Phase 1 (GohCore):** `FileStat`/`FileProbeResult`/`FileStatProbing`/`LiveFileStatProbe` (lstat); `FastChangeReason`/`FastCheckStatus`/`FastCheckRunner` (pure, probe-injected, precedence identity>size>mtime); 5 additive-optional baseline fields on `ProvenanceEntry` (`recordedStatSize`/`recordedMtimeSeconds`/`recordedMtimeNanoseconds`/`recordedInode`/`recordedDevice`, raw integers — `Date` would lose nanoseconds). `ProvenanceRecord.currentVersion` stays 1; golden fixture round-trips unchanged (no version bump, no four-round — the `verifiedAt` precedent).
+- **Phase 2 (capture):** `DownloadFile.fileStat()` (fstat the open fd); widened `complete()`/`completedDownloadHandler` with a trailing `FileStat?`; captured at all 3 finalization sites BEFORE `finish()` (fstat-at-finalize closes TOCTOU — baseline describes the hashed bytes); daemon routes it all-or-nothing into `ProvenanceEntry`. **BBR governor block byte-for-byte untouched** (proven). No path-stat anywhere.
+- **Phase 3 (surfaces):** `goh verify --quick` (lstat-only, mutually exclusive with `--all`, deep `--all` unchanged); `TrustDisplayStatus` with `looksUnchanged` rendered DISTINCTLY from `verified` (teal "checkmark.circle" vs green "checkmark.shield.fill" — model-level + AC8 test, anti-misrepresentation); Trust window runs the fast-check on open (off-main `Task.detached` → `@Published fastStatuses` on MainActor); `LiveFileStatProbe` wired in goh-menu.
+- **Key invariant LOCKED by test:** the fstat-baseline mapping ≡ the lstat-compare mapping on a real file (`fileStatMatchesLstatProbe`) — if these ever drift, every fresh download silently reads `.changed`; final review flagged the gap, test added.
+- **Gate:** `swift build -Xswiftc -warnings-as-errors` clean; `swift test` **844/844** (43 new tests). Frozen contracts intact (governor, protocolVersion=4, VerifyAllReport v1, ProvenanceRecord v1 + golden, JobProgress). NO `#available`, no `S_ISREG` in code (bit-test `(st_mode & S_IFMT) == S_IFREG`).
+- **Spec/plan/artifacts:** `docs/superpowers/specs/2026-06-08-tiered-rapid-trust-design.md`, `docs/plans/2026-06-08-tiered-rapid-trust-plan.md`. Still private testing — no public deploy ([[tester-phase-no-official-deploy]]).
+- **Pending:** push + PR + merge; then a fresh signed tester build to exercise `--quick` and the Trust-window fast status. Deferred (D3/D4 in the spec): backfill baselines into pre-feature entries; sync-skip-path baselines.
+
+### 2026-06-08 (verify-responsive session) — **Dashboard MERGED (#102); responsive deep verify + two fixes MERGED (#103); tiered "rapid trust" design pass → implemented (see entry above)**
 
 Continuation of the tray work. Two PRs landed on `main`:
 - **#102** (squash `e8865f3`) — the professional download dashboard (the 7-task slice below). Confirmed working by the user on a real signed build.
