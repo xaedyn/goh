@@ -56,9 +56,16 @@ public final class TrustWindowViewModel: ObservableObject {
     @Published public private(set) var rows: [GohTrustEntryRow] = []
     @Published public private(set) var runState: TrustRunState = .idle
 
+    /// Fast-check statuses keyed by `destinationPath`. Populated immediately
+    /// after `loadOverview()` reads the ledger — before the view re-renders.
+    @Published public private(set) var fastStatuses: [String: FastCheckStatus] = [:]
+
     private let reader: any ProvenanceReading
     private let provenanceStorePath: String
     private let presenter: GohTrustPresenter
+    /// Injected probe for fast-check calls. `LiveFileStatProbe` in production;
+    /// a stub in tests.
+    private let probe: any FileStatProbing
     private var cancellationBox: CancellationBox?
 
     /// Wall-clock timestamp at which the current verify run started.
@@ -69,23 +76,37 @@ public final class TrustWindowViewModel: ObservableObject {
     public init(
         reader: any ProvenanceReading,
         provenanceStorePath: String,
-        presenter: GohTrustPresenter = GohTrustPresenter()
+        presenter: GohTrustPresenter = GohTrustPresenter(),
+        probe: any FileStatProbing = LiveFileStatProbe()
     ) {
         self.reader = reader
         self.provenanceStorePath = provenanceStorePath
         self.presenter = presenter
+        self.probe = probe
     }
 
     // MARK: - Load overview (off-main)
 
     /// Load the trust overview from the ledger. Call from `.task {}` on the Trust window.
     public func loadOverview() async {
-        let outcome = await Task.detached(priority: .userInitiated) { [reader] in
-            reader.read()
+        let capturedProbe = probe
+        let (outcome, statuses) = await Task.detached(priority: .userInitiated) { [reader] in
+            let outcome = reader.read()
+            // Run the fast-check synchronously off-main with the injected probe.
+            let entries: [ProvenanceEntry]
+            if case .entries(let e) = outcome { entries = e } else { entries = [] }
+            let fastResults = FastCheckRunner.checkAll(entries, probe: capturedProbe)
+            // uniquingKeysWith (not uniqueKeysWithValues) so a hand-corrupted ledger with
+            // duplicate destinationPaths can't trap the tray; last entry wins.
+            let statuses = Dictionary(
+                fastResults.map { ($0.destinationPath, $1) },
+                uniquingKeysWith: { _, last in last })
+            return (outcome, statuses)
         }.value
         let (ov, rs) = presenter.present(outcome)
         overview = ov
         rows = rs
+        fastStatuses = statuses
     }
 
     // MARK: - Verify now
