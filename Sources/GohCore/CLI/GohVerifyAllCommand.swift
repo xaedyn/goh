@@ -21,6 +21,13 @@ import Foundation
 /// Precedence: 9 > 2 > 0.
 public enum GohVerifyAllCommand {
 
+    /// Mutable box for collecting baselines from the @Sendable onVerified closure.
+    /// A @Sendable closure cannot capture a mutable var by reference under -warnings-as-errors;
+    /// the box is a reference captured by value (the class IS the reference).
+    private final class BaselineCollector: @unchecked Sendable {
+        var baselines: [VerifiedBaseline] = []
+    }
+
     /// Runs `goh verify --all` and returns a result suitable for the CLI runner.
     ///
     /// - Parameters:
@@ -31,10 +38,15 @@ public enum GohVerifyAllCommand {
     ///   - generatedAt: The timestamp to embed in the JSON `generatedAt` field.
     ///     Defaults to `Date()` (current time) in production; inject a fixed instant in tests
     ///     and for the golden-fixture encode-equals test. Ignored when `json` is false.
+    ///   - send: Optional XPC sender for best-effort baseline backfill. Nil when called from
+    ///     `goh attest` (keeps attest read-only, AC5). When non-nil, `.ok` baselines are
+    ///     sent via `GohCommandClient` after the run — best-effort: a send failure never
+    ///     changes the exit code or report (AC7).
     public static func run(
         provenanceStorePath: String,
         json: Bool = false,
-        generatedAt: Date = Date()
+        generatedAt: Date = Date(),
+        send: GohCommandLine.Sender? = nil
     ) -> GohCommandLineResult {
 
         // ── Step 1: Classify ledger ────────────────────────────────────────────
@@ -69,16 +81,55 @@ public enum GohVerifyAllCommand {
         // ── Step 2: Re-hash via runner ────────────────────────────────────────
         // VerifyAllRunner.verifyAll throws only on .unreadable — already handled above.
         // The catch here is a defensive guard (should never trigger given the switch above).
+        // AC5: collector is nil when send is nil → no baseline collection overhead.
+        let collector: BaselineCollector? = send != nil ? BaselineCollector() : nil
+        let onVerified: (@Sendable (VerifiedBaseline) -> Void)?
+        if let box = collector {
+            onVerified = { baseline in box.baselines.append(baseline) }
+        } else {
+            onVerified = nil
+        }
         let report: VerifyAllReport
         do {
             report = try VerifyAllRunner.verifyAll(
                 provenanceStorePath: provenanceStorePath,
                 generatedAt: generatedAt,
                 progress: nil,
-                isCancelled: nil)
+                isCancelled: nil,
+                onVerified: onVerified)
         } catch {
             if json { return jsonErrorResult(.ledgerUnreadable) }
             return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger unreadable\n")
+        }
+
+        // ── Step 2.5: Best-effort backfill send ──────────────────────────────────────
+        // AC7: send failure never changes exit code or report. AC5: send is nil for attest.
+        // Uses GohCommandClient (mirrors GohSyncCommand's pattern).
+        if let send, let baselines = collector?.baselines, !baselines.isEmpty {
+            let entries = baselines.map { b in
+                VerifiedProvenanceEntry(
+                    url: b.url,
+                    sha256: b.sha256,
+                    size: b.hashedByteCount,               // display/download byte count
+                    destinationPath: b.destinationPath,
+                    verifiedAt: generatedAt,
+                    recordedStatSize: b.stat.size,          // B1: ALWAYS stat.size (non-optional on VerifiedBaseline)
+                    recordedMtimeSeconds: b.stat.mtimeSeconds,
+                    recordedMtimeNanoseconds: b.stat.mtimeNanoseconds,
+                    recordedInode: b.stat.inode,
+                    recordedDevice: b.stat.device)
+            }
+            do {
+                let client = GohCommandClient(send: send)
+                _ = try client.send(
+                    .recordVerifiedProvenance(
+                        request: RecordVerifiedProvenanceRequest(entries: entries)),
+                    expecting: AckReply.self)
+            } catch {
+                // AC7: best-effort. Log warning to stderr; never change exit code.
+                fputs("goh verify --all: provenance backfill failed (daemon may be stopped): \(error)\n",
+                      stderr)
+            }
         }
 
         // ── Step 3: Derive exit code ──────────────────────────────────────────

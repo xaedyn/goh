@@ -9,6 +9,9 @@ public protocol GohMenuClient: AnyObject {
     func pause(jobID: UInt64) async throws
     func resume(jobID: UInt64) async throws
     func remove(jobID: UInt64, keepPartialFile: Bool) async throws
+    /// Sends a batch of verify-produced baselines to the daemon. Best-effort:
+    /// callers must not propagate errors to the UI. Never blocks the verify run.
+    func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws
 }
 
 @MainActor

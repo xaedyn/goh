@@ -424,3 +424,217 @@ struct ProvenanceStoreTests {
         #expect(reader.allEntries().isEmpty)
     }
 }
+
+// ── Backfill baseline: recordVerified stat fields (AC1, AC2, AC11, B2) ──────
+
+@Suite("ProvenanceStore.recordVerified baseline backfill")
+struct ProvenanceStoreBackfillTests {
+
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("goh-pv-backfill-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private let testSha256 = "sha256:" + String(repeating: "a", count: 64)
+    private let otherSha256 = "sha256:" + String(repeating: "b", count: 64)
+    private let testPath = "/Users/u/Downloads/file.bin"
+    private let testURL = "https://example.com/file.bin"
+    private let testDate = Date(timeIntervalSince1970: 1_748_000_000)
+    private let laterDate = Date(timeIntervalSince1970: 1_748_100_000)
+
+    private func statEntry(overwrite: Bool) -> VerifiedProvenanceEntry {
+        VerifiedProvenanceEntry(
+            url: testURL,
+            sha256: testSha256,
+            size: 1024,
+            destinationPath: testPath,
+            verifiedAt: laterDate,
+            recordedStatSize: 1024,
+            recordedMtimeSeconds: 1_748_000_000,
+            recordedMtimeNanoseconds: 500_000_000,
+            recordedInode: 12345,
+            recordedDevice: 16777220)
+    }
+
+    // AC1 / primary backfill path: same path + same sha256 → overwrites stat fields.
+    @Test("AC1: same path + same sha256 backfills all 5 stat fields and sets verifiedAt")
+    func sameSha256BackfillsStatFields() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+
+        // Pre-existing entry without baseline.
+        try store.record(entry: ProvenanceEntry(
+            url: testURL, sha256: testSha256, size: 1024,
+            downloadedAt: testDate, destinationPath: testPath))
+
+        let entry = statEntry(overwrite: true)
+        try store.recordVerified(entries: [entry])
+
+        let stored = try #require(store.lookup(destinationPath: testPath))
+        #expect(stored.sha256 == testSha256)
+        #expect(stored.verifiedAt == laterDate)
+        // downloadedAt is PRESERVED (not overwritten).
+        #expect(stored.downloadedAt == testDate)
+        // All 5 stat fields written.
+        #expect(stored.recordedStatSize == 1024)
+        #expect(stored.recordedMtimeSeconds == 1_748_000_000)
+        #expect(stored.recordedMtimeNanoseconds == 500_000_000)
+        #expect(stored.recordedInode == 12345)
+        #expect(stored.recordedDevice == 16777220)
+    }
+
+    // AC11: same path + same sha256 + already has a baseline → idempotent overwrite.
+    @Test("AC11: re-running verify on already-baselined entry is idempotent")
+    func idempotentOverwrite() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+
+        try store.record(entry: ProvenanceEntry(
+            url: testURL, sha256: testSha256, size: 1024,
+            downloadedAt: testDate, destinationPath: testPath))
+
+        let entry = statEntry(overwrite: true)
+        try store.recordVerified(entries: [entry])
+        // Second verify with identical stat values.
+        try store.recordVerified(entries: [entry])
+
+        let stored = try #require(store.lookup(destinationPath: testPath))
+        #expect(stored.recordedStatSize == 1024)
+        #expect(stored.recordedInode == 12345)
+        // verifiedAt is the later one from the second call.
+        #expect(stored.verifiedAt == laterDate)
+    }
+
+    // B2 all-or-nothing: any nil stat field → write none.
+    @Test("B2: any nil stat field → no stat fields written (all-or-nothing)")
+    func allOrNothingPartialStatNil() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+
+        try store.record(entry: ProvenanceEntry(
+            url: testURL, sha256: testSha256, size: 1024,
+            downloadedAt: testDate, destinationPath: testPath))
+
+        // Entry with only 4 of 5 stat fields (inode is nil).
+        let partialEntry = VerifiedProvenanceEntry(
+            url: testURL,
+            sha256: testSha256,
+            size: 1024,
+            destinationPath: testPath,
+            verifiedAt: laterDate,
+            recordedStatSize: 1024,
+            recordedMtimeSeconds: 1_748_000_000,
+            recordedMtimeNanoseconds: 0,
+            recordedInode: nil,   // partial — triggers all-or-nothing
+            recordedDevice: 16777220)
+
+        try store.recordVerified(entries: [partialEntry])
+
+        let stored = try #require(store.lookup(destinationPath: testPath))
+        // verifiedAt is still set (it's not part of the stat bundle).
+        #expect(stored.verifiedAt == laterDate)
+        // NO stat fields written due to partial baseline.
+        #expect(stored.recordedStatSize == nil)
+        #expect(stored.recordedMtimeSeconds == nil)
+        #expect(stored.recordedInode == nil)
+    }
+
+    // B2 / same path + same sha256 + existing baseline + no incoming baseline:
+    // existing stat fields must NOT be nulled out.
+    @Test("B2: absent incoming baseline preserves existing stat fields")
+    func absentIncomingBaselinePreservesExisting() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+
+        // Pre-existing entry WITH baseline.
+        try store.record(entry: ProvenanceEntry(
+            url: testURL, sha256: testSha256, size: 1024,
+            downloadedAt: testDate, destinationPath: testPath,
+            recordedStatSize: 999, recordedMtimeSeconds: 1_000_000,
+            recordedMtimeNanoseconds: 0, recordedInode: 11111, recordedDevice: 16777220))
+
+        // New verify with no baseline (all 5 nil).
+        let entryNoStat = VerifiedProvenanceEntry(
+            url: testURL, sha256: testSha256, size: 1024,
+            destinationPath: testPath, verifiedAt: laterDate)
+
+        try store.recordVerified(entries: [entryNoStat])
+
+        let stored = try #require(store.lookup(destinationPath: testPath))
+        // verifiedAt updated.
+        #expect(stored.verifiedAt == laterDate)
+        // Existing stat fields PRESERVED (not nulled).
+        #expect(stored.recordedStatSize == 999)
+        #expect(stored.recordedInode == 11111)
+    }
+
+    // Hash-changed branch: new ProvenanceEntry carries stat fields.
+    @Test("hash-changed branch writes stat fields from incoming baseline")
+    func hashChangedBranchCarriesStat() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+
+        try store.record(entry: ProvenanceEntry(
+            url: testURL, sha256: testSha256, size: 1024,
+            downloadedAt: testDate, destinationPath: testPath))
+
+        let changedEntry = VerifiedProvenanceEntry(
+            url: testURL, sha256: otherSha256, size: 2048,
+            destinationPath: testPath, verifiedAt: laterDate,
+            recordedStatSize: 2048, recordedMtimeSeconds: 1_748_100_000,
+            recordedMtimeNanoseconds: 0, recordedInode: 99999, recordedDevice: 16777220)
+
+        try store.recordVerified(entries: [changedEntry])
+
+        let stored = try #require(store.lookup(destinationPath: testPath))
+        #expect(stored.sha256 == otherSha256)
+        #expect(stored.recordedStatSize == 2048)
+        #expect(stored.recordedInode == 99999)
+    }
+
+    // New-path branch: new ProvenanceEntry carries stat fields.
+    @Test("new-path branch writes stat fields from incoming baseline")
+    func newPathBranchCarriesStat() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: storeURL)
+        _ = store.load()
+
+        let newPath = "/Users/u/Downloads/new.bin"
+        let newEntry = VerifiedProvenanceEntry(
+            url: "https://example.com/new.bin", sha256: testSha256, size: 512,
+            destinationPath: newPath, verifiedAt: laterDate,
+            recordedStatSize: 512, recordedMtimeSeconds: 1_748_000_000,
+            recordedMtimeNanoseconds: 0, recordedInode: 77777, recordedDevice: 16777220)
+
+        try store.recordVerified(entries: [newEntry])
+
+        let stored = try #require(store.lookup(destinationPath: newPath))
+        #expect(stored.recordedStatSize == 512)
+        #expect(stored.recordedInode == 77777)
+    }
+}

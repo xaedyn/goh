@@ -141,26 +141,54 @@ public final class ProvenanceStore: Sendable {
         try inner.withLock { inner in
             for entry in entries {
                 let canonical = URL(fileURLWithPath: entry.destinationPath).standardizedFileURL.path
+
+                // All-or-nothing baseline (B2): baseline is present iff ALL FIVE fields are non-nil.
+                let hasBaseline = entry.recordedStatSize != nil
+                    && entry.recordedMtimeSeconds != nil
+                    && entry.recordedMtimeNanoseconds != nil
+                    && entry.recordedInode != nil
+                    && entry.recordedDevice != nil
+
                 if let idx = inner.record.entries.firstIndex(where: { $0.destinationPath == canonical }) {
                     let existing = inner.record.entries[idx]
                     if existing.sha256 == entry.sha256 {
-                        // Same hash — preserve downloadedAt, refresh verifiedAt/url/size.
+                        // Same path + same sha256 (primary backfill path: re-verifying pre-#104 entry).
+                        // Preserve downloadedAt; refresh verifiedAt, url, size.
                         inner.record.entries[idx].verifiedAt = entry.verifiedAt
                         inner.record.entries[idx].url = entry.url
                         inner.record.entries[idx].size = entry.size
+                        // OVERWRITE stat fields when incoming baseline present; leave existing when absent.
+                        if hasBaseline {
+                            inner.record.entries[idx].recordedStatSize = entry.recordedStatSize
+                            inner.record.entries[idx].recordedMtimeSeconds = entry.recordedMtimeSeconds
+                            inner.record.entries[idx].recordedMtimeNanoseconds = entry.recordedMtimeNanoseconds
+                            inner.record.entries[idx].recordedInode = entry.recordedInode
+                            inner.record.entries[idx].recordedDevice = entry.recordedDevice
+                        }
+                        // If !hasBaseline: leave existing stat fields untouched (don't null them).
                     } else {
-                        // Hash changed — treat as a new file: downloadedAt = verifiedAt.
+                        // Same path + different sha256: treat as new file (downloadedAt = verifiedAt).
                         inner.record.entries[idx] = ProvenanceEntry(
                             url: entry.url, sha256: entry.sha256, size: entry.size,
                             downloadedAt: entry.verifiedAt, destinationPath: canonical,
-                            verifiedAt: entry.verifiedAt)
+                            verifiedAt: entry.verifiedAt,
+                            recordedStatSize: hasBaseline ? entry.recordedStatSize : nil,
+                            recordedMtimeSeconds: hasBaseline ? entry.recordedMtimeSeconds : nil,
+                            recordedMtimeNanoseconds: hasBaseline ? entry.recordedMtimeNanoseconds : nil,
+                            recordedInode: hasBaseline ? entry.recordedInode : nil,
+                            recordedDevice: hasBaseline ? entry.recordedDevice : nil)
                     }
                 } else {
                     // Brand-new path — downloadedAt = verifiedAt.
                     inner.record.entries.append(ProvenanceEntry(
                         url: entry.url, sha256: entry.sha256, size: entry.size,
                         downloadedAt: entry.verifiedAt, destinationPath: canonical,
-                        verifiedAt: entry.verifiedAt))
+                        verifiedAt: entry.verifiedAt,
+                        recordedStatSize: hasBaseline ? entry.recordedStatSize : nil,
+                        recordedMtimeSeconds: hasBaseline ? entry.recordedMtimeSeconds : nil,
+                        recordedMtimeNanoseconds: hasBaseline ? entry.recordedMtimeNanoseconds : nil,
+                        recordedInode: hasBaseline ? entry.recordedInode : nil,
+                        recordedDevice: hasBaseline ? entry.recordedDevice : nil))
                 }
             }
             try writeAtomically(&inner.record)

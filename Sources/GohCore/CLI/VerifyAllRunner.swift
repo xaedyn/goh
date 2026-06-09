@@ -73,7 +73,8 @@ public enum VerifyAllRunner {
         provenanceStorePath: String,
         generatedAt: Date,
         progress: (@Sendable (VerifyProgress) -> Void)?,
-        isCancelled: (@Sendable () -> Bool)?
+        isCancelled: (@Sendable () -> Bool)?,
+        onVerified: (@Sendable (VerifiedBaseline) -> Void)? = nil
     ) throws -> VerifyAllReport {
         let outcome = ProvenanceLedgerReader.read(at: provenanceStorePath)
 
@@ -93,7 +94,8 @@ public enum VerifyAllRunner {
                 entries: ledgerEntries,
                 generatedAt: generatedAt,
                 progress: progress,
-                isCancelled: isCancelled)
+                isCancelled: isCancelled,
+                onVerified: onVerified)
         }
     }
 
@@ -103,7 +105,8 @@ public enum VerifyAllRunner {
         entries: [ProvenanceEntry],
         generatedAt: Date,
         progress: (@Sendable (VerifyProgress) -> Void)?,
-        isCancelled: (@Sendable () -> Bool)?
+        isCancelled: (@Sendable () -> Bool)?,
+        onVerified: (@Sendable (VerifiedBaseline) -> Void)?
     ) -> VerifyAllReport {
         let total = entries.count
         var results: [VerifyEntryResult] = []
@@ -137,7 +140,8 @@ public enum VerifyAllRunner {
                     completed: completed,
                     total: total,
                     bytesHashedCumulative: bytesHashedCumulative,
-                    totalBytes: totalBytes)
+                    totalBytes: totalBytes,
+                    onVerified: onVerified)
             } catch FileDigest.DigestError.cancelled {
                 // Mid-file cancel: stop the run WITHOUT appending/counting the in-progress
                 // file, then fall through to build the partial report (never throw).
@@ -192,15 +196,17 @@ public enum VerifyAllRunner {
         completed: Int,
         total: Int,
         bytesHashedCumulative: Int,
-        totalBytes: Int
+        totalBytes: Int,
+        onVerified: (@Sendable (VerifiedBaseline) -> Void)?
     ) throws -> (VerifyEntryResult, Int) {
         let hash: String
         let size: Int
+        let fileStat: FileStat?   // Optional: fstat failure → nil, does not fail verify
         do {
             // Local running counters for THIS file, used to throttle progress emission.
             var bytesIntoThisFile = 0
             var bytesSinceLastEmit = 0
-            (hash, size) = try FileDigest.sha256WithSize(
+            let result = try FileDigest.sha256WithSizeAndStat(
                 path: entry.destinationPath,
                 onBytesHashed: { chunkBytes in
                     bytesIntoThisFile += chunkBytes
@@ -216,6 +222,9 @@ public enum VerifyAllRunner {
                     }
                 },
                 isCancelled: isCancelled)
+            hash = result.sha256
+            size = result.size
+            fileStat = result.stat   // FileStat? — nil on fstat failure (defensive)
         } catch FileDigest.DigestError.cancelled {
             throw FileDigest.DigestError.cancelled  // propagate — NOT a missing file
         } catch FileDigest.DigestError.cannotOpen {
@@ -236,6 +245,20 @@ public enum VerifyAllRunner {
         }
 
         if hash == entry.sha256 {
+            // Fire onVerified at the moment the entry passes — BEFORE returning.
+            // AC9: fires per-.ok immediately so cancelled runs still backfill.
+            // Only emit a baseline when stat is non-nil (complete metadata).
+            // When hash matches but stat is nil, the entry is still .ok in the report
+            // but stays .notBaselined — no garbage is written.
+            if let onVerified, let stat = fileStat {
+                let baseline = VerifiedBaseline(
+                    destinationPath: entry.destinationPath,
+                    url: entry.url,
+                    sha256: hash,
+                    hashedByteCount: size,
+                    stat: stat)
+                onVerified(baseline)
+            }
             return (VerifyEntryResult(
                 path: entry.destinationPath,
                 url: entry.url,
@@ -243,6 +266,7 @@ public enum VerifyAllRunner {
                 expectedSha256: entry.sha256,
                 actualSha256: nil), size)
         } else {
+            // AC2/AC3: only .ok fires onVerified; .failed does not.
             return (VerifyEntryResult(
                 path: entry.destinationPath,
                 url: entry.url,

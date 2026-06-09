@@ -5,7 +5,17 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-09 (tiered-trust session) — **Tiered rapid-trust BUILT on `design/tiered-rapid-trust` (full pipeline: spec 2 rounds + plan 2 rounds + 12 tasks + final review APPROVED FOR MERGE)**
+### 2026-06-09 (backfill-on-verify session) — **Backfill-on-verify BUILT on `feat/backfill-on-verify` (full pipeline: spec 2 rounds + plan 2 rounds + 8 tasks + final review APPROVED FOR MERGE); NOT yet pushed/PR'd at time of writing**
+
+Answers "why does every pre-#104 file show `no baseline`?" — they were downloaded before the stat baseline existed, and re-downloading a 68GB file for a baseline is absurd. The fix: **a successful deep verify records the baseline**, because the bytes just passed a full SHA-256 check, so their current size/mtime/inode/device are a *trusted* baseline. Deep-verify once → quick-check instantly forever after; no re-download.
+
+- **Phase 1 (GohCore data path):** `FileDigest.sha256WithSizeAndStat` (fstat the open hash handle BEFORE close — **guarded**, returns `FileStat?`, nil on failure, never garbage; `(st_mode & S_IFMT) == S_IFREG`); `VerifiedBaseline` + `VerifyAllRunner.onVerified` (`@Sendable`, fires per `.ok` ONLY when stat present — a `.ok` with nil stat stays `.notBaselined`, never garbage); 5 additive-optional `recordedStat*` fields on the XPC `VerifiedProvenanceEntry` (protocolVersion stays 4); `ProvenanceStore.recordVerified` writes the 5 in all 3 merge branches, all-or-nothing (`recordedStatSize` ALWAYS from `stat.size`, never the hashed byte count — B1).
+- **Phase 2 (surfaces):** `goh verify --all` gains optional `send:` → best-effort batches OK baselines to the daemon via `GohCommandClient`/`recordVerifiedProvenance` (a send failure logs to stderr, NEVER changes exit code/report; verify still works daemon-stopped). `GohMenuClient.recordVerifiedProvenance` + `LiveGohMenuClient` + 3 test doubles; `TrustWindowViewModel` injected with the client (stored `let menuClientForTrust` on the delegate), sends baselines after `.finished` AND `.cancelled` (off-main verify → MainActor send, Swift-6-clean via a Bool gate + weakSelf). **`goh attest` stays read-only** (passes no sender).
+- **Gate:** `swift build -Xswiftc -warnings-as-errors` clean; `swift test` **872/872** (28 new). Final cross-cutting review APPROVED FOR MERGE. Frozen contracts intact: `VerifyAllReport`/`--json` byte-identical (baseline via a side channel, never the report), protocolVersion 4, ProvenanceRecord v1 + golden, governor, JobProgress. Core safety: a `.failed`/`.missing` file NEVER gets a baseline.
+- **Spec/plan:** `docs/superpowers/specs/2026-06-09-backfill-on-verify-design.md`, `docs/plans/2026-06-09-backfill-on-verify-plan.md`. Still private testing — no public deploy ([[tester-phase-no-official-deploy]]).
+- **User next step:** after merge, cut a fresh tester build; run `goh verify --all` (or tray "Verify now") once on existing files → they gain baselines → `goh verify --quick` / Trust window then read `looks unchanged` instead of `no baseline`.
+
+### 2026-06-09 (tiered-trust session) — **Tiered rapid-trust BUILT on `design/tiered-rapid-trust` (full pipeline: spec 2 rounds + plan 2 rounds + 12 tasks + final review APPROVED FOR MERGE); MERGED via #104**
 
 Full enterprise-pipeline from the "is full re-hashing the best way to determine trust rapidly?" question. Design → spec (2 adversarial rounds; round 1 caught the mtime-precision blocker) → plan (custom-writing-plans, 2 rounds; round 1 caught the `S_ISREG`-not-importable blocker) → subagent-driven-development (3 phases / 12 tasks, per-task review gates) → final cross-cutting review APPROVED.
 

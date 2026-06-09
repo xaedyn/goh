@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// At-rest SHA-256 streaming digest for a file on disk.
@@ -77,6 +78,71 @@ public struct FileDigest {
 
         let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         return ("sha256:" + hex, totalBytes)
+    }
+
+    /// Streams `path` through SHA-256 and captures filesystem metadata via `fstat(2)` on the
+    /// open file handle immediately after reaching EOF — TOCTOU-tight, describing the exact
+    /// inode whose bytes were just hashed.
+    ///
+    /// - Parameters:
+    ///   - path: Absolute path of the file to hash.
+    ///   - onBytesHashed: Optional chunk callback (same semantics as `sha256WithSize`).
+    ///   - isCancelled: Optional cancellation check (same semantics as `sha256WithSize`).
+    /// - Returns: A named tuple of `(sha256: "sha256:<hex>", size: byteCount, stat: FileStat?)`.
+    ///   The hash always succeeds. `stat` is non-nil when fstat succeeds (always true for a
+    ///   valid open fd); nil on fstat failure (defensive — does not fail the verify).
+    ///   `stat.size` is the `fstat` `st_size` — the source for `recordedStatSize`. `size` is the
+    ///   streaming byte count — the source for `VerifiedProvenanceEntry.size` (display).
+    /// - Throws: `DigestError.cannotOpen` when the file cannot be opened; `DigestError.cancelled`
+    ///   when `isCancelled` returns true mid-read; re-throws `FileHandle` read errors.
+    public static func sha256WithSizeAndStat(
+        path: String,
+        onBytesHashed: ((Int) -> Void)? = nil,
+        isCancelled: (() -> Bool)? = nil
+    ) throws -> (sha256: String, size: Int, stat: FileStat?) {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            throw DigestError.cannotOpen(path)
+        }
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        var totalBytes = 0
+        let chunkSize = 1 << 20  // 1 MiB
+
+        while true {
+            let reachedEOF = try autoreleasepool { () throws -> Bool in
+                if isCancelled?() == true { throw DigestError.cancelled }
+                let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+                if chunk.isEmpty { return true }
+                hasher.update(data: chunk)
+                totalBytes += chunk.count
+                onBytesHashed?(chunk.count)
+                return false
+            }
+            if reachedEOF { break }
+        }
+
+        // fstat on the still-open handle — TOCTOU-tight. Describes the inode whose bytes
+        // were just hashed. Captured BEFORE defer { close } fires.
+        // Uses (st_mode & S_IFMT) == S_IFREG (not S_ISREG, a C macro that cannot be
+        // imported into Swift — see FileStat.swift).
+        // Guard the return code: on failure, return nil stat (no garbage baseline).
+        var st = Darwin.stat()
+        let statResult: FileStat?
+        if Darwin.fstat(handle.fileDescriptor, &st) == 0 {
+            statResult = FileStat(
+                size: Int64(st.st_size),
+                mtimeSeconds: Int64(st.st_mtimespec.tv_sec),
+                mtimeNanoseconds: Int64(st.st_mtimespec.tv_nsec),
+                inode: UInt64(st.st_ino),
+                device: Int64(st.st_dev),
+                isRegularFile: (st.st_mode & S_IFMT) == S_IFREG)
+        } else {
+            statResult = nil
+        }
+
+        let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return (sha256: "sha256:" + hex, size: totalBytes, stat: statResult)
     }
 
     /// Convenience overload returning only the digest string.

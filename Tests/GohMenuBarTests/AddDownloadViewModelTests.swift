@@ -41,6 +41,7 @@ private final class FakeMenuClient: GohMenuClient {
     func pause(jobID: UInt64) async throws {}
     func resume(jobID: UInt64) async throws {}
     func remove(jobID: UInt64, keepPartialFile: Bool) async throws {}
+    func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws {}
 }
 
 // ── GohMenuError.userFacingMessage — direct per-case tests ───────────────────
