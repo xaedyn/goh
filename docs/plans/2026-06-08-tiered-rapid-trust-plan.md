@@ -1808,9 +1808,11 @@ public func loadOverview() async {
         let entries: [ProvenanceEntry]
         if case .entries(let e) = outcome { entries = e } else { entries = [] }
         let fastResults = FastCheckRunner.checkAll(entries, probe: capturedProbe)
-        let statuses = Dictionary(uniqueKeysWithValues: fastResults.map {
-            ($0.destinationPath, $1)
-        })
+        // uniquingKeysWith (not uniqueKeysWithValues) so a hand-corrupted ledger with
+        // duplicate destinationPaths can't trap the tray; last entry wins.
+        let statuses = Dictionary(
+            fastResults.map { ($0.destinationPath, $1) },
+            uniquingKeysWith: { _, last in last })
         return (outcome, statuses)
     }.value
     let (ov, rs) = presenter.present(outcome)
