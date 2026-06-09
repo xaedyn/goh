@@ -95,8 +95,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 | `Sources/GohCore/CLI/GohCommandLine.swift` | **Modify** | `verifyQuick` parsed case; `--quick` flag dispatch |
 | `Sources/GohCore/CLI/GohVerifyQuickCommand.swift` | **Create** | `GohVerifyQuickCommand.run(...)` |
 | `Sources/GohMenuBar/GohTrustModels.swift` | **Modify** | `TrustDisplayStatus`; update `GohTrustEntryRow` |
-| `Sources/GohMenuBar/GohTrustPresenter.swift` | **Modify** | `present(_:fastStatuses:)` overload; `displayStatus(entry:fastStatus:)` |
-| `Sources/GohMenuBar/TrustWindowViewModel.swift` | **Modify** | `runFastCheck()` on `loadOverview()`; `fastStatuses: [String: FastCheckStatus]` |
+| `Sources/GohMenuBar/GohTrustPresenter.swift` | **Modify** | `static displayStatus(entry:fastStatus:)` + `static displayStatus(verifiedAt:fastStatus:)` convenience overload |
+| `Sources/GohMenuBar/TrustWindowViewModel.swift` | **Modify** | run `FastCheckRunner.checkAll` on `loadOverview()`; publish `fastStatuses: [String: FastCheckStatus]`; inject `any FileStatProbing` |
 | `Sources/GohMenuBar/TrustWindowView.swift` | **Modify** | render `TrustDisplayStatus` per row; distinct chip for `looksUnchanged` |
 | `Sources/goh-menu/main.swift` | **Modify** | wire `LiveFileStatProbe` into `TrustWindowViewModel` |
 | `Tests/GohCoreTests/GohVerifyQuickCommandTests.swift` | **Create** | CLI `--quick` tests |
@@ -298,6 +298,7 @@ private struct StubProbe: FileStatProbing {
 }
 
 // Counting probe — records call count to assert no content reads (AC1).
+// @unchecked Sendable: single-threaded test assumption — only the test body accesses _count.
 nonisolated final class CountingProbe: FileStatProbing, @unchecked Sendable {
     private var _count = 0
     var count: Int { _count }
@@ -412,14 +413,15 @@ import Darwin
 /// Captured filesystem metadata for one file — the fast-check baseline.
 ///
 /// All fields are raw integers (exact; no floating-point conversion).
-/// `isRegularFile` is derived from `st_mode` via `S_ISREG` at probe time.
+/// `isRegularFile` is derived from `st_mode` via `(st_mode & S_IFMT) == S_IFREG` at probe time.
+/// (`S_ISREG` is a function-like C macro and cannot be imported into Swift; use the bit-test instead.)
 public struct FileStat: Sendable, Equatable {
     public let size: Int64           // st_size (off_t)
     public let mtimeSeconds: Int64   // st_mtimespec.tv_sec
     public let mtimeNanoseconds: Int64 // st_mtimespec.tv_nsec
     public let inode: UInt64         // st_ino (ino_t = __uint64_t)
     public let device: Int64         // st_dev (dev_t = Int32) widened losslessly to Int64
-    public let isRegularFile: Bool   // S_ISREG(st_mode)
+    public let isRegularFile: Bool   // (st_mode & S_IFMT) == S_IFREG
 
     public init(
         size: Int64,
@@ -466,7 +468,7 @@ public protocol FileStatProbing: Sendable {
 /// Mapping:
 ///   - `ENOENT` → `.notFound`
 ///   - any other non-zero errno → `.unreadable(errno)`
-///   - success → `.stat(FileStat)` with `isRegularFile = S_ISREG(st_mode)`
+///   - success → `.stat(FileStat)` with `isRegularFile` derived from `st_mode`
 public struct LiveFileStatProbe: FileStatProbing {
     public init() {}
 
@@ -486,7 +488,7 @@ public struct LiveFileStatProbe: FileStatProbing {
             mtimeNanoseconds: Int64(st.st_mtimespec.tv_nsec),
             inode: UInt64(st.st_ino),
             device: Int64(st.st_dev),
-            isRegularFile: S_ISREG(st.st_mode) != 0)
+            isRegularFile: (st.st_mode & S_IFMT) == S_IFREG)
         return .stat(fs)
     }
 }
@@ -535,6 +537,7 @@ private struct FixedProbe: FileStatProbing {
 }
 
 // Call-counting probe to assert no content reads (AC1).
+// @unchecked Sendable: single-threaded test assumption — only the test body accesses _calls.
 private nonisolated final class CallCountingProbe: FileStatProbing, @unchecked Sendable {
     private var _calls: [String] = []
     var calls: [String] { _calls }
@@ -569,7 +572,8 @@ private let referenceBaseline = FileStat(
     mtimeSeconds: 1_748_000_000,
     mtimeNanoseconds: 123_456_789,
     inode: 42_000,
-    device: 1)
+    device: 1,
+    isRegularFile: true)
 
 @Suite("FastCheckRunner")
 struct FastCheckRunnerTests {
@@ -605,7 +609,8 @@ struct FastCheckRunnerTests {
             mtimeSeconds: referenceBaseline.mtimeSeconds,
             mtimeNanoseconds: referenceBaseline.mtimeNanoseconds,
             inode: referenceBaseline.inode,
-            device: referenceBaseline.device)
+            device: referenceBaseline.device,
+            isRegularFile: true)
         let entry = makeEntry(withBaseline: referenceBaseline)
         let probe = FixedProbe(result: .stat(current))
         let status = FastCheckRunner.check(entry, probe: probe)
@@ -620,7 +625,8 @@ struct FastCheckRunnerTests {
             mtimeSeconds: referenceBaseline.mtimeSeconds + 1,
             mtimeNanoseconds: referenceBaseline.mtimeNanoseconds,
             inode: referenceBaseline.inode,
-            device: referenceBaseline.device)
+            device: referenceBaseline.device,
+            isRegularFile: true)
         let entry = makeEntry(withBaseline: referenceBaseline)
         let probe = FixedProbe(result: .stat(current))
         #expect(FastCheckRunner.check(entry, probe: probe) == .changed(.mtime))
@@ -634,7 +640,8 @@ struct FastCheckRunnerTests {
             mtimeSeconds: referenceBaseline.mtimeSeconds,
             mtimeNanoseconds: referenceBaseline.mtimeNanoseconds + 1,
             inode: referenceBaseline.inode,
-            device: referenceBaseline.device)
+            device: referenceBaseline.device,
+            isRegularFile: true)
         let entry = makeEntry(withBaseline: referenceBaseline)
         let probe = FixedProbe(result: .stat(current))
         #expect(FastCheckRunner.check(entry, probe: probe) == .changed(.mtime))
@@ -648,7 +655,8 @@ struct FastCheckRunnerTests {
             mtimeSeconds: referenceBaseline.mtimeSeconds,
             mtimeNanoseconds: referenceBaseline.mtimeNanoseconds,
             inode: referenceBaseline.inode + 1,
-            device: referenceBaseline.device)
+            device: referenceBaseline.device,
+            isRegularFile: true)
         let entry = makeEntry(withBaseline: referenceBaseline)
         let probe = FixedProbe(result: .stat(current))
         #expect(FastCheckRunner.check(entry, probe: probe) == .changed(.identity))
@@ -662,7 +670,8 @@ struct FastCheckRunnerTests {
             mtimeSeconds: referenceBaseline.mtimeSeconds,
             mtimeNanoseconds: referenceBaseline.mtimeNanoseconds,
             inode: referenceBaseline.inode,
-            device: referenceBaseline.device + 1)
+            device: referenceBaseline.device + 1,
+            isRegularFile: true)
         let entry = makeEntry(withBaseline: referenceBaseline)
         let probe = FixedProbe(result: .stat(current))
         #expect(FastCheckRunner.check(entry, probe: probe) == .changed(.identity))
@@ -677,7 +686,8 @@ struct FastCheckRunnerTests {
             mtimeSeconds: referenceBaseline.mtimeSeconds + 1, // mtime wrong too
             mtimeNanoseconds: referenceBaseline.mtimeNanoseconds,
             inode: referenceBaseline.inode + 1,          // identity wrong
-            device: referenceBaseline.device)
+            device: referenceBaseline.device,
+            isRegularFile: true)
         let entry = makeEntry(withBaseline: referenceBaseline)
         let probe = FixedProbe(result: .stat(current))
         #expect(FastCheckRunner.check(entry, probe: probe) == .changed(.identity))
@@ -691,7 +701,8 @@ struct FastCheckRunnerTests {
             mtimeSeconds: referenceBaseline.mtimeSeconds + 1, // mtime wrong too
             mtimeNanoseconds: referenceBaseline.mtimeNanoseconds,
             inode: referenceBaseline.inode,
-            device: referenceBaseline.device)
+            device: referenceBaseline.device,
+            isRegularFile: true)
         let entry = makeEntry(withBaseline: referenceBaseline)
         let probe = FixedProbe(result: .stat(current))
         #expect(FastCheckRunner.check(entry, probe: probe) == .changed(.size))
@@ -1012,7 +1023,7 @@ public func fileStat() throws -> FileStat {
         mtimeNanoseconds: Int64(st.st_mtimespec.tv_nsec),
         inode: UInt64(st.st_ino),
         device: Int64(st.st_dev),
-        isRegularFile: S_ISREG(st.st_mode) != 0)
+        isRegularFile: (st.st_mode & S_IFMT) == S_IFREG)
 }
 ```
 
@@ -1212,54 +1223,37 @@ Then update the `complete(...)` call:
 ```
 
 *Site 3: resume (~L392–407)*
-Locate:
-```swift
-            resumeDigest = try await verifyHash(file: file, total: total)
-            try file.finish()
-        } catch {
-            try? file.finish()
-            throw error
-        }
-```
-Change to:
-```swift
-            resumeDigest = try await verifyHash(file: file, total: total)
-            // Capture stat baseline before finish() closes the fd.
-            let resumeFileStat = try? file.fileStat()
-            try file.finish()
-        } catch {
-            try? file.finish()
-            throw error
-        }
-```
-Update the `complete(...)` call:
-```swift
-        try complete(
-            jobID: job.id, in: store,
-            transferDuration: clock.now - started, isResume: true,
-            sha256: resumeDigest,
-            fileStat: resumeFileStat)
-```
 
-Note: `resumeFileStat` must be declared inside the `do` block above the catch, and is
-accessible at the `complete(...)` call site after the block because `file.finish()` is inside
-the `do`. Swift will require `resumeFileStat` to be declared at the right scope —
-declare it as `let resumeFileStat: FileStat?` just before the `do` block and assign it
-inside the `do`:
+`resumeFileStat` must be declared BEFORE the `do` block so it is in scope at the
+`complete(...)` call site after the block. Declare as `var ... = nil`, then assign inside
+the `do` before `file.finish()`.
+
+Locate the existing `var resumeDigest: String` declaration and the `do { ... } catch { ... }`
+block that contains `verifyHash` + `file.finish()`. Change to:
 
 ```swift
         var resumeDigest: String
-        var resumeFileStat: FileStat? = nil
+        var resumeFileStat: FileStat? = nil   // declared before do — in scope at complete(...)
         do {
             for range in missingRanges { ... }
             resumeDigest = try await verifyHash(file: file, total: total)
+            // Capture stat baseline before finish() closes the fd. try? so a
+            // should-never-happen fstat failure leaves baseline nil (→ .notBaselined).
             resumeFileStat = try? file.fileStat()
             try file.finish()
         } catch {
             try? file.finish()
             throw error
         }
-        // ... then pass resumeFileStat to complete(...)
+```
+
+Update the `complete(...)` call after the `do/catch` block:
+```swift
+        try complete(
+            jobID: job.id, in: store,
+            transferDuration: clock.now - started, isResume: true,
+            sha256: resumeDigest,
+            fileStat: resumeFileStat)
 ```
 
 ### Step 4 — Build and run full engine test suite
@@ -1545,7 +1539,7 @@ git commit -m "feat(tray): add TrustDisplayStatus with distinct looksUnchanged v
 
 ---
 
-## Task 3.2 — Presenter `displayStatus(entry:fastStatus:)` + updated `present(_:fastStatuses:)`
+## Task 3.2 — Presenter `displayStatus(entry:fastStatus:)` + `displayStatus(verifiedAt:fastStatus:)` convenience overload
 
 **Files:**
 - Modify: `Sources/GohMenuBar/GohTrustPresenter.swift`
@@ -1698,6 +1692,24 @@ nonisolated public struct GohTrustPresenter: Sendable {
         }
     }
 
+    /// Convenience overload for call sites that already have `verifiedAt: Date?`
+    /// (e.g. `TrustWindowView` which reads from `GohTrustEntryRow.verifiedAt`
+    /// without needing to reconstruct a full `ProvenanceEntry`).
+    public static func displayStatus(
+        verifiedAt: Date?,
+        fastStatus: FastCheckStatus?
+    ) -> TrustDisplayStatus {
+        if let verifiedAt { return .verified(at: verifiedAt) }
+        guard let fast = fastStatus else { return .recordedOnly }
+        switch fast {
+        case .unchanged:    return .looksUnchanged
+        case .changed(let r): return .changed(r)
+        case .missing:      return .missing
+        case .indeterminate: return .indeterminate
+        case .notBaselined: return .notBaselined
+        }
+    }
+
     // MARK: - Private
 
     private func makeRow(_ entry: ProvenanceEntry) -> GohTrustEntryRow {
@@ -1825,66 +1837,68 @@ git commit -m "feat(tray): run fast-check on Trust window open; publish fastStat
 **Files:**
 - Modify: `Sources/GohMenuBar/TrustWindowView.swift`
 
-**Pre-task reads:**
-- [x] `Sources/GohMenuBar/TrustWindowView.swift` — read in Phase 0.
-  - `TrustEntryRowView` renders `atRestStatusChip` (verifiedAt) and `liveStatusChip`
-    (post-verify result).
-  - `atRestStatusChip` currently shows "verified <date>" or "downloaded".
-  - The goal: replace `atRestStatusChip` with a chip driven by `TrustDisplayStatus`.
+**Pre-task reads (done in Phase 0 — real shapes recorded here):**
 
-**Changes:**
+`TrustWindowView.swift` real state after Tasks 3.1–3.3:
+- `private func liveResult(for row: GohTrustEntryRow) -> VerifyStatus?` — looks up the
+  post-verify result from `viewModel.runState` (`.finished`/`.cancelled` report).
+- `private struct TrustEntryRowView: View` — takes `row: GohTrustEntryRow` and
+  `liveResult: VerifyStatus?`.
+- `atRestStatusChip` renders `row.verifiedAt` as "verified <date>" or "downloaded".
+- The `entryList` ForEach passes `TrustEntryRowView(row: row, liveResult: liveResult(for: row))`.
 
-In `TrustWindowView`, compute the display status per row:
+After Task 3.3, `TrustWindowViewModel` has:
+- `@Published public private(set) var fastStatuses: [String: FastCheckStatus]` — keyed
+  by `destinationPath`, populated by `FastCheckRunner.checkAll(entries, probe: probe)` inside
+  `loadOverview()`.
+
+After Task 3.2, `GohTrustPresenter` has:
+- `static func displayStatus(verifiedAt: Date?, fastStatus: FastCheckStatus?) -> TrustDisplayStatus`
+  (the `verifiedAt:`-overload added at the end of Task 3.2's implementation).
+
+**Goal:** Thread `displayStatus: TrustDisplayStatus` into `TrustEntryRowView`, computed
+per-row in the parent from the ViewModel's `fastStatuses`. Replace `atRestStatusChip`
+with a chip driven by `TrustDisplayStatus`. Keep `liveStatusChip` (post-verify) separate.
+
+**Note on testability:** `TrustEntryRowView` is a private SwiftUI view — it cannot be
+unit-tested directly. The correctness of the `displayStatus` mapping is covered by the
+presenter tests in Task 3.2 and the AC8 token-distinctness test in Task 3.1. This task
+has no additional unit tests; the compile gate and a manual smoke-check (Trust window opens,
+shows "looks unchanged" chip in teal, not "verified") are the verification.
+
+### Step 1 — No separate failing test
+
+The compile gate is the test: adding `displayStatus:` to `TrustEntryRowView.init` will cause
+a compile error at the ForEach call site until the parent is updated. See Step 3.
+
+### Step 2 — Skip
+
+### Step 3 — Implementation
+
+**Edit A: add the `displayStatus:` parameter to `TrustEntryRowView`.**
+
+Locate `private struct TrustEntryRowView: View` and change its stored properties and `body`:
 
 ```swift
-// Replace liveResult(for:) with displayStatus(for:):
-private func displayStatus(for row: GohTrustEntryRow) -> TrustDisplayStatus {
-    // If a live verify result exists, it wins.
-    if let liveResult = liveVerifyResult(for: row) {
-        switch liveResult {
-        case .ok:      return .verified(at: Date())  // or use the report's generatedAt
-        case .failed:  return .changed(.size)         // best approximation for display
-        case .missing: return .missing
-        }
-    }
-    // Otherwise, use presenter.displayStatus with the fast-check result.
-    let fastStatus = viewModel.fastStatuses[row.displayPath]
-    return GohTrustPresenter.displayStatus(
-        entry: rowToEntry(row),    // reconstruct a minimal ProvenanceEntry for the call
-        fastStatus: fastStatus)
-}
+// OLD stored properties:
+private struct TrustEntryRowView: View {
+    let row: GohTrustEntryRow
+    let liveResult: VerifyStatus?
+
+// NEW:
+private struct TrustEntryRowView: View {
+    let row: GohTrustEntryRow
+    let liveResult: VerifyStatus?
+    let displayStatus: TrustDisplayStatus   // fast-check or at-rest status (Task 3.1)
 ```
 
-**Implementation note on `rowToEntry`:** `GohTrustPresenter.displayStatus(entry:fastStatus:)`
-uses only `entry.verifiedAt` from the entry. Pass a minimal `ProvenanceEntry` constructed
-from `row.verifiedAt`. Alternatively, update `displayStatus` to accept `verifiedAt: Date?`
-directly (cleaner). Recommend the latter — simpler:
+**Edit B: replace `atRestStatusChip` with `displayStatusChip(_:)`.**
+
+Remove the existing `atRestStatusChip` computed property. Add in its place:
 
 ```swift
-// Alternative: add a simpler overload to GohTrustPresenter (in Task 3.2 or here):
-public static func displayStatus(
-    verifiedAt: Date?,
-    fastStatus: FastCheckStatus?
-) -> TrustDisplayStatus {
-    if let verifiedAt { return .verified(at: verifiedAt) }
-    guard let fast = fastStatus else { return .recordedOnly }
-    switch fast {
-    case .unchanged:    return .looksUnchanged
-    case .changed(let r): return .changed(r)
-    case .missing:      return .missing
-    case .indeterminate: return .indeterminate
-    case .notBaselined: return .notBaselined
-    }
-}
-```
-
-Use `GohTrustPresenter.displayStatus(verifiedAt: row.verifiedAt, fastStatus: fastStatus)`
-in the view.
-
-Update `TrustEntryRowView.atRestStatusChip` to consume `TrustDisplayStatus`:
-
-```swift
-/// Renders a chip for the fast-check or at-rest status (not the live verify chip).
+/// Fast-check / at-rest status chip. Visually distinct from `liveStatusChip`.
+/// `looksUnchanged` uses teal (heuristic); `verified` uses green (cryptographic proof).
 @ViewBuilder
 private func displayStatusChip(_ status: TrustDisplayStatus) -> some View {
     let (label, bg, fg): (String, Color, Color) = switch status {
@@ -1913,15 +1927,92 @@ private func displayStatusChip(_ status: TrustDisplayStatus) -> some View {
 }
 ```
 
-Pass `displayStatus` computed from `viewModel.fastStatuses[row.displayPath]` and
-`row.verifiedAt` into `TrustEntryRowView`. The `liveStatusChip` for post-verify results
-stays separate (distinct rendering, post-run overlay).
+In `body`, replace `atRestStatusChip` with `displayStatusChip(displayStatus)`:
 
-Add the `--quick` help-text limitation notice to the view's "Verify integrity" button
-tooltip or a section header:
+```swift
+// OLD in body HStack:
+                atRestStatusChip
+                if let live = liveResult {
+                    liveStatusChip(live)
+                }
+
+// NEW:
+                displayStatusChip(displayStatus)
+                if let live = liveResult {
+                    liveStatusChip(live)
+                }
 ```
-"Rapid check (looks unchanged since \(date) — not a full integrity check; run 'Verify now' to detect bit-rot or tampering that preserves size & timestamp)"
+
+**Edit C: update `entryList` in `TrustWindowView` to pass `displayStatus`.**
+
+Locate the `ForEach` in `entryList`:
+
+```swift
+// OLD:
+                    ForEach(viewModel.rows, id: \.displayPath) { row in
+                        TrustEntryRowView(row: row, liveResult: liveResult(for: row))
+                    }
+
+// NEW:
+                    ForEach(viewModel.rows, id: \.displayPath) { row in
+                        TrustEntryRowView(
+                            row: row,
+                            liveResult: liveResult(for: row),
+                            displayStatus: GohTrustPresenter.displayStatus(
+                                verifiedAt: row.verifiedAt,
+                                fastStatus: viewModel.fastStatuses[row.displayPath]))
+                    }
 ```
+
+`liveResult(for:)` is the existing private helper (unchanged):
+```swift
+private func liveResult(for row: GohTrustEntryRow) -> VerifyStatus? {
+    switch viewModel.runState {
+    case .finished(let report), .cancelled(let report):
+        return report.entries.first { $0.path == row.displayPath }?.status
+    default:
+        return nil
+    }
+}
+```
+
+`viewModel.fastStatuses[row.displayPath]` is the per-row `FastCheckStatus?` produced
+by `FastCheckRunner.checkAll(entries, probe: probe)` inside `loadOverview()` (Task 3.3).
+When the window first opens, the `.task { await viewModel.loadOverview() }` fires, which
+runs `FastCheckRunner.checkAll` off-main and publishes `fastStatuses` before the first
+re-render. For entries with no baseline (pre-feature), `FastCheckStatus` is `.notBaselined`,
+which `displayStatus(verifiedAt:fastStatus:)` maps to `TrustDisplayStatus.notBaselined`.
+
+**Edit D: update `accessibilityDescription` to use `displayStatus`.**
+
+In `TrustEntryRowView`, update `accessibilityDescription`:
+
+```swift
+// OLD:
+    private var accessibilityDescription: String {
+        let file = URL(fileURLWithPath: row.displayPath).lastPathComponent
+        let status = row.verifiedAt != nil ? "verified" : "downloaded only"
+        let live = liveResult.map { "live: \($0.rawValue)" } ?? ""
+        return "\(file), \(status)\(live.isEmpty ? "" : ", \(live)")"
+    }
+
+// NEW:
+    private var accessibilityDescription: String {
+        let file = URL(fileURLWithPath: row.displayPath).lastPathComponent
+        let live = liveResult.map { "live: \($0.rawValue)" } ?? ""
+        return "\(file), \(displayStatus.label)\(live.isEmpty ? "" : ", \(live)")"
+    }
+```
+
+### Step 4 — Build
+
+```
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -Xswiftc -warnings-as-errors
+```
+
+Expected: clean build. The compile gate confirms `TrustEntryRowView` receives a valid
+`TrustDisplayStatus` at every call site; no further unit test is added for the SwiftUI
+view layer (correctness is covered by Task 3.1 AC8 and Task 3.2 presenter tests).
 
 ### Step 5 — Commit
 
@@ -2029,7 +2120,8 @@ struct GohVerifyQuickCommandTests {
 
         let path = dir.appendingPathComponent("provenance.plist").path
         let baseline = FileStat(size: 100, mtimeSeconds: 1_748_000_000,
-                                mtimeNanoseconds: 0, inode: 1, device: 1)
+                                mtimeNanoseconds: 0, inode: 1, device: 1,
+                                isRegularFile: true)
         let entry = makeEntry(path: "/tmp/a.bin", baseline: baseline)
         try writeStore(entry, to: path)
 
@@ -2049,9 +2141,11 @@ struct GohVerifyQuickCommandTests {
 
         let path = dir.appendingPathComponent("provenance.plist").path
         let baseline = FileStat(size: 100, mtimeSeconds: 1_748_000_000,
-                                mtimeNanoseconds: 0, inode: 1, device: 1)
+                                mtimeNanoseconds: 0, inode: 1, device: 1,
+                                isRegularFile: true)
         let current = FileStat(size: 999, mtimeSeconds: 1_748_000_000,
-                               mtimeNanoseconds: 0, inode: 1, device: 1)
+                               mtimeNanoseconds: 0, inode: 1, device: 1,
+                               isRegularFile: true)
         let entry = makeEntry(path: "/tmp/b.bin", baseline: baseline)
         try writeStore(entry, to: path)
 
@@ -2071,7 +2165,8 @@ struct GohVerifyQuickCommandTests {
 
         let path = dir.appendingPathComponent("provenance.plist").path
         let baseline = FileStat(size: 100, mtimeSeconds: 1_748_000_000,
-                                mtimeNanoseconds: 0, inode: 1, device: 1)
+                                mtimeNanoseconds: 0, inode: 1, device: 1,
+                                isRegularFile: true)
         let entry = makeEntry(path: "/tmp/c.bin", baseline: baseline)
         try writeStore(entry, to: path)
 
@@ -2094,7 +2189,8 @@ struct GohVerifyQuickCommandTests {
 
         let path = dir.appendingPathComponent("provenance.plist").path
         let baseline = FileStat(size: 100, mtimeSeconds: 1_748_000_000,
-                                mtimeNanoseconds: 0, inode: 1, device: 1)
+                                mtimeNanoseconds: 0, inode: 1, device: 1,
+                                isRegularFile: true)
         let entry = makeEntry(path: "/tmp/d.bin", baseline: baseline)
         try writeStore(entry, to: path)
 
