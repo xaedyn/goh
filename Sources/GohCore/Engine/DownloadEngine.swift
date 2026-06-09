@@ -97,7 +97,7 @@ public struct DownloadEngine: Sendable {
     private let control: DownloadControl?
     private let cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)?
     private let sleepAssertionController: SleepAssertionController?
-    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, String?, GovernorOutcome) -> Void)?
+    private let completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, String?, GovernorOutcome, FileStat?) -> Void)?
     private let unexpectedStoreError: UnexpectedStoreErrorReporter?
     private let hostProfileStore: HostProfileStore?
     private let connectionBudget: ConnectionBudget?
@@ -109,7 +109,7 @@ public struct DownloadEngine: Sendable {
         control: DownloadControl? = nil,
         cookieHeaderProvider: (@Sendable (UInt64, URL) -> String?)? = nil,
         sleepAssertionController: SleepAssertionController? = nil,
-        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, String?, GovernorOutcome) -> Void)? = nil,
+        completedDownloadHandler: (@Sendable (JobSummary, Duration, Bool, String?, GovernorOutcome, FileStat?) -> Void)? = nil,
         unexpectedStoreError: UnexpectedStoreErrorReporter? = nil,
         hostProfileStore: HostProfileStore? = nil,
         connectionBudget: ConnectionBudget? = nil
@@ -381,6 +381,7 @@ public struct DownloadEngine: Sendable {
         let started = clock.now
 
         let resumeDigest: String
+        var resumeFileStat: FileStat? = nil   // declared before do — in scope at complete(...)
         do {
             for range in missingRanges {
                 completed += try await downloadResumeRange(
@@ -391,6 +392,9 @@ public struct DownloadEngine: Sendable {
             }
 
             resumeDigest = try await verifyHash(file: file, total: total)
+            // Capture stat baseline before finish() closes the fd. try? so a
+            // should-never-happen fstat failure leaves baseline nil (→ .notBaselined).
+            resumeFileStat = try? file.fileStat()
             try file.finish()
         } catch {
             try? file.finish()
@@ -403,7 +407,8 @@ public struct DownloadEngine: Sendable {
         try complete(
             jobID: job.id, in: store,
             transferDuration: clock.now - started, isResume: true,
-            sha256: resumeDigest)
+            sha256: resumeDigest,
+            fileStat: resumeFileStat)
         trace.summary()
     }
 
@@ -561,6 +566,9 @@ public struct DownloadEngine: Sendable {
         } else {
             fatalError("unreachable: ChunkAssemblerResult has only .digest/.failed")
         }
+        // Capture stat baseline before finish() closes the fd. try? so a
+        // should-never-happen fstat failure leaves baseline nil (→ .notBaselined).
+        let fetchSingleFileStat = try? file.fileStat()
         try file.finish()
         var singleFinal = Self.progress(
             completed: completed, total: total, elapsed: clock.now - started)
@@ -569,7 +577,8 @@ public struct DownloadEngine: Sendable {
         try complete(
             jobID: job.id, in: store,
             transferDuration: clock.now - started, isResume: false,
-            sha256: fetchSingleDigest)
+            sha256: fetchSingleDigest,
+            fileStat: fetchSingleFileStat)
     }
 
     // MARK: Range-parallel
@@ -897,6 +906,8 @@ public struct DownloadEngine: Sendable {
         } else {
             fatalError("unreachable: ChunkAssemblerResult has only .digest/.failed")
         }
+        // Capture stat baseline before finish() closes the fd.
+        let fetchRangedFileStat = try? file.fileStat()
         try file.finish()
         var rangedFinal = Self.progress(
             completed: total, total: total, elapsed: clock.now - started)
@@ -907,7 +918,8 @@ public struct DownloadEngine: Sendable {
             jobID: job.id, in: store,
             transferDuration: clock.now - started, isResume: false,
             sha256: fetchRangedDigest,
-            governorOutcome: governorOutcome)
+            governorOutcome: governorOutcome,
+            fileStat: fetchRangedFileStat)
         trace.summary()
     }
 
@@ -915,10 +927,11 @@ public struct DownloadEngine: Sendable {
         jobID: UInt64, in store: JobStore,
         transferDuration: Duration, isResume: Bool,
         sha256: String?,                          // lowercase hex, no prefix; nil if unavailable
-        governorOutcome: GovernorOutcome = .governorOff
+        governorOutcome: GovernorOutcome = .governorOff,
+        fileStat: FileStat? = nil
     ) throws {
         let completed = try store.complete(id: jobID)
-        completedDownloadHandler?(completed, transferDuration, isResume, sha256, governorOutcome)
+        completedDownloadHandler?(completed, transferDuration, isResume, sha256, governorOutcome, fileStat)
     }
 
     /// Issues a fresh ranged `GET` for `range` and feeds its body into

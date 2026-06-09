@@ -71,7 +71,7 @@ struct DownloadEngineTests {
         await DownloadEngine(
             session: mockSession(),
             sleepAssertionController: sleepAssertionController,
-            completedDownloadHandler: { completed, _, _, _, _ in
+            completedDownloadHandler: { completed, _, _, _, _, _ in
                 completedJob.withLock { $0 = completed }
             }
         ).run(jobID: job.id, in: store)
@@ -104,7 +104,7 @@ struct DownloadEngineTests {
 
         await DownloadEngine(
             session: mockSession(),
-            completedDownloadHandler: { _, duration, isResume, _, _ in
+            completedDownloadHandler: { _, duration, isResume, _, _, _ in
                 observed.withLock { $0 = (duration, isResume) }
             }
         ).run(jobID: job.id, in: store)
@@ -1183,7 +1183,7 @@ struct DownloadEngineTests {
         let job = store.create(url: url, destination: destination, requestedConnectionCount: 2)
         let captured = Mutex<GovernorOutcome?>(nil)
         await DownloadEngine(session: mockSession(), chunkSize: 1 << 20,
-            completedDownloadHandler: { _, _, _, _, outcome in captured.withLock { $0 = outcome } }
+            completedDownloadHandler: { _, _, _, _, outcome, _ in captured.withLock { $0 = outcome } }
         ).run(jobID: job.id, in: store)
         #expect(store.job(id: job.id)?.state == .completed)
         #expect(captured.withLock { $0 } != nil)
@@ -1202,7 +1202,7 @@ struct DownloadEngineTests {
         let captured = Mutex<GovernorOutcome?>(nil)
         // Small chunkSize → 8 chunks so 4 workers actually run concurrently (peak 4).
         await DownloadEngine(session: mockSession(), chunkSize: 1 << 20,
-            completedDownloadHandler: { _, _, _, _, outcome in captured.withLock { $0 = outcome } }
+            completedDownloadHandler: { _, _, _, _, outcome, _ in captured.withLock { $0 = outcome } }
         ).run(jobID: job.id, in: store, explicitConnectionCount: 4)
         #expect(store.job(id: job.id)?.state == .completed)
         let outcome = captured.withLock { $0 }!
@@ -1228,7 +1228,7 @@ struct DownloadEngineTests {
         let capturedSha256 = Mutex<String?>(nil)
         await DownloadEngine(
             session: mockSession(),
-            completedDownloadHandler: { _, _, _, sha256, _ in
+            completedDownloadHandler: { _, _, _, sha256, _, _ in
                 capturedSha256.withLock { $0 = sha256 }
             }
         ).run(jobID: job.id, in: store)
@@ -1285,7 +1285,7 @@ struct DownloadEngineTests {
         await DownloadEngine(
             session: mockSession(),
             checkpointStore: checkpointStore,
-            completedDownloadHandler: { _, _, isResume, sha256, _ in
+            completedDownloadHandler: { _, _, isResume, sha256, _, _ in
                 captured.withLock { $0 = (isResume, sha256) }
             }
         ).run(jobID: job.id, in: store)
