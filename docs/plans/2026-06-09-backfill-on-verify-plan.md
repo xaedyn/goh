@@ -1385,16 +1385,22 @@ private final class SpySender: @unchecked Sendable {
 
     func send(_ dict: XPCDictionary) throws -> XPCDictionary {
         if shouldThrow { throw URLError(.notConnectedToInternet) }
-        let envelope = try GohEnvelope<Command>(xpcDictionary: dict)
+        // GohEnvelope's xpc init takes the RAW xpc_object_t — reach it via
+        // withUnsafeUnderlyingDictionary (exactly as GohSyncCommandTests does).
+        let envelope = try dict.withUnsafeUnderlyingDictionary { object in
+            try GohEnvelope<Command>(xpcDictionary: object)
+        }
         if case .recordVerifiedProvenance(let req) = envelope.payload {
             sentEntries.append(req.entries)
         }
-        // Return a well-formed AckReply envelope (same shape GohCommandClient expects).
-        return try GohEnvelope<AckReply>(
+        // Build a well-formed AckReply envelope; .xpcDictionary() returns an
+        // xpc_object_t, so wrap it back into an XPCDictionary for the Sender return.
+        let replyObject = try GohEnvelope(
             protocolVersion: CommandService.protocolVersion,
             requestID: envelope.requestID,
             messageType: .reply,
             payload: AckReply()).xpcDictionary()
+        return XPCDictionary(replyObject)
     }
 }
 
