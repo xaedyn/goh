@@ -31,7 +31,7 @@ public enum GohVerifyCommand {
         guard let toml = try? String(contentsOf: lockURL, encoding: .utf8) else {
             return GohCommandLineResult(
                 exitCode: 6,
-                standardOutput: "no gohfile.lock; run goh sync first\n")
+                standardError: "no gohfile.lock; run goh sync first\n")
         }
 
         let lockfile: LockfileCodec.Lockfile
@@ -42,18 +42,18 @@ public enum GohVerifyCommand {
             if e.message.hasPrefix("unsupported lockfileVersion") {
                 return GohCommandLineResult(
                     exitCode: 6,
-                    standardOutput: "\(e.message)\n")
+                    standardError: "\(e.message)\n")
             }
             // Corrupt / unparseable — quarantine the lock file.
             quarantine(lockURL: lockURL)
             return GohCommandLineResult(
                 exitCode: 6,
-                standardOutput: "corrupt lockfile\n")
+                standardError: "corrupt lockfile\n")
         } catch {
             quarantine(lockURL: lockURL)
             return GohCommandLineResult(
                 exitCode: 6,
-                standardOutput: "corrupt lockfile\n")
+                standardError: "corrupt lockfile\n")
         }
 
         // ── Step 2: Acquire a shared advisory lock on the stable sidecar ─────
@@ -69,7 +69,7 @@ public enum GohVerifyCommand {
         guard fd >= 0 else {
             return GohCommandLineResult(
                 exitCode: 6,
-                standardOutput: "could not open lockfile\n")
+                standardError: "could not open lockfile\n")
         }
         defer { close(fd) }
 
@@ -77,7 +77,7 @@ public enum GohVerifyCommand {
         if flockResult != 0 {
             return GohCommandLineResult(
                 exitCode: 7,
-                standardOutput: "another goh sync/verify is running on this lockfile\n")
+                standardError: "another goh sync/verify is running on this lockfile\n")
         }
         defer { flock(fd, LOCK_UN) }
 
@@ -89,7 +89,7 @@ public enum GohVerifyCommand {
                 if manifest.manifestHash != lockfile.manifestHash {
                     return GohCommandLineResult(
                         exitCode: 6,
-                        standardOutput: "lock is stale (manifestHash mismatch); run goh sync\n")
+                        standardError: "lock is stale (manifestHash mismatch); run goh sync\n")
                 }
             }
         }
