@@ -48,10 +48,17 @@ public enum GohAttestCommand {
         signerOverride: SignerOverride? = nil
     ) -> GohCommandLineResult {
 
-        // ── Step 1: Run verify-all to get the report ──────────────────────────
+        // ── Step 1: Run verify-all ONCE to get both the verdict and the report ─
+        // A single scan with a pinned timestamp. The returned exit code and the
+        // report whose bytes we sign MUST describe the same ledger observation;
+        // scanning twice let a file appear or disappear between the calls, so the
+        // signed artifact could attest a verdict that disagreed with the exit code
+        // the caller saw. One scan makes them provably consistent.
+        let reportDate = Date()
         let verifyResult = GohVerifyAllCommand.run(
             provenanceStorePath: provenanceStorePath,
-            json: true)
+            json: true,
+            generatedAt: reportDate)
 
         // Exit 6 from verify-all → ledger error, no artifact
         if verifyResult.exitCode == 6 {
@@ -60,17 +67,8 @@ public enum GohAttestCommand {
                 standardError: "attest: ledger unreadable or corrupt\n")
         }
 
-        // We need the actual VerifyAllReport to sign its payload bytes.
-        // Re-call with a fixed timestamp so payload_bytes are stable for signing.
-        // (The human-facing report reuses verifyResult.exitCode.)
-        let reportDate = Date()
-        let reportResult = GohVerifyAllCommand.run(
-            provenanceStorePath: provenanceStorePath,
-            json: true,
-            generatedAt: reportDate)
-
         // Parse the report to get payload_bytes via the seam
-        guard let stdoutData = reportResult.standardOutput.data(using: .utf8),
+        guard let stdoutData = verifyResult.standardOutput.data(using: .utf8),
               stdoutData.count > 1 else {
             return GohCommandLineResult(
                 exitCode: 5,
@@ -171,7 +169,7 @@ public enum GohAttestCommand {
             ? String(decoding: envelopeData, as: UTF8.self) + "\n"
             : ""
         return GohCommandLineResult(
-            exitCode: reportResult.exitCode,
+            exitCode: verifyResult.exitCode,
             standardOutput: stdout)
     }
 

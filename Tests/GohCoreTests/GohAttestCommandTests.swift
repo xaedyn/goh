@@ -106,6 +106,18 @@ struct GohAttestCommandTests {
         // AC2: artifact produced even for drift; exit mirrors verify verdict
         #expect(result.exitCode == 9)
         #expect(FileManager.default.fileExists(atPath: outputURL.path))
+
+        // Single-scan consistency: the verdict carried in the SIGNED payload must
+        // agree with the returned exit code. Both are derived from one ledger scan,
+        // so a missing-file run (exit 9) must produce a signed report whose summary
+        // also reports the file missing — they can never disagree.
+        let artifactData = try Data(contentsOf: outputURL)
+        let envelope = try CommandCoding.decoder.decode(SignedVerifyReport.self, from: artifactData)
+        let signedPayload = try #require(Data(base64Encoded: envelope.payloadBase64))
+        let signedReport = try CommandCoding.decoder.decode(VerifyAllReport.self, from: signedPayload)
+        #expect(signedReport.summary.missing == 1)
+        #expect(signedReport.summary.ok == 0)
+        #expect(signedReport.entries.allSatisfy { $0.status == .missing })
     }
 
     // MARK: - SE path (gated)
