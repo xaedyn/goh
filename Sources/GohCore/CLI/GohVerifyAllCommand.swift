@@ -69,17 +69,17 @@ public enum GohVerifyAllCommand {
 
         case .unreadable(.io):
             if json { return jsonErrorResult(.ledgerUnreadable) }
-            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger unreadable\n")
+            return GohCommandLineResult(exitCode: 6, standardError: "provenance ledger unreadable\n")
 
         case .unreadable(.corrupt):
             if json { return jsonErrorResult(.ledgerCorrupt) }
-            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger corrupt\n")
+            return GohCommandLineResult(exitCode: 6, standardError: "provenance ledger corrupt\n")
 
         case .unreadable(.versionUnknown(let found)):
             if json { return jsonErrorResult(.ledgerVersionUnknown) }
             return GohCommandLineResult(
                 exitCode: 6,
-                standardOutput: "provenance ledger version \(found) is unknown\n")
+                standardError: "provenance ledger version \(found) is unknown\n")
 
         case .entries:
             break  // fall through to re-hash
@@ -106,7 +106,7 @@ public enum GohVerifyAllCommand {
                 onVerified: onVerified)
         } catch {
             if json { return jsonErrorResult(.ledgerUnreadable) }
-            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger unreadable\n")
+            return GohCommandLineResult(exitCode: 6, standardError: "provenance ledger unreadable\n")
         }
 
         // ── Step 2.5: Best-effort backfill send ──────────────────────────────────────
@@ -212,12 +212,13 @@ public enum GohVerifyAllCommand {
     }
 
     private static func jsonErrorResult(_ code: VerifyErrorCode) -> GohCommandLineResult {
-        let envelope = VerifyErrorReport(reportVersion: 1, error: code)
-        guard let data = try? CommandCoding.encoder.encode(envelope) else {
-            return GohCommandLineResult(exitCode: 6, standardOutput: "")
-        }
-        return GohCommandLineResult(
-            exitCode: 6,
-            standardOutput: String(decoding: data, as: UTF8.self) + "\n")
+        // The VerifyErrorReport envelope is the documented machine contract on stdout
+        // (exit 6). Route it through jsonOrFailClosed so an encode failure fails closed
+        // to a stderr message instead of emitting blank stdout (audit finding H3) — a
+        // consumer piping `--json` into a parser must never silently receive nothing.
+        GohCommandLineResult.jsonOrFailClosed(
+            VerifyErrorReport(reportVersion: 1, error: code),
+            successExitCode: 6,
+            failureMessage: "verify --all: failed to encode JSON error report\n")
     }
 }

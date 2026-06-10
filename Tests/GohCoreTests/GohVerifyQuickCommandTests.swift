@@ -55,6 +55,25 @@ struct GohVerifyQuickCommandTests {
         #expect(result.standardOutput.contains("0 recorded entries"))
     }
 
+    @Test("run: corrupt ledger → exit 6, diagnostic on stderr not stdout")
+    func corruptLedgerErrorOnStderr() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("goh-quick-corrupt-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let storeURL = dir.appendingPathComponent("provenance.plist")
+        try Data("not a plist at all".utf8).write(to: storeURL)
+
+        let result = GohVerifyQuickCommand.run(
+            provenanceStorePath: storeURL.path,
+            probe: StubProbe(result: .notFound))
+        #expect(result.exitCode == 6)
+        // Error diagnostic goes to stderr, never stdout.
+        #expect(result.standardError.contains("provenance ledger"))
+        #expect(result.standardOutput.isEmpty)
+    }
+
     // All unchanged → exit 0.
     @Test("run: all unchanged → exit 0")
     func allUnchanged() throws {

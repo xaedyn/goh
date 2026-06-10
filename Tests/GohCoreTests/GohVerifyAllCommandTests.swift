@@ -124,6 +124,9 @@ struct GohVerifyAllCommandTests {
 
         let r = GohVerifyAllCommand.run(provenanceStorePath: storeURL.path)
         #expect(r.exitCode == 6)
+        // Non-JSON human diagnostic goes to stderr, never stdout.
+        #expect(r.standardError.contains("provenance ledger"))
+        #expect(r.standardOutput.isEmpty)
 
         // The CLI must NOT have created a sidecar — only the daemon's load() does that.
         let contents = try FileManager.default.contentsOfDirectory(atPath: dir.path)

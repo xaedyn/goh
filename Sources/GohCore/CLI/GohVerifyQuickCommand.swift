@@ -48,15 +48,15 @@ public enum GohVerifyQuickCommand {
             return GohCommandLineResult(exitCode: 0, standardOutput: "0 recorded entries\n")
 
         case .unreadable(.io):
-            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger unreadable\n")
+            return GohCommandLineResult(exitCode: 6, standardError: "provenance ledger unreadable\n")
 
         case .unreadable(.corrupt):
-            return GohCommandLineResult(exitCode: 6, standardOutput: "provenance ledger corrupt\n")
+            return GohCommandLineResult(exitCode: 6, standardError: "provenance ledger corrupt\n")
 
         case .unreadable(.versionUnknown(let found)):
             return GohCommandLineResult(
                 exitCode: 6,
-                standardOutput: "provenance ledger version \(found) is unknown\n")
+                standardError: "provenance ledger version \(found) is unknown\n")
 
         case .entries(let entries):
             return check(entries: entries, probe: probe)

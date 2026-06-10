@@ -169,7 +169,10 @@ struct GohVerifyCommandTests {
         let lockPath = dir.appendingPathComponent("gohfile.lock").path
         let r = GohVerifyCommand.run(lockPath: lockPath, strictUntracked: false)
         #expect(r.exitCode == 6)
-        #expect(r.standardOutput.contains("no gohfile.lock") || r.standardError.contains("no gohfile.lock"))
+        // Diagnostic errors go to stderr, never stdout, so piping verify output
+        // (e.g. into a parser) is not polluted by error text.
+        #expect(r.standardError.contains("no gohfile.lock"))
+        #expect(!r.standardOutput.contains("no gohfile.lock"))
     }
 
     @Test("unknown lockfileVersion → exit 6 (NOT 1), no quarantine")
@@ -188,8 +191,9 @@ struct GohVerifyCommandTests {
         #expect(r.exitCode == 6)
         // Must NOT be exit 1
         #expect(r.exitCode != 1)
-        // Should say unsupported version and not quarantine the file
-        #expect(r.standardOutput.contains("unsupported") || r.standardError.contains("unsupported"))
+        // Should say unsupported version (on stderr) and not quarantine the file
+        #expect(r.standardError.contains("unsupported"))
+        #expect(!r.standardOutput.contains("unsupported"))
         // Lock file should still exist (not quarantined)
         #expect(FileManager.default.fileExists(atPath: lockURL.path))
     }
@@ -205,7 +209,8 @@ struct GohVerifyCommandTests {
 
         let r = GohVerifyCommand.run(lockPath: lockURL.path, strictUntracked: false)
         #expect(r.exitCode == 6)
-        #expect(r.standardOutput.contains("corrupt") || r.standardError.contains("corrupt"))
+        #expect(r.standardError.contains("corrupt"))
+        #expect(!r.standardOutput.contains("corrupt"))
 
         // Original lock file should be gone (quarantined)
         #expect(!FileManager.default.fileExists(atPath: lockURL.path))
@@ -246,7 +251,8 @@ struct GohVerifyCommandTests {
 
         let r = GohVerifyCommand.run(lockPath: lockURL.path, strictUntracked: false)
         #expect(r.exitCode == 6)
-        #expect(r.standardOutput.contains("stale") || r.standardError.contains("stale"))
+        #expect(r.standardError.contains("stale"))
+        #expect(!r.standardOutput.contains("stale"))
     }
 
     // MARK: - --strict-untracked → exit 10
@@ -335,8 +341,8 @@ struct GohVerifyCommandTests {
 
         let r = GohVerifyCommand.run(lockPath: lockURL.path, strictUntracked: false)
         #expect(r.exitCode == 7)
-        #expect(
-            r.standardOutput.contains("another goh") || r.standardError.contains("another goh"))
+        #expect(r.standardError.contains("another goh"))
+        #expect(!r.standardOutput.contains("another goh"))
     }
 
     // MARK: - Parser routing
