@@ -32,4 +32,16 @@ struct DaemonFeatureLevelTests {
         let fromNew = try decoder.decode(LsReply.self, from: newJson)
         #expect(fromNew.featureLevel == 1)
     }
+
+    @Test("CommandDispatcher.ls reply includes GohFeatureLevel.current")
+    func dispatcherLsSetsFeatureLevel() {
+        let store = JobStore()
+        let dispatcher = CommandDispatcher(store: store)
+        let outcome = dispatcher.reply(to: .ls)
+        guard case .list(let reply) = outcome else {
+            Issue.record("expected .list outcome, got \(outcome)")
+            return
+        }
+        #expect(reply.featureLevel == GohFeatureLevel.current)
+    }
 }
