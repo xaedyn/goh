@@ -177,11 +177,16 @@ public struct GohCommandLine {
                 return GohVerifyAllCommand.run(
                     provenanceStorePath: provenanceStorePathResolver() ?? "",
                     json: json,
-                    send: send)  // Pass the live sender; attest uses nil-send form.
+                    send: send,  // Pass the live sender; attest uses nil-send form.
+                    restarter: LaunchctlDaemonRestarter(
+                        machServiceName: GohXPCService.machServiceName))
 
             case .verifyQuick:
                 return GohVerifyQuickCommand.run(
-                    provenanceStorePath: provenanceStorePathResolver() ?? "")
+                    provenanceStorePath: provenanceStorePathResolver() ?? "",
+                    send: send,
+                    restarter: LaunchctlDaemonRestarter(
+                        machServiceName: GohXPCService.machServiceName))
 
             case .attest(let outputPath):
                 let storePathOrEmpty = provenanceStorePathResolver() ?? ""

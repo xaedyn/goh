@@ -27,10 +27,20 @@ public enum GohVerifyQuickCommand {
     /// - Parameters:
     ///   - provenanceStorePath: Absolute path to `provenance.plist`.
     ///   - probe: Injectable probe (default `LiveFileStatProbe()`).
+    ///   - send: Optional XPC sender for best-effort daemon auto-heal. Nil disables it.
+    ///   - restarter: Injectable restart seam for auto-heal (default nil).
     public static func run(
         provenanceStorePath: String,
-        probe: any FileStatProbing = LiveFileStatProbe()
+        probe: any FileStatProbing = LiveFileStatProbe(),
+        send: GohCommandLine.Sender? = nil,
+        restarter: (any DaemonRestarting)? = nil
     ) -> GohCommandLineResult {
+        // ── Step 0: Best-effort daemon auto-heal (AC5) ──────────────────────────
+        // Never changes the command's exit code; degrades to a stderr notice.
+        if let send {
+            DaemonAutoHeal.runIfNeeded(send: send, restarter: restarter)
+        }
+
         let outcome = ProvenanceLedgerReader.read(at: provenanceStorePath)
 
         switch outcome {

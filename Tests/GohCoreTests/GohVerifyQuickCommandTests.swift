@@ -162,6 +162,22 @@ struct GohVerifyQuickCommandTests {
             recordedDevice: baseline.device)
     }
 
+    @Test("verify --quick with stale daemon triggers auto-heal")
+    func verifyQuickWithStaleDaemonTriggersAutoHeal() throws {
+        let restarter = StubRestarter(shouldSucceed: true)
+        let sequenced = SequencedLsSender(replies: [
+            LsReply(jobs: [], featureLevel: nil),
+            LsReply(jobs: [], featureLevel: nil),
+            LsReply(jobs: [], featureLevel: GohFeatureLevel.current),
+        ])
+        let result = GohVerifyQuickCommand.run(
+            provenanceStorePath: "",
+            send: sequenced.sender(),
+            restarter: restarter)
+        #expect(restarter.kickstartCalled == 1)
+        #expect(result.exitCode == 0)
+    }
+
     private func writeStore(_ entry: ProvenanceEntry, to path: String) throws {
         let record = ProvenanceRecord(version: 1, entries: [entry])
         let encoder = PropertyListEncoder()
