@@ -99,6 +99,108 @@ struct GohMenuProgressStreamTests {
         #expect(ended == nil)
         #expect(fake.cancelCount == 1)
     }
+
+    /// Regression guard for the cooperative-pool blocking bug (MEMORY.md
+    /// "Sync→async bridge pool deadlock"): `snapshots` does its blocking subscribe
+    /// round-trip and `receiveNotification()` on a GCD thread, never the Swift
+    /// cooperative pool. This is a starvation barrier — every stream's blocking
+    /// `sendSync` parks until ALL `streamCount` of them have arrived. The GCD global
+    /// queue spins up enough threads for all to arrive and release. If the work ran on
+    /// the cooperative pool (bounded to roughly the core count), fewer than
+    /// `streamCount` workers could park there at once, the barrier would never reach
+    /// its count, and the parked workers — blocked, not suspended — would never yield,
+    /// deadlocking until the time limit fails the test.
+    ///
+    /// `streamCount` is derived from the active core count rather than hard-coded:
+    /// the cooperative pool's width scales with cores, so a fixed size could exceed
+    /// the pool on a small runner (real starvation) yet fit within it on a high-core
+    /// machine (false pass). Pinning it to 4× the core count keeps it comfortably
+    /// wider than the pool everywhere while staying well under GCD's thread ceiling.
+    @Test(.timeLimit(.minutes(1)))
+    func blockingSubscribeRunsOffCooperativePool() async throws {
+        let streamCount = max(16, ProcessInfo.processInfo.activeProcessorCount * 4)
+        let barrier = StartupBarrier(count: streamCount)
+
+        let baselines = try await withThrowingTaskGroup(of: [ProgressSnapshot].self) { group in
+            for _ in 0..<streamCount {
+                group.addTask {
+                    let fake = BarrieredProgressSubscription(barrier: barrier)
+                    var iterator = GohMenuProgressStream
+                        .snapshots(makeSubscription: { fake.subscription() })
+                        .makeAsyncIterator()
+                    return try await iterator.next() ?? [ProgressSnapshot]()
+                }
+            }
+            var collected: [[ProgressSnapshot]] = []
+            for try await snapshot in group {
+                collected.append(snapshot)
+            }
+            return collected
+        }
+
+        #expect(baselines.count == streamCount)
+        #expect(baselines.allSatisfy { $0 == [] })
+    }
+}
+
+/// A reusable N-way barrier: the first `count - 1` arrivals park; the `count`th
+/// releases all of them. Backed by a `DispatchSemaphore` so a waiter blocks its OS
+/// thread (the property under test), never a cooperative suspension point.
+private final class StartupBarrier: @unchecked Sendable {
+    private let arrived = Mutex(0)
+    private let gate = DispatchSemaphore(value: 0)
+    private let count: Int
+
+    init(count: Int) {
+        self.count = count
+    }
+
+    func arriveAndWait() {
+        let n = arrived.withLock { value in
+            value += 1
+            return value
+        }
+        if n == count {
+            for _ in 0..<count { gate.signal() }
+        }
+        gate.wait()
+    }
+}
+
+/// A subscription whose `sendSync` (the subscribe round-trip) blocks on a shared
+/// startup barrier before replying, then ends the stream cleanly on first receive.
+private final class BarrieredProgressSubscription: @unchecked Sendable {
+    private let state = Mutex(State())
+    private let barrier: StartupBarrier
+
+    init(barrier: StartupBarrier) {
+        self.barrier = barrier
+    }
+
+    func subscription() -> GohMenuProgressSubscription {
+        GohMenuProgressSubscription(
+            sendSync: { [self] message in
+                barrier.arriveAndWait()
+                return try message.withUnsafeUnderlyingDictionary { object in
+                    let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                    state.withLock { $0.requestID = envelope.requestID }
+                    return try XPCDictionary(GohEnvelope(
+                        protocolVersion: CommandService.protocolVersion,
+                        requestID: envelope.requestID,
+                        messageType: .reply,
+                        payload: SubscribeReply(revision: 1, snapshot: []))
+                        .xpcDictionary())
+                }
+            },
+            receiveNotification: {
+                throw GohXPCNotificationInboxError.interrupted
+            },
+            cancel: {})
+    }
+
+    private struct State {
+        var requestID: UUID?
+    }
 }
 
 private final class FakeProgressSubscription: @unchecked Sendable {
