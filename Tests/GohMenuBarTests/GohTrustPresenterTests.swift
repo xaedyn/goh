@@ -73,7 +73,7 @@ struct GohTrustPresenterTests {
 
     // AC2: row fields map correctly
     @Test("AC2: row fields — displayPath, sha256, downloadedAt, verifiedAt mapped correctly")
-    func rowFieldsCorrect() {
+    func rowFieldsCorrect() throws {
         let dl = Date(timeIntervalSince1970: 1_000)
         let vf = Date(timeIntervalSince1970: 2_000)
         let entry = ProvenanceEntry(
@@ -84,11 +84,11 @@ struct GohTrustPresenterTests {
             destinationPath: "/Users/me/a.bin",
             verifiedAt: vf)
         let (_, rows) = presenter.present(.entries([entry]))
-        let row = try? #require(rows.first)
-        #expect(row?.displayPath == "/Users/me/a.bin")
-        #expect(row?.sha256 == "sha256:aabb")
-        #expect(row?.downloadedAt == dl)
-        #expect(row?.verifiedAt == vf)
+        let row = try #require(rows.first)
+        #expect(row.displayPath == "/Users/me/a.bin")
+        #expect(row.sha256 == "sha256:aabb")
+        #expect(row.downloadedAt == dl)
+        #expect(row.verifiedAt == vf)
     }
 
     // AC1: entry order preserved (ledger order)
