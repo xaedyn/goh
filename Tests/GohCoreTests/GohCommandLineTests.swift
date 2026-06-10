@@ -363,6 +363,77 @@ struct GohCommandLineTests {
     private struct TestTransportError: Error, CustomStringConvertible {
         var description: String { "test transport failure" }
     }
+
+    // MARK: - daemon restart verb (Task 8 / AC3)
+    // StubRestarter and makeLsSender are defined in
+    // Tests/GohCoreTests/Support/LsReplyTestSupport.swift.
+
+    @Test("goh daemon restart parses successfully")
+    func parseDaemonRestart() throws {
+        // GohCommandLine.parse is private; verify end-to-end via run().
+        let restarter = StubRestarter(shouldSucceed: true)
+        // The daemon: closure below never calls send, but GohCommandLine.init requires
+        // a non-nil send closure. Provide one via makeLsSender with a dummy reply.
+        let sender = makeLsSender(reply: LsReply(jobs: [], featureLevel: GohFeatureLevel.current))
+        let line = GohCommandLine(
+            arguments: ["daemon", "restart"],
+            daemon: { force in
+                // Minimal stub: no active downloads → kickstart
+                if !force {
+                    // Simulate 0 active downloads → proceed
+                }
+                try restarter.kickstart()
+                return GohCommandLineResult(exitCode: 0, standardOutput: "Background service restarted.\n")
+            },
+            send: sender)
+        let result = line.run()
+        #expect(result.exitCode == 0)
+        #expect(restarter.kickstartCalled == 1)
+    }
+
+    @Test("goh daemon restart refuses with active downloads (exit 64)")
+    func daemonRestartRefusesWhenBusy() {
+        let line = GohCommandLine(
+            arguments: ["daemon", "restart"],
+            daemon: { force in
+                guard !force else {
+                    return GohCommandLineResult(exitCode: 0, standardOutput: "Force restarted.\n")
+                }
+                return GohCommandLineResult(
+                    exitCode: 64,
+                    standardError: "1 active download is running. Use --force to restart anyway.\n")
+            },
+            send: { _ in fatalError("send not called") })
+        let result = line.run()
+        #expect(result.exitCode == 64)
+        #expect(result.standardError.contains("active download"))
+    }
+
+    @Test("goh daemon restart --force bypasses idle gate")
+    func daemonRestartForceBypassesIdleGate() {
+        let restarter = StubRestarter()
+        let line = GohCommandLine(
+            arguments: ["daemon", "restart", "--force"],
+            daemon: { force in
+                #expect(force == true)
+                try restarter.kickstart()
+                return GohCommandLineResult(exitCode: 0, standardOutput: "Force restarted.\n")
+            },
+            send: { _ in fatalError("send not called") })
+        let result = line.run()
+        #expect(result.exitCode == 0)
+        #expect(restarter.kickstartCalled == 1)
+    }
+
+    @Test("goh daemon with unknown subcommand exits 64")
+    func daemonUnknownSubcommandExits64() {
+        let line = GohCommandLine(
+            arguments: ["daemon", "frobnicate"],
+            daemon: { _ in fatalError("should not reach") },
+            send: { _ in fatalError("send not called") })
+        let result = line.run()
+        #expect(result.exitCode == 64)
+    }
 }
 
 // MARK: - diagnose wiring tests

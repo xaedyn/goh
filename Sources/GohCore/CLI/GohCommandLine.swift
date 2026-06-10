@@ -47,6 +47,7 @@ public struct GohCommandLine {
     public typealias Top = () throws -> GohCommandLineResult
     public typealias Doctor = () throws -> GohCommandLineResult
     public typealias Diagnose = (_ url: String, _ full: Bool, _ json: Bool, _ connections: Int?) throws -> GohCommandLineResult
+    public typealias DaemonCommand = (_ force: Bool) throws -> GohCommandLineResult
     public typealias ProvenanceStorePathResolver = () -> String?
 
     /// Resolves the attest key store locations (handle + keys.json URLs).
@@ -64,6 +65,7 @@ public struct GohCommandLine {
     private let top: Top?
     private let doctor: Doctor?
     private let diagnose: Diagnose?
+    private let daemon: DaemonCommand?
     private let provenanceStorePathResolver: ProvenanceStorePathResolver
     private let attestKeyLocationResolver: AttestKeyLocationResolver
     private let attestSignerResolver: AttestSignerResolver
@@ -76,6 +78,7 @@ public struct GohCommandLine {
         top: Top? = nil,
         doctor: Doctor? = nil,
         diagnose: Diagnose? = nil,
+        daemon: DaemonCommand? = nil,
         provenanceStorePathResolver: @escaping ProvenanceStorePathResolver = {
             try? ProvenanceStoreLocation.defaultURL(create: false).path
         },
@@ -95,6 +98,7 @@ public struct GohCommandLine {
         self.top = top
         self.doctor = doctor
         self.diagnose = diagnose
+        self.daemon = daemon
         self.provenanceStorePathResolver = provenanceStorePathResolver
         self.attestKeyLocationResolver = attestKeyLocationResolver
         self.attestSignerResolver = attestSignerResolver
@@ -257,6 +261,13 @@ public struct GohCommandLine {
                 return GohCommandLineResult(
                     exitCode: 0,
                     standardOutput: "Removed job \(reply.removedJobID).\n")
+
+            case .daemon(let force):
+                guard let daemon else {
+                    return GohCommandLineResult(
+                        exitCode: 1, standardError: "The daemon command is not configured.\n")
+                }
+                return try daemon(force)
             }
         } catch let error as ParseError {
             return GohCommandLineResult(
@@ -325,6 +336,7 @@ private enum ParsedCommand: Equatable {
     case pause(UInt64)
     case resume(UInt64)
     case remove(RmRequest)
+    case daemon(force: Bool)
 }
 
 private enum OutputFormat: Equatable {
@@ -507,11 +519,30 @@ extension GohCommandLine {
                 json: json)
         }
 
+        if arguments.first == "daemon" {
+            let rest = Array(arguments.dropFirst())
+            return try parseDaemon(rest)
+        }
+
         if arguments.count == 1, let url = arguments.first, !url.hasPrefix("-") {
             return .foreground(AddRequest(url: url))
         }
 
         throw ParseError(message: "unknown or incomplete command")
+    }
+
+    private static func parseDaemon(_ arguments: [String]) throws -> ParsedCommand {
+        guard arguments.first == "restart" else {
+            let sub = arguments.first ?? "(none)"
+            throw ParseError(message: "unknown daemon subcommand '\(sub)'; try: goh daemon restart [--force]")
+        }
+        let rest = Array(arguments.dropFirst())
+        var force = false
+        for arg in rest {
+            if arg == "--force" { force = true }
+            else { throw ParseError(message: "unknown daemon restart option \(arg)") }
+        }
+        return .daemon(force: force)
     }
 
     private static func parseAdd(_ arguments: [String]) throws -> AddRequest {
@@ -740,6 +771,7 @@ extension GohCommandLine {
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
+          goh daemon restart [--force]   (refuses with active downloads unless --force; exit 64 on refusal)
           goh auth import safari
 
         """
