@@ -6,5 +6,5 @@
 /// like protocolVersion. Never auto-bumped.
 public enum GohFeatureLevel {
     /// The feature level compiled into this build.
-    public static let current: Int = 1
+    public static let current: Int = 2
 }
