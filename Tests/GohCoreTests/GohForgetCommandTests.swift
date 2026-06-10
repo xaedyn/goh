@@ -353,6 +353,8 @@ struct GohForgetCommandTests {
             confirm: true,
             send: spy.send)
         let forgetCmds = spy.commands.filter { if case .forgetProvenance = $0 { return true }; return false }
+        // Guard so the verbatim-path assertion below cannot pass vacuously if nothing was sent.
+        #expect(forgetCmds.count == 1)
         if case .forgetProvenance(let req) = forgetCmds.first {
             // The path in the request must be exactly the stored canonical string — not re-canonicalized.
             #expect(req.paths == [canonical],
