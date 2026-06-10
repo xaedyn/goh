@@ -216,6 +216,7 @@ case .ls:
 | Modify | `Tests/GohCoreTests/JobStoreStartupReconciliationTests.swift` | end-to-end requeue→reschedule |
 | Create | `Tests/GohCoreTests/DaemonFeatureLevelTests.swift` | AC1/AC9 wire round-trip |
 | Create | `Tests/GohCoreTests/DaemonSkewCheckTests.swift` | AC2 pure table |
+| Create | `Tests/GohCoreTests/Support/LsReplyTestSupport.swift` | Shared reply seam: `makeLsSender`, `SequencedLsSender`, `StubRestarter` |
 | Create | `Tests/GohCoreTests/DaemonRestartingTests.swift` | AC4 seam, AC7 |
 | Create | `Tests/GohCoreTests/DaemonAutoHealTests.swift` | AC4 wiring, AC5, AC7 |
 
@@ -777,10 +778,12 @@ git commit -m "feat(core): add DaemonRestarting protocol + LaunchctlDaemonRestar
 
 **Files:**
 - Create: `Sources/GohCore/CLI/DaemonAutoHeal.swift`
+- Create: `Tests/GohCoreTests/Support/LsReplyTestSupport.swift` (shared reply seam — B4 fix)
 - Create: `Tests/GohCoreTests/DaemonAutoHealTests.swift`
 
 **Pre-task reads checklist:**
-- [x] `GohCommandClient.swift` — `GohCommandClient(send:).send(_:expecting:)` confirmed
+- [x] `Sources/GohCore/IPC/GohCommandClient.swift` — `GohCommandClient(send:).send(_:expecting:)` confirmed (NOTE: file is in `IPC/`, not `CLI/`)
+- [x] `Tests/GohCoreTests/GohSyncCommandTests.swift` — real `reply(requestID:payload:)` helper pattern confirmed: `GohEnvelope(...).xpcDictionary()` then `XPCDictionary(dict)` (B4 — seam basis)
 - [x] `CommandReply.swift` — `LsReply` with `featureLevel: Int?` (Task 3)
 - [x] `DaemonSkewCheck.swift` — `evaluate(reported:expected:activeDownloadCount:)` (Task 2)
 - [x] `DaemonRestarting.swift` — `DaemonRestarting.kickstart()` (Task 5)
@@ -806,19 +809,68 @@ git commit -m "feat(core): add DaemonRestarting protocol + LaunchctlDaemonRestar
 
 5. **`.staleBusy`** — emit notice to stderr, do not call kickstart.
 
-**Step 1 — Failing test**
+**Step 0 (BEFORE Step 1) — Create shared reply test seam**
 
-File: `Tests/GohCoreTests/DaemonAutoHealTests.swift`
+**B4 FIX:** The tests need a `GohCommandLine.Sender` that returns a properly-encoded
+`LsReply`. The `fatalError` stub in the original draft will not compile successfully.
+The real encoding pattern is confirmed from `Tests/GohCoreTests/GohSyncCommandTests.swift`
+(the `private func reply<Payload>(requestID:payload:)` helper): encode via
+`GohEnvelope(protocolVersion:requestID:messageType:.reply,payload:).xpcDictionary()`,
+then wrap in `XPCDictionary(dict)`.
+
+Create `Tests/GohCoreTests/Support/LsReplyTestSupport.swift` with this seam:
 
 ```swift
-import Testing
+// Tests/GohCoreTests/Support/LsReplyTestSupport.swift
 import Foundation
-import GohCore
+import XPC
+@testable import GohCore
 
-// Reuse StubDaemonRestarter from DaemonRestartingTests (or redeclare here).
-// In practice, move it to a shared test helper file. For the plan, redeclare inline:
-private final class StubRestarter: DaemonRestarting {
-    var kickstartCalled = 0
+/// Encodes an LsReply into the wire format `GohCommandClient.send` expects,
+/// echoing the request's requestID (required by `decodeGohReply`).
+///
+/// Usage: `makeLsSender(reply: LsReply(jobs: [], featureLevel: 1))`
+func makeLsSender(reply: LsReply) -> GohCommandLine.Sender {
+    { requestDict in
+        // Decode the incoming request envelope to extract the requestID.
+        let envelope = try requestDict.withUnsafeUnderlyingDictionary { dict in
+            try GohEnvelope<Command>(xpcDictionary: dict)
+        }
+        let replyDict = try GohEnvelope(
+            protocolVersion: CommandService.protocolVersion,
+            requestID: envelope.requestID,
+            messageType: .reply,
+            payload: reply)
+            .xpcDictionary()
+        return XPCDictionary(replyDict)
+    }
+}
+
+/// A sender that returns a sequence of LsReplies, one per call.
+/// After the sequence is exhausted, repeats the last reply.
+final class SequencedLsSender: @unchecked Sendable {
+    private var replies: [LsReply]
+    private var index = 0
+
+    init(replies: [LsReply]) {
+        precondition(!replies.isEmpty)
+        self.replies = replies
+    }
+
+    func sender() -> GohCommandLine.Sender {
+        { [weak self] requestDict in
+            guard let self else { fatalError("SequencedLsSender deallocated") }
+            let reply = self.replies[min(self.index, self.replies.count - 1)]
+            self.index += 1
+            return try makeLsSender(reply: reply)(requestDict)
+        }
+    }
+}
+
+/// Shared stub restarter for DaemonAutoHeal and verify-command tests.
+/// Defined here (not private) so it is accessible across all GohCoreTests files.
+final class StubRestarter: DaemonRestarting, @unchecked Sendable {
+    private(set) var kickstartCalled = 0
     var shouldSucceed: Bool
     init(shouldSucceed: Bool = true) { self.shouldSucceed = shouldSucceed }
     func kickstart() throws {
@@ -828,105 +880,89 @@ private final class StubRestarter: DaemonRestarting {
         }
     }
 }
+```
 
-// A sender stub that returns a fixed LsReply.
-private func makeSender(featureLevel: Int?, activeCount: Int) -> GohCommandLine.Sender {
-    let jobs: [JobSummary] = (0..<activeCount).map { i in
-        JobSummary(
-            id: UInt64(i), url: "https://example.com/\(i)", destination: "/tmp/\(i)",
-            state: .active,
-            progress: JobProgress(bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
-            createdAt: Date(), lastProgressAt: nil,
-            requestedConnectionCount: 8, actualConnectionCount: 1)
-    }
-    let reply = LsReply(jobs: jobs, featureLevel: featureLevel)
-    return { _ in
-        let data = try JSONEncoder().encode(reply)
-        // Wrap in a fake XPC dict using GohEnvelope round-trip (test helper).
-        // In practice: use the existing XPC test helper from XPCReplyDecoderTests.
-        fatalError("test sender stub — implement via test-double infrastructure")
-    }
-}
+**Step 1 — Failing test**
+
+File: `Tests/GohCoreTests/DaemonAutoHealTests.swift`
+
+```swift
+import Testing
+import Foundation
+import XPC
+@testable import GohCore
+
+// StubRestarter, SequencedLsSender, and makeLsSender are defined in
+// Tests/GohCoreTests/Support/LsReplyTestSupport.swift (created in Step 0).
+// DaemonRestartingTests.swift defines its own private StubDaemonRestarter —
+// that is separate and private; no collision.
 
 @Suite("DaemonAutoHeal")
 struct DaemonAutoHealTests {
 
     @Test("staleIdle triggers kickstart and poll; AC4 wiring")
-    func staleIdleTriggersKickstart() {
-        // Use a stub sender that returns nil (stale), then 1 (current) on next call.
+    func staleIdleTriggersKickstart() throws {
+        // Sequence: stale (call 1 = initial ls), stale (call 2 = re-check idle),
+        // then current (calls 3+ = poll after kickstart).
         let restarter = StubRestarter()
-        var callCount = 0
-        let sender: GohCommandLine.Sender = { _ in
-            callCount += 1
-            // First call: idle (0 active), featureLevel nil (stale)
-            // Second call (re-check): still 0 active (safe to kickstart)
-            // Third+ calls (poll): featureLevel 1 (current)
-            let featureLevel: Int? = callCount >= 3 ? GohFeatureLevel.current : nil
-            let reply = LsReply(jobs: [], featureLevel: featureLevel)
-            return try XPCDictionary(makeReplyDict(reply: reply))
-        }
+        let sequenced = SequencedLsSender(replies: [
+            LsReply(jobs: [], featureLevel: nil),      // call 1: initial classify → staleIdle
+            LsReply(jobs: [], featureLevel: nil),      // call 2: re-check still idle → ok to kickstart
+            LsReply(jobs: [], featureLevel: GohFeatureLevel.current),  // call 3: poll → current
+        ])
         let notice = DaemonAutoHeal.runIfNeeded(
-            send: sender,
+            send: sequenced.sender(),
             restarter: restarter,
             uid: 501,
-            pollBudget: .seconds(1),    // shorten for test
+            pollBudget: .seconds(1),
             pollInterval: .milliseconds(50))
         #expect(restarter.kickstartCalled == 1)
         #expect(notice == nil)  // successful heal → no notice
     }
 
     @Test("staleBusy does NOT kickstart, emits notice; AC5")
-    func staleBusyNoKickstart() {
+    func staleBusyNoKickstart() throws {
         let restarter = StubRestarter()
-        let sender: GohCommandLine.Sender = { _ in
-            let jobs = [JobSummary(
-                id: 0, url: "https://example.com", destination: "/tmp/f",
-                state: .active,
-                progress: JobProgress(bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
-                createdAt: Date(), lastProgressAt: nil,
-                requestedConnectionCount: 8, actualConnectionCount: 1)]
-            let reply = LsReply(jobs: jobs, featureLevel: nil)
-            return try XPCDictionary(makeReplyDict(reply: reply))
-        }
+        let activeJob = JobSummary(
+            id: 0, url: "https://example.com", destination: "/tmp/f",
+            state: .active,
+            progress: JobProgress(bytesCompleted: 0, bytesTotal: nil, bytesPerSecond: 0),
+            createdAt: Date(), lastProgressAt: nil,
+            requestedConnectionCount: 8, actualConnectionCount: 1)
+        let sender = makeLsSender(reply: LsReply(jobs: [activeJob], featureLevel: nil))
         let notice = DaemonAutoHeal.runIfNeeded(send: sender, restarter: restarter, uid: 501)
         #expect(restarter.kickstartCalled == 0)
         #expect(notice != nil)   // busy notice present
     }
 
     @Test("kickstart unavailable degrades to notice-only; AC7")
-    func kickstartUnavailableDegradesGracefully() {
+    func kickstartUnavailableDegradesGracefully() throws {
         let restarter = StubRestarter(shouldSucceed: false)
-        var callCount = 0
-        let sender: GohCommandLine.Sender = { _ in
-            callCount += 1
-            let reply = LsReply(jobs: [], featureLevel: nil)  // always stale
-            return try XPCDictionary(makeReplyDict(reply: reply))
-        }
-        let notice = DaemonAutoHeal.runIfNeeded(send: sender, restarter: restarter, uid: 501,
-                                                 pollBudget: .milliseconds(200),
-                                                 pollInterval: .milliseconds(50))
+        // Always returns stale reply — kickstart will fail, poll will timeout.
+        let sequenced = SequencedLsSender(replies: [
+            LsReply(jobs: [], featureLevel: nil),  // classify: staleIdle
+            LsReply(jobs: [], featureLevel: nil),  // re-check: still idle → attempt kickstart (fails)
+        ])
+        let notice = DaemonAutoHeal.runIfNeeded(
+            send: sequenced.sender(),
+            restarter: restarter,
+            uid: 501,
+            pollBudget: .milliseconds(200),
+            pollInterval: .milliseconds(50))
         #expect(restarter.kickstartCalled == 1)
-        #expect(notice != nil)   // degraded to notice
+        #expect(notice != nil)   // degraded to notice (kickstart threw)
     }
 
     @Test("current daemon skips all action")
-    func currentDaemonNoOp() {
+    func currentDaemonNoOp() throws {
         let restarter = StubRestarter()
-        let sender: GohCommandLine.Sender = { _ in
-            let reply = LsReply(jobs: [], featureLevel: GohFeatureLevel.current)
-            return try XPCDictionary(makeReplyDict(reply: reply))
-        }
+        let sender = makeLsSender(reply: LsReply(jobs: [], featureLevel: GohFeatureLevel.current))
         let notice = DaemonAutoHeal.runIfNeeded(send: sender, restarter: restarter, uid: 501)
         #expect(restarter.kickstartCalled == 0)
         #expect(notice == nil)
     }
 }
 ```
-
-Note: `makeReplyDict` is a test helper that must be implemented using the
-existing `GohEnvelope` / `XPCReplyDecoder` infrastructure. The test helper
-pattern exists in `XPCReplyDecoderTests.swift` — reuse its `makeReplyDict` or
-equivalent. The implementer MUST verify this helper before running.
 
 **Step 2 — Run expecting failure**
 ```
@@ -939,6 +975,7 @@ Expected: compile error (`DaemonAutoHeal` not found).
 File: `Sources/GohCore/CLI/DaemonAutoHeal.swift`
 
 ```swift
+import Darwin   // getuid() — required; not implied by Foundation on all SDK configs (B5 fix)
 import Foundation
 import XPC
 
@@ -1042,8 +1079,11 @@ public enum DaemonAutoHeal {
             let deadline = ContinuousClock.now.advanced(by: pollBudget)
             while ContinuousClock.now < deadline {
                 // Busy-wait with Thread.sleep (synchronous CLI context).
-                let intervalNs = UInt64(pollInterval.components.attoseconds / 1_000_000_000)
-                Thread.sleep(forTimeInterval: Double(intervalNs) / 1_000_000_000)
+                // Must include both .seconds and .attoseconds to avoid 0-sleep spin
+                // for any interval ≥ 1s (B1 fix).
+                let intervalSecs = Double(pollInterval.components.seconds)
+                    + Double(pollInterval.components.attoseconds) / 1e18
+                Thread.sleep(forTimeInterval: intervalSecs)
                 do {
                     let polled = try sendLs(send)
                     if let level = polled.featureLevel, level >= GohFeatureLevel.current {
@@ -1076,12 +1116,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -Xswiftc -w
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter DaemonAutoHealTests
 ```
 
-Note on the test helper: the implementer must resolve `makeReplyDict` before
-running — check `XPCReplyDecoderTests.swift` for the existing pattern.
-
 **Step 5 — Commit**
 ```
-git add Sources/GohCore/CLI/DaemonAutoHeal.swift Tests/GohCoreTests/DaemonAutoHealTests.swift
+git add Sources/GohCore/CLI/DaemonAutoHeal.swift \
+        Tests/GohCoreTests/Support/LsReplyTestSupport.swift \
+        Tests/GohCoreTests/DaemonAutoHealTests.swift
 git commit -m "feat(cli): add DaemonAutoHeal — scoped idle-gated kickstart + poll (AC4/AC5/AC7)"
 ```
 
@@ -1094,10 +1133,12 @@ git commit -m "feat(cli): add DaemonAutoHeal — scoped idle-gated kickstart + p
 - Modify: `Sources/GohCore/CLI/GohVerifyQuickCommand.swift`
 - Extend: `Tests/GohCoreTests/GohVerifyAllCommandTests.swift`
 - Extend: `Tests/GohCoreTests/GohVerifyQuickCommandTests.swift`
+- Reads (pre-existing from Task 6): `Tests/GohCoreTests/Support/LsReplyTestSupport.swift`
 
 **Pre-task reads checklist:**
 - [x] `GohVerifyAllCommand.swift` L45–50 — `run(provenanceStorePath:json:generatedAt:send:)` confirmed
-- [x] `GohVerifyQuickCommand.swift` L33 — `run(provenanceStorePath:probe:)` confirmed
+- [x] `GohVerifyQuickCommand.swift` L33 — `run(provenanceStorePath:probe:)` confirmed (no `send` param today — Task 7 adds it)
+- [x] `Tests/GohCoreTests/Support/LsReplyTestSupport.swift` — `StubRestarter`, `SequencedLsSender`, `makeLsSender` confirmed (created in Task 6)
 
 **AC ownership:** AC5 (verify paths)
 
@@ -1109,22 +1150,27 @@ nil so all existing call sites compile unchanged.
 
 **Step 1 — Failing test** (extend both test files)
 
+**B4 NOTE:** `StubRestarter` and `makeLsSender`/`SequencedLsSender` come from
+`Tests/GohCoreTests/Support/LsReplyTestSupport.swift` (created in Task 6 Step 0).
+Add `StubRestarter` to that shared support file (move it out of `DaemonAutoHealTests.swift`
+where it was defined private) so it is accessible across test files in the `GohCoreTests` target.
+Do NOT use `makeReplyDict` — that symbol does not exist. Use `SequencedLsSender` instead.
+
 ```swift
 // GohVerifyAllCommandTests.swift — append to the existing suite:
+// (requires LsReplyTestSupport.swift to define StubRestarter and SequencedLsSender)
 @Test("verify --all with stale idle daemon triggers auto-heal before verification")
-func verifyAllWithStaleIdleDaemonTriggersAutoHeal() {
+func verifyAllWithStaleIdleDaemonTriggersAutoHeal() throws {
     let restarter = StubRestarter(shouldSucceed: true)
-    // sender returns current featureLevel after one kickstart poll
-    var callCount = 0
-    let sender: GohCommandLine.Sender = { _ in
-        callCount += 1
-        let fl: Int? = callCount > 2 ? GohFeatureLevel.current : nil
-        let reply = LsReply(jobs: [], featureLevel: fl)
-        return try XPCDictionary(makeReplyDict(reply: reply))
-    }
+    // Sequence: stale (initial classify), stale (re-check idle), current (poll)
+    let sequenced = SequencedLsSender(replies: [
+        LsReply(jobs: [], featureLevel: nil),
+        LsReply(jobs: [], featureLevel: nil),
+        LsReply(jobs: [], featureLevel: GohFeatureLevel.current),
+    ])
     let result = GohVerifyAllCommand.run(
         provenanceStorePath: "",
-        send: sender,
+        send: sequenced.sender(),
         restarter: restarter)
     #expect(restarter.kickstartCalled == 1)
     #expect(result.exitCode == 0)   // no entries → 0; auto-heal never changes exit code
@@ -1133,19 +1179,18 @@ func verifyAllWithStaleIdleDaemonTriggersAutoHeal() {
 
 ```swift
 // GohVerifyQuickCommandTests.swift — append:
+// (requires LsReplyTestSupport.swift to define StubRestarter and SequencedLsSender)
 @Test("verify --quick with stale daemon triggers auto-heal")
-func verifyQuickWithStaleDaemonTriggersAutoHeal() {
+func verifyQuickWithStaleDaemonTriggersAutoHeal() throws {
     let restarter = StubRestarter(shouldSucceed: true)
-    var callCount = 0
-    let sender: GohCommandLine.Sender = { _ in
-        callCount += 1
-        let fl: Int? = callCount > 2 ? GohFeatureLevel.current : nil
-        let reply = LsReply(jobs: [], featureLevel: fl)
-        return try XPCDictionary(makeReplyDict(reply: reply))
-    }
+    let sequenced = SequencedLsSender(replies: [
+        LsReply(jobs: [], featureLevel: nil),
+        LsReply(jobs: [], featureLevel: nil),
+        LsReply(jobs: [], featureLevel: GohFeatureLevel.current),
+    ])
     let result = GohVerifyQuickCommand.run(
         provenanceStorePath: "",
-        send: sender,
+        send: sequenced.sender(),
         restarter: restarter)
     #expect(restarter.kickstartCalled == 1)
     #expect(result.exitCode == 0)
@@ -1177,9 +1222,43 @@ if let send {
 }
 ```
 
-Also update `goh/main.swift` dispatch to pass `send` and a live
-`LaunchctlDaemonRestarter(uid: Int(getuid()), machServiceName: GohXPCService.machServiceName)`
-to `GohVerifyAllCommand.run` and `GohVerifyQuickCommand.run`.
+**A1 FIX — concrete `goh/main.swift` call-site edits for verify paths:**
+
+`GohVerifyQuickCommand.run` today (confirmed at L33) takes only
+`provenanceStorePath:probe:` — no `send` param. After Task 7's change it gains
+`send: GohCommandLine.Sender? = nil` and `restarter: (any DaemonRestarting)? = nil`.
+
+The `GohCommandLine.run()` dispatch site for `.verifyQuick` (currently at ~L182–184)
+changes from:
+```swift
+case .verifyQuick:
+    return GohVerifyQuickCommand.run(
+        provenanceStorePath: provenanceStorePathResolver() ?? "")
+```
+to:
+```swift
+case .verifyQuick:
+    return GohVerifyQuickCommand.run(
+        provenanceStorePath: provenanceStorePathResolver() ?? "",
+        send: send,
+        restarter: LaunchctlDaemonRestarter(
+            uid: Int(getuid()),
+            machServiceName: GohXPCService.machServiceName))
+```
+Note: `getuid()` is already called at `goh/main.swift` L133 via `{ Int(getuid()) }`;
+this call is in `GohCommandLine.run()` inside `GohCore`, which imports Darwin
+through Foundation. No new import is required in `GohCommandLine.swift`.
+
+Similarly, the `.verifyAll` dispatch site (in `GohCommandLine.run()`) gains
+`restarter: LaunchctlDaemonRestarter(uid: Int(getuid()), machServiceName: GohXPCService.machServiceName)`.
+The `send` parameter is already threaded to `GohVerifyAllCommand.run` — confirm
+at the actual dispatch site before editing.
+
+`goh/main.swift` itself does NOT need changes for the verify paths — the `send`
+closure is already passed as the trailing closure at L293–294; `GohCommandLine.run()`
+uses `self.send` internally. The `LaunchctlDaemonRestarter` is constructed inside
+`GohCommandLine.run()` at the dispatch site, using `GohXPCService.machServiceName`
+(available from `GohCore`) and `getuid()` (available via Foundation/Darwin).
 
 **Step 4 — Run expecting pass**
 ```
@@ -1209,7 +1288,9 @@ git commit -m "feat(cli): wire DaemonAutoHeal into verify --all and verify --qui
 - [x] `GohCommandLine.swift` L300–323 — `ParsedCommand` enum cases
 - [x] `GohCommandLine.swift` L340–509 — `parse(_:)` method
 - [x] `GohCommandLine.swift` L257 — `exitCode: 64` for `ParseError` (usage refusal)
-- [x] `GohCommandLine.swift` L44–102 — `GohCommandLine.init` parameter list
+- [x] `GohCommandLine.swift` L44–102 — `GohCommandLine.init` parameter list (confirmed: `doctor: Doctor? = nil` before `send:` — same pattern for `daemon:`)
+- [x] `Sources/goh/main.swift` L215–295 — `GohCommandLine(...)` trailing-closure region confirmed; `daemon:` goes before the `send:` trailing closure
+- [x] `Tests/GohCoreTests/Support/LsReplyTestSupport.swift` — `StubRestarter` and `makeLsSender` available (created in Task 6)
 
 **AC ownership:** AC3 (full)
 
@@ -1231,31 +1312,32 @@ git commit -m "feat(cli): wire DaemonAutoHeal into verify --all and verify --qui
    `daemon: ((_ force: Bool) throws -> GohCommandLineResult)? = nil` before `send:`.
    This is an optional closure like `doctor`.
 
+**B4 NOTE:** `GohCommandLineTests.swift` needs `StubRestarter` from
+`Tests/GohCoreTests/Support/LsReplyTestSupport.swift`. Add an import or ensure
+the support file is in the same test target (it is — all files under `Tests/GohCoreTests/`
+compile into the same target). `makeReplyDict` does NOT exist; use `makeLsSender`.
+The `send:` closure in the test below is never actually invoked (the `daemon:` closure
+is the stub that handles everything), so a simple non-crashing placeholder is fine.
+
 **Step 1 — Failing tests**
 
 ```swift
 // GohCommandLineTests.swift — append to the existing suite:
+// (StubRestarter is defined in Tests/GohCoreTests/Support/LsReplyTestSupport.swift)
 
 @Test("goh daemon restart parses successfully")
 func parseDaemonRestart() throws {
     // GohCommandLine.parse is private; verify end-to-end via run().
     let restarter = StubRestarter(shouldSucceed: true)
-    var callCount = 0
-    let sender: GohCommandLine.Sender = { _ in
-        callCount += 1
-        let reply = LsReply(jobs: [], featureLevel: GohFeatureLevel.current)
-        return try XPCDictionary(makeReplyDict(reply: reply))
-    }
+    // The daemon: closure below never calls send, but GohCommandLine.init requires
+    // a non-nil send closure. Provide one via makeLsSender with a dummy reply.
+    let sender = makeLsSender(reply: LsReply(jobs: [], featureLevel: GohFeatureLevel.current))
     let line = GohCommandLine(
         arguments: ["daemon", "restart"],
         daemon: { force in
-            // Minimal stub: idle check → ok → kickstart
-            let reply = LsReply(jobs: [], featureLevel: nil)
-            let active = reply.jobs.filter { $0.state == .active }.count
-            if !force && active > 0 {
-                return GohCommandLineResult(
-                    exitCode: 64,
-                    standardError: "\(active) active download(s).\n")
+            // Minimal stub: no active downloads → kickstart
+            if !force {
+                // Simulate 0 active downloads → proceed
             }
             try restarter.kickstart()
             return GohCommandLineResult(exitCode: 0, standardOutput: "Background service restarted.\n")
@@ -1358,14 +1440,87 @@ In `GohCommandLine.swift`:
    ```
 8. Update `Self.usage()` to add the daemon line.
 
-In `goh/main.swift`, pass the `daemon:` closure to `GohCommandLine.init`. The
-live implementation:
-- Reads `.ls` via `sendOneShot`.
-- Counts active jobs.
-- If `!force && activeCount > 0` → returns exit 64 with message.
-- Else calls `LaunchctlDaemonRestarter(uid: Int(getuid()), machServiceName: GohXPCService.machServiceName).kickstart()`.
-- Polls `.ls` up to 5s / 250ms for `featureLevel >= current`.
-- Returns exit 0 on success; exit 1 on kickstart failure.
+**A1 FIX — concrete `goh/main.swift` daemon-verb closure:**
+
+The `daemon:` closure is added to `GohCommandLine.init(...)` in `goh/main.swift`
+alongside the existing `foreground:`, `top:`, `doctor:`, `diagnose:` closures.
+The trailing-closure `send:` stays last. Confirmed at `goh/main.swift` L215–295
+— insert `daemon:` before the `send:` trailing closure, following the same pattern.
+
+```swift
+// goh/main.swift — add daemon: closure inside GohCommandLine(...)
+// Insert BEFORE the ) { request in  send trailing-closure at ~L293:
+daemon: { force in
+    // Step 1: Read current queue to get active count and featureLevel.
+    let requestID = UUID()
+    let lsRequest = try GohEnvelope(
+        protocolVersion: CommandService.protocolVersion,
+        requestID: requestID,
+        messageType: .request,
+        payload: Command.ls)
+        .xpcDictionary()
+    let lsResponse = try sendOneShot(
+        XPCDictionary(lsRequest), validationMode: validationMode)
+    let lsReply: LsReply
+    switch lsResponse.decodeGohReply(as: LsReply.self) {
+    case .reply(_, let payload): lsReply = payload
+    case .daemonError(_, let err):
+        return GohCommandLineResult(exitCode: 1,
+            standardError: "goh: daemon error reading queue: \(err)\n")
+    case .malformed:
+        return GohCommandLineResult(exitCode: 1,
+            standardError: "goh: malformed daemon reply\n")
+    }
+    let activeCount = lsReply.jobs.filter { $0.state == .active }.count
+
+    // Step 2: Idle-gate (unless --force).
+    if !force && activeCount > 0 {
+        return GohCommandLineResult(
+            exitCode: 64,
+            standardError: "goh: \(activeCount) active download(s) running."
+                + " Use --force to restart anyway.\n")
+    }
+    if force && activeCount > 0 {
+        fputs("goh: Restarting background service (force) —"
+            + " active downloads may be interrupted.\n", stderr)
+    }
+
+    // Step 3: Kickstart.
+    let restarter = LaunchctlDaemonRestarter(
+        uid: Int(getuid()),
+        machServiceName: GohXPCService.machServiceName)
+    do {
+        try restarter.kickstart()
+    } catch {
+        return GohCommandLineResult(
+            exitCode: 1,
+            standardError: "goh: could not restart background service: \(error)\n")
+    }
+
+    // Step 4: Poll up to 5s / 250ms for the new daemon.
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while ContinuousClock.now < deadline {
+        Thread.sleep(forTimeInterval: 0.25)
+        if let polled = try? GohCommandClient(
+                send: { req in try sendOneShot(req, validationMode: validationMode) })
+            .send(.ls, expecting: LsReply.self),
+           let level = polled.featureLevel,
+           level >= GohFeatureLevel.current {
+            return GohCommandLineResult(
+                exitCode: 0,
+                standardOutput: "Background service restarted.\n")
+        }
+    }
+    return GohCommandLineResult(
+        exitCode: 0,
+        standardOutput: "Background service restart initiated"
+            + " (did not confirm new version within 5s — run: goh doctor).\n")
+},
+```
+
+Note: `GohCommandClient` and `GohEnvelope` are `import`-visible inside `goh/main.swift`
+via `import GohCore`. `sendOneShot` and `validationMode` are defined earlier in the file
+(L65–71 and L213 respectively). `CommandService.protocolVersion` is public from `GohCore`.
 
 **Step 4 — Run expecting pass**
 ```
@@ -1443,41 +1598,78 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter Goh
 
 **Step 3 — Minimal implementation**
 
-In `GohDoctor.xpcFindings()`, after the existing XPC reachability findings,
-when the XPC call succeeded, add a featureLevel finding:
+**B2 FIX — `xpcFindings()` restructure (REQUIRED for compilability):**
+The real `xpcFindings()` at `Sources/GohCore/CLI/GohDoctor.swift` L195–219 returns a
+literal `[Finding]` in the success branch — there is NO mutable `findings` local var.
+`findings.append(...)` will not compile as-is. The entire method must be restructured
+to use a `var findings: [Finding]` collector.
+
+Replace `private func xpcFindings() -> [Finding]` in full:
 
 ```swift
-// Inside the `do { let reply = try probes.readQueue() ... }` success branch,
-// after the queue-readable finding:
-let daemonLevel = reply.featureLevel
-let clientLevel = GohFeatureLevel.current
-if let daemonLevel {
-    let skew = DaemonSkewCheck.evaluate(
-        reported: daemonLevel,
-        expected: clientLevel,
-        activeDownloadCount: reply.jobs.filter { $0.state == .active }.count)
-    if skew == .current {
-        findings.append(Finding(
-            severity: .ok,
-            title: "daemon featureLevel: \(daemonLevel) (current)",
-            detail: nil,
-            recovery: nil))
-    } else {
-        findings.append(Finding(
-            severity: .warning,
-            title: "daemon featureLevel: \(daemonLevel) (client expects \(clientLevel)) — skew detected",
-            detail: "The background service is an older build. New behavior is unavailable until it restarts.",
-            recovery: "Run: goh daemon restart"))
+private func xpcFindings() -> [Finding] {
+    do {
+        let reply = try probes.readQueue()
+        // Start with the two existing findings (reachable + queue-readable).
+        var findings: [Finding] = [
+            Finding(
+                severity: .ok,
+                title: "XPC reachable",
+                detail: nil,
+                recovery: nil),
+            Finding(
+                severity: .ok,
+                title: "queue readable: \(jobCount(reply.jobs.count))",
+                detail: nil,
+                recovery: nil),
+        ]
+        // Append featureLevel / skew finding.
+        let daemonLevel = reply.featureLevel
+        let clientLevel = GohFeatureLevel.current
+        if let daemonLevel {
+            let skew = DaemonSkewCheck.evaluate(
+                reported: daemonLevel,
+                expected: clientLevel,
+                activeDownloadCount: reply.jobs.filter { $0.state == .active }.count)
+            if skew == .current {
+                findings.append(Finding(
+                    severity: .ok,
+                    title: "[ok] daemon featureLevel: \(daemonLevel) (current)",
+                    detail: nil,
+                    recovery: nil))
+            } else {
+                findings.append(Finding(
+                    severity: .warning,
+                    title: "[warn] daemon featureLevel: \(daemonLevel) (client expects \(clientLevel)) — skew detected",
+                    detail: "The background service is an older build. New behavior is unavailable until it restarts.",
+                    recovery: "Run: goh daemon restart"))
+            }
+        } else {
+            // nil = pre-feature daemon (stale)
+            findings.append(Finding(
+                severity: .warning,
+                title: "[warn] daemon featureLevel: unknown (client expects \(clientLevel)) — skew detected",
+                detail: "The background service predates featureLevel tracking. It needs a restart.",
+                recovery: "Run: goh daemon restart"))
+        }
+        return findings
+    } catch {
+        return [
+            Finding(
+                severity: .failure,
+                title: "XPC reachable",
+                detail: "Could not reach gohd: \(error)",
+                recovery: xpcRecovery()),
+        ]
     }
-} else {
-    // nil = pre-feature daemon (stale)
-    findings.append(Finding(
-        severity: .warning,
-        title: "daemon featureLevel: unknown (client expects \(clientLevel)) — skew detected",
-        detail: "The background service predates featureLevel tracking. It needs a restart.",
-        recovery: "Run: goh daemon restart"))
 }
 ```
+
+Note on the `[\(label)]` prefix format: the real `Finding` renders the severity label
+inline in the title string in this project. The `severity: .ok` / `severity: .warning`
+field labels are confirmed from the existing code. The `severity:`, `title:`, `detail:`,
+`recovery:` parameter labels are confirmed from the existing `Finding` call sites in the
+real file.
 
 **Step 4 — Run expecting pass**
 ```
@@ -1614,23 +1806,56 @@ git commit -m "test(core): assert reconcile end-to-end re-schedule and fail-retr
 
 ### Task 11 — `GohMenuClient.ls()` + `LiveGohMenuClient` implementation
 
+**B3 PROTOCOL-EXTENSION FAN-OUT WARNING:** Adding `func ls() async throws -> LsReply`
+(and `func restartDaemon() async throws` in Task 13) to the `GohMenuClient` protocol
+forces EVERY conformer to implement it. Under `-warnings-as-errors` a missing
+protocol requirement is a hard build error. The full conformer list, found via
+`grep -rn "GohMenuClient" Tests/ Sources/`, is:
+
+| Conformer | File | Action |
+|---|---|---|
+| `LiveGohMenuClient` | `Sources/goh-menu/main.swift` | Add real XPC `.ls` impl |
+| `FakeMenuClient` | `Tests/GohMenuBarTests/GohMenuViewModelTests.swift` ~L320 | Add stub returning configurable `LsReply` |
+| `LongLivedMenuClient` | `Tests/GohMenuBarTests/GohMenuViewModelTests.swift` ~L419 | Add stub returning `LsReply(jobs: [], featureLevel: nil)` |
+| `FakeMenuClient` | `Tests/GohMenuBarTests/AddDownloadViewModelTests.swift` ~L18 | Add stub returning `LsReply(jobs: [], featureLevel: nil)` |
+| `SpyMenuClient` | `Tests/GohMenuBarTests/TrustWindowViewModelBackfillTests.swift` ~L9 | Add stub returning `LsReply(jobs: [], featureLevel: nil)` |
+
+All five must be updated in the same task or the build breaks.
+
 **Files:**
-- Modify: `Sources/GohMenuBar/GohMenuViewModel.swift` (protocol extension)
-- Modify: `Sources/goh-menu/main.swift` (`LiveGohMenuClient` impl)
+- Modify: `Sources/GohMenuBar/GohMenuViewModel.swift` (protocol: add `ls()`)
+- Modify: `Sources/goh-menu/main.swift` (`LiveGohMenuClient` real impl)
+- Modify: `Tests/GohMenuBarTests/GohMenuViewModelTests.swift` (`FakeMenuClient` + `LongLivedMenuClient` stubs)
+- Modify: `Tests/GohMenuBarTests/AddDownloadViewModelTests.swift` (`FakeMenuClient` stub)
+- Modify: `Tests/GohMenuBarTests/TrustWindowViewModelBackfillTests.swift` (`SpyMenuClient` stub)
 
 **Pre-task reads checklist:**
-- [x] `GohMenuViewModel.swift` L6–15 — `GohMenuClient` protocol confirmed
+- [x] `GohMenuViewModel.swift` L6–15 — `GohMenuClient` protocol confirmed (has `progressSnapshots`, `add`, `pause`, `resume`, `remove`, `recordVerifiedProvenance`)
 - [x] `goh-menu/main.swift` L11–135 — `LiveGohMenuClient` pattern confirmed (uses `sendOneShot`)
+- [x] `Tests/GohMenuBarTests/GohMenuViewModelTests.swift` ~L320 — `FakeMenuClient` shape confirmed
+- [x] `Tests/GohMenuBarTests/GohMenuViewModelTests.swift` ~L419 — `LongLivedMenuClient` shape confirmed
+- [x] `Tests/GohMenuBarTests/AddDownloadViewModelTests.swift` ~L18 — `FakeMenuClient` shape confirmed
+- [x] `Tests/GohMenuBarTests/TrustWindowViewModelBackfillTests.swift` ~L9 — `SpyMenuClient` shape confirmed
 
 **AC ownership:** Tray surface (spec §4.7)
 
 **Step 1 — Failing test** (extend `GohMenuViewModelTests.swift`)
 
+**B4 FIX:** Do NOT invent `StubGohMenuClient(lsReply:)` or a free `makeViewModel(client:)` —
+these don't exist. Instead: add a settable `lsReply: LsReply` property to the existing
+`FakeMenuClient` in `GohMenuViewModelTests.swift` (which already has the viewmodel init
+pattern in every test). The test uses the existing `GohMenuViewModel.init(client:)`.
+
 ```swift
-@Test("GohMenuViewModel.checkDaemonSkew returns DaemonSkew for a stale daemon")
+// In GohMenuViewModelTests.swift — add `lsReply` property to FakeMenuClient:
+// var lsReply: LsReply = LsReply(jobs: [], featureLevel: nil)
+// func ls() async throws -> LsReply { lsReply }
+
+@Test("GohMenuViewModel.checkDaemonSkew returns staleIdle for a nil featureLevel daemon")
 func checkDaemonSkewReturnsStaleDaemon() async {
-    let client = StubGohMenuClient(lsReply: LsReply(jobs: [], featureLevel: nil))
-    let model = makeViewModel(client: client)
+    let client = FakeMenuClient()
+    client.lsReply = LsReply(jobs: [], featureLevel: nil)
+    let model = GohMenuViewModel(client: client)
     await model.checkDaemonSkew()
     #expect(model.daemonSkew == .staleIdle)
 }
@@ -1643,21 +1868,53 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter Goh
 
 **Step 3 — Minimal implementation**
 
-Add `func ls() async throws -> LsReply` to `GohMenuClient` protocol.
-In `LiveGohMenuClient`, implement it via `sendOneShot(.ls, expecting: LsReply.self, ...)`.
-In `GohMenuViewModel`, add `@Published public private(set) var daemonSkew: DaemonSkew?`
-and `func checkDaemonSkew() async`.
+1. Add `func ls() async throws -> LsReply` to the `GohMenuClient` protocol in
+   `Sources/GohMenuBar/GohMenuViewModel.swift`.
+
+2. Implement in `LiveGohMenuClient` (`Sources/goh-menu/main.swift`) via the existing
+   `sendOneShot` pattern (same as `add`, `pause`, etc. already use).
+
+3. Add stub to ALL existing test doubles (required — build error without them):
+   - `FakeMenuClient` in `GohMenuViewModelTests.swift`: add
+     `var lsReply: LsReply = LsReply(jobs: [], featureLevel: nil)` and
+     `func ls() async throws -> LsReply { lsReply }`.
+   - `LongLivedMenuClient` in `GohMenuViewModelTests.swift`: add
+     `func ls() async throws -> LsReply { LsReply(jobs: [], featureLevel: nil) }`.
+   - `FakeMenuClient` in `AddDownloadViewModelTests.swift`: add
+     `func ls() async throws -> LsReply { LsReply(jobs: [], featureLevel: nil) }`.
+   - `SpyMenuClient` in `TrustWindowViewModelBackfillTests.swift`: add
+     `func ls() async throws -> LsReply { LsReply(jobs: [], featureLevel: nil) }`.
+
+4. In `GohMenuViewModel`, add:
+   ```swift
+   @Published public private(set) var daemonSkew: DaemonSkew?
+
+   public func checkDaemonSkew() async {
+       guard let reply = try? await client.ls() else { return }
+       let activeCount = reply.jobs.filter { $0.state == .active }.count
+       daemonSkew = DaemonSkewCheck.evaluate(
+           reported: reply.featureLevel,
+           expected: GohFeatureLevel.current,
+           activeDownloadCount: activeCount)
+   }
+   ```
 
 **Step 4 — Run expecting pass**
 ```
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build -Xswiftc -warnings-as-errors
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter GohMenuViewModelTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter AddDownloadViewModelTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter TrustWindowViewModelBackfillTests
 ```
+All three suites must pass — the latter two verify the stubs compile.
 
 **Step 5 — Commit**
 ```
-git add Sources/GohMenuBar/GohMenuViewModel.swift Sources/goh-menu/main.swift
-git commit -m "feat(tray): add GohMenuClient.ls() + LiveGohMenuClient impl"
+git add Sources/GohMenuBar/GohMenuViewModel.swift Sources/goh-menu/main.swift \
+        Tests/GohMenuBarTests/GohMenuViewModelTests.swift \
+        Tests/GohMenuBarTests/AddDownloadViewModelTests.swift \
+        Tests/GohMenuBarTests/TrustWindowViewModelBackfillTests.swift
+git commit -m "feat(tray): add GohMenuClient.ls() + LiveGohMenuClient impl; update all conformers (B3)"
 ```
 
 ---
@@ -1735,13 +1992,24 @@ git commit -m "feat(tray): add daemonSkewNotice to GohMenuState + presenter (AC 
 
 ### Task 13 — Idle-gated restart action in `GohMenuViewModel` + `GohMenuView`
 
+**B3 PROTOCOL-EXTENSION FAN-OUT WARNING (continued from Task 11):** If `func restartDaemon()
+async throws` is also added to `GohMenuClient`, the same five conformers must be updated.
+Consider whether `restartDaemon()` needs to be on the protocol at all — it can be a method
+on `GohMenuViewModel` that calls a separately-injected `DaemonRestarting` (not via the client
+protocol), keeping the protocol surface minimal. If it IS added to the protocol, update the
+same five files listed in Task 11's conformer table with a no-op stub:
+`func restartDaemon() async throws {}`.
+
 **Files:**
 - Modify: `Sources/GohMenuBar/GohMenuViewModel.swift`
 - Modify: `Sources/GohMenuBar/GohMenuView.swift`
+- (Conditional) Modify: `Sources/goh-menu/main.swift` — only if `restartDaemon` is on the protocol
+- (Conditional) Modify: `Tests/GohMenuBarTests/GohMenuViewModelTests.swift`, `AddDownloadViewModelTests.swift`, `TrustWindowViewModelBackfillTests.swift` — same conformer fan-out as Task 11
 
 **Pre-task reads checklist:**
 - [x] `GohMenuView.swift` L1–60 — `body` layout sections confirmed
 - [x] `GohMenuViewModel.swift` L126–163 — action methods (`pause`, `resume`, etc.) confirmed
+- [x] `GohMenuViewModel.swift` L42 — `GohMenuViewModel.init(client:)` signature confirmed (to add `restarter:` param)
 
 **AC ownership:** Tray surface (spec §4.7 idle-gated restart action)
 
@@ -1751,11 +2019,16 @@ the button (downloads are running). When `.current`, neither notice nor button.
 
 **Step 1 — Failing test** (extend `GohMenuViewModelTests.swift`)
 
+**B4 FIX:** Do NOT use `StubGohMenuClient(lsReply:)` or `makeViewModel(client:)` —
+those don't exist. Use the existing `FakeMenuClient` (already extended with `lsReply`
+in Task 11) and `GohMenuViewModel.init(client:)` directly.
+
 ```swift
 @Test("restartDaemon is available only when daemonSkew is staleIdle")
 func restartDaemonAvailableOnlyWhenStaleIdle() async {
-    let client = StubGohMenuClient(lsReply: LsReply(jobs: [], featureLevel: nil))
-    let model = makeViewModel(client: client)
+    let client = FakeMenuClient()
+    client.lsReply = LsReply(jobs: [], featureLevel: nil)  // nil featureLevel → staleIdle
+    let model = GohMenuViewModel(client: client)
     await model.checkDaemonSkew()
     #expect(model.daemonSkew == .staleIdle)
     // The action should be reachable (no crash or precondition failure).
@@ -1770,15 +2043,30 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --filter Goh
 
 **Step 3 — Minimal implementation**
 
-Add `func restartDaemon() async` to `GohMenuViewModel`:
-- Re-read `.ls` to confirm still idle (re-check before action).
-- Call the injected restarter (add a `restarter: (any DaemonRestarting)?` init param,
-  default `nil` for tests; live impl passes `LaunchctlDaemonRestarter`).
-- Update `daemonSkew` after restart attempt.
+Preferred approach: keep `restartDaemon()` OFF the protocol — inject `DaemonRestarting`
+directly into `GohMenuViewModel.init` instead. This avoids forcing all five test doubles
+to grow another method for an action that only the viewmodel needs.
+
+```swift
+// GohMenuViewModel.init gains an optional restarter:
+public init(client: GohMenuClient, restarter: (any DaemonRestarting)? = nil)
+
+// GohMenuViewModel.restartDaemon():
+public func restartDaemon() async {
+    guard let lsReply = try? await client.ls() else { return }
+    let activeCount = lsReply.jobs.filter { $0.state == .active }.count
+    guard activeCount == 0, let restarter else { return }
+    try? restarter.kickstart()
+    daemonSkew = nil  // optimistic reset; next checkDaemonSkew() confirms
+}
+```
 
 In `GohMenuView`, below the `header` section, render a `Button("Restart background service")`
-if `model.daemonSkew == .staleIdle`, or a subdued `Text(model.state.daemonSkewNotice)` if
-`.staleBusy`.
+if `model.daemonSkew == .staleIdle`, or a subdued `Text(model.state.daemonSkewNotice ?? "")` if
+`model.daemonSkew == .staleBusy`.
+
+In `goh-menu/main.swift` (`LiveGohMenuClient` init), pass a live `LaunchctlDaemonRestarter`
+to `GohMenuViewModel.init(client:restarter:)`.
 
 **Step 4 — Run expecting pass**
 ```
@@ -1797,8 +2085,8 @@ git commit -m "feat(tray): idle-gated restart action + skew notice in menu view 
 
 ## Summary
 
-Three phases, 13 tasks, 3 new source files, 10 modified source files, 6 new
-test files (plus extensions to 6 existing test files).
+Three phases, 13 tasks, 3 new source files, 10 modified source files, 7 new
+test/support files (plus extensions to 6 existing test files).
 
 **Phase 1** (Tasks 1–4) builds the pure GohCore foundation: `GohFeatureLevel`,
 `DaemonSkewCheck`, the `LsReply.featureLevel` additive-optional wire field, and
