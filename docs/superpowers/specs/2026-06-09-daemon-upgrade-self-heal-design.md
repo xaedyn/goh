@@ -24,10 +24,14 @@ exit only), `RunAtLoad: true`, `MachServices: { dev.goh.daemon }`. So a clean `e
 relaunched (by design, so `brew services stop` works) — **the daemon cannot self-restart by
 exiting**, and `KeepAlive: true` would break stop. Therefore the **client drives the restart**
 via `launchctl kickstart -k gui/<uid>/dev.goh.daemon` (force-restart, bypasses KeepAlive),
-idle-gated. The daemon barely changes — it only *reports* a feature level. Existing recovery:
-on startup the daemon runs `reconcileActiveJobsOnStartup` which re-queues/resumes jobs that were
-`.active` when it last stopped — so a download caught by a restart is automatically resumed
-(load-bearing for §9 FM2).
+idle-gated. The daemon barely changes — it only *reports* a feature level. Existing recovery (and its limit):
+on startup the daemon runs `reconcileActiveJobsOnStartup`, which **resumes a job that was
+`.active` ONLY if a safe checkpoint already exists** (checkpoints are written every 1 MiB, with a
+strong validator) — re-queued at the checkpointed offset and re-scheduled. A job with **no usable
+checkpoint** (e.g. a download that just started) is marked **`.failed` (retry-eligible)**, not
+resumed: its un-checkpointed in-progress bytes are discarded and it awaits a manual `goh retry`.
+This conditional behavior is load-bearing for §9 FM2 — the design must not over-promise "no lost
+work."
 
 ## 3. The model
 
@@ -71,8 +75,10 @@ on startup the daemon runs `reconcileActiveJobsOnStartup` which re-queues/resume
 5. **`goh daemon restart`** — a new top-level verb `daemon` with subcommand `restart` and an
    optional `--force` flag (grammar/help in §6). Idle by default: refuses with a clear message +
    a fixed non-zero exit code (64-class usage refusal) when downloads are active and `--force`
-   is absent; `--force` restarts regardless (documented: interrupts in-flight downloads, which
-   the daemon's startup reconciliation re-queues/resumes).
+   is absent; `--force` restarts regardless (documented: interrupts in-flight downloads — a
+   download with an existing checkpoint resumes from it on startup; one without (e.g. just
+   started) is marked failed-retryable and its un-checkpointed bytes are lost, needing `goh
+   retry`).
 6. **`goh doctor`** reports the daemon's `featureLevel` vs the CLI's, flags skew, prints the safe
    restart instruction.
 7. **Tray:** surfaces the same skew (a neutral notice: "A newer background service is ready — it
@@ -104,10 +110,14 @@ on startup the daemon runs `reconcileActiveJobsOnStartup` which re-queues/resume
   instruction.
 - **AC7** kickstart-unavailable (injected failing restarter) → the auto-heal command degrades to
   notice-only, still succeeds, exit code unchanged.
-- **AC8** A download `.active` across a restart is re-queued/resumed by the daemon's existing
-  `reconcileActiveJobsOnStartup` (reference/extend the existing reconciliation test) — no lost
-  work; the auto-heal "never interrupt in steady state; auto-resume in the rare window" invariant
-  is thus honest.
+- **AC8** Reconcile behavior is asserted for BOTH branches: a download `.active` across a restart
+  **with a safe checkpoint** is re-queued at the checkpoint offset AND re-scheduled on daemon
+  startup (the end-to-end re-schedule, beyond the existing `JobStoreStartupReconciliationTests`
+  unit branches); a download `.active` **without a usable checkpoint** is marked `.failed`
+  (retry-eligible), surfaced (logged), NOT silently lost. The auto-heal invariant is therefore:
+  *idle-gated + re-checked, so it doesn't hit an active download in steady state; in the rare
+  race a caught download either resumes (if checkpointed) or is left failed-retryable and
+  surfaced — never silently dropped.*
 - **AC9** Frozen: `protocolVersion` stays 4; the `LsReply` change is additive-optional (existing
   IPC/reply-decoder/golden tests unchanged); no other wire/contract change; the ledger is
   byte-identical across a restart (assert post-restart read == pre-restart).
@@ -133,9 +143,11 @@ public enum DaemonSkewCheck {
 ```
 - **CLI grammar:** `goh daemon restart [--force]`. New `daemon` verb parsed in `GohCommandLine.parse`;
   unknown `daemon` subcommands → usage error (exit 64). `goh daemon restart` help line added.
-- **Poll-after-kickstart:** loop `.ls` up to ~5s (small fixed interval); success = reply
-  `featureLevel >= current`; on timeout → notice + proceed. If the OLD daemon answers mid-poll,
-  keep polling until new-or-timeout (don't accept stale).
+- **Poll-after-kickstart:** loop `.ls` with a pinned budget — **5.0s total, 250ms interval**;
+  success = reply `featureLevel >= current`; on timeout → notice + proceed. If the OLD daemon
+  answers mid-poll (nil or < current), keep polling until new-or-timeout (don't accept stale).
+  (`kickstart -k` is immediate — launchd's crash-relaunch throttle does NOT apply to it — so 5s
+  comfortably covers re-exec latency.)
 - **Idle source:** `LsReply.jobs.filter { $0.state == .active }.count`. `.queued` does NOT block:
   a queued job killed by a restart simply re-queues (it never started) — and `reconcileActiveJobsOnStartup`
   re-admits it. Only `.active` (a live transfer) is the thing worth avoiding, and §9/AC8 cover the
@@ -154,19 +166,28 @@ public enum DaemonSkewCheck {
   guides the user (or `goh daemon restart`). So self-heal works from the first upgrade (FM1 fixed).
 - New client + old daemon: handled as above. Old client + new daemon: client ignores the new
   field; daemon reports a level the old client never reads — no effect.
-- A restart never touches the ledger (reloaded from disk) and active downloads resume via
-  startup reconciliation (AC8) — no trust-data loss, no lost transfers.
+- A restart never touches the ledger (reloaded from disk) — no trust-data loss. Active downloads:
+  a checkpointed one resumes on startup; an un-checkpointed (just-started) one is left
+  failed-retryable and surfaced (not silently lost). The idle gate + pre-kickstart re-check make
+  hitting an active download a rare sub-second race, not the steady-state path. Brew and pkg
+  installs both load the LaunchAgent into `gui/<uid>`, so the kickstart label is identical across
+  install methods.
 - Rollback: removing the feature leaves an ignored additive field; no migration.
 
 ## 9. Security & privacy
 - featureLevel reporting adds no attack surface (a constant in an already-received reply).
   `kickstart` targets the user's own `gui/<uid>` launchd domain — no sudo, no escalation.
-- **FM2 (idle/restart race), resolved:** auto-restart is idle-gated with a re-check immediately
-  before kickstart (tiny window). If a download nonetheless starts in that sub-second window and is
-  killed by the restart, the new daemon's existing `reconcileActiveJobsOnStartup` **re-queues and
-  resumes it** — no lost work. The honest invariant: *auto-restart never interrupts a download in
-  steady state; a transfer caught in the rare restart window is automatically resumed.* `--force`
-  is the only path that interrupts deliberately (also resumed).
+- **FM2 (idle/restart race), bounded honestly:** auto-restart is idle-gated with a re-check
+  immediately before kickstart, so in steady state it never targets an active download. If a
+  download nonetheless starts in that sub-second window and is killed by the restart, the new
+  daemon's `reconcileActiveJobsOnStartup` **resumes it IF it had already written a checkpoint**
+  (≥1 MiB in); a just-started download with no checkpoint is instead marked **failed-retryable
+  and surfaced** (logged; `goh retry` resumes it) — its un-checkpointed bytes are lost, but the
+  job is never silently dropped. Honest invariant: *auto-restart doesn't interrupt downloads in
+  steady state; a transfer caught in the rare race is resumed-if-checkpointed, else
+  failed-retryable-and-surfaced — never silent loss.* `--force` interrupts deliberately with the
+  same semantics. This residual is acceptable because it's rare (idle-gated + re-checked),
+  recoverable, and visible — not a silent data loss.
 - Honest skew signaling replaces silent feature loss (the security-relevant win: a stale daemon
   silently dropping trust-baseline writes is now surfaced and auto-corrected when idle).
 
@@ -181,4 +202,8 @@ public enum DaemonSkewCheck {
   stale; doing nothing leaves the first upgrade permanently un-healed.
 - **Auto-heal on every CLI verb** — REJECTED: needless per-command round-trip; scoped to the
   commands where skew causes silent data loss (§4.4).
+- **Checkpoint-on-pause before a forced restart** (to shrink the un-checkpointed-bytes loss
+  window for `--force` / the rare race) — DEFERRED as a future option, not built here (YAGNI): the
+  residual is rare, recoverable, and surfaced; a pause-and-flush handshake before kickstart is a
+  separate enhancement if it ever proves necessary.
 ```
