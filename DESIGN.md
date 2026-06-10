@@ -248,6 +248,25 @@ same runs. URLSession on HTTP/2 was actually the better steady-state choice
 on the workloads benchmarked. Reverted; HTTP/3 stays a v0.2 design pass when
 either a different host or more diagnostic time is available.
 
+### Display speed — 5-second rolling window (2026-06-07)
+
+`JobProgress.bytesPerSecond` was a cumulative average (`completed / elapsed`), which
+only ever climbs as a multi-connection transfer ramps — the wrong quantity for a
+"current speed" readout. It is now a **5-second sliding-window rate** (curl's
+convention), computed by a per-job `RollingRateSampler` (GohCore) created once in
+`DownloadEngine.run(job:)` and threaded to all six `Self.progress(...)` sites
+(single / ranged / resume). The sampler is `Mutex`-guarded and `@unchecked Sendable`
+(mirrors `ByteCounter`); a monotonic guard drops out-of-order cumulative counts from
+concurrent ranged workers and saturating subtraction prevents underflow, so the
+engine hot path stays correct under the existing concurrency. The wire SHAPE is
+unchanged — only the *value* of the (still non-optional `UInt64`) `bytesPerSecond`
+field changes, so `goh ls` / `goh top` / the tray all inherit the honest rate with no
+contract change. **The BBR governor's own windowed `ByteCounter` sampler is
+independent and untouched** — the display rate is a separate object. The span is
+measured oldest-sample→`now` with samples evicted every call, so a stalled transfer
+decays toward 0. Design:
+`docs/superpowers/specs/2026-06-07-tray-download-dashboard-design.md`.
+
 ## Persistence
 
 `gohd` persists three daemon-owned data sets under
@@ -693,6 +712,15 @@ independent of every other contract. A golden round-trip fixture
 `protocolVersion` was `3` for this v0.1 slice; the sync-skip-fold slice below
 intentionally bumps it to `4` — see "Sync-verified provenance (skip-path fold).")
 
+**Additive-optional fields keep the version frozen.** Two later slices added fields to
+`ProvenanceEntry` — `verifiedAt` (sync-skip fold) and the five `recordedStat*` baseline
+fields (rapid-trust fast-check, §Tiered rapid trust) — WITHOUT bumping `currentVersion`.
+The rule: a field that is `Optional`, decodes via `decodeIfPresent` (absent → nil), and
+omits its key when nil is purely additive — old readers ignore the unknown key, old
+records decode with nil, and the golden `provenance-v1.plist` still round-trips. A
+REQUIRED field, or any changed field name / type / semantics, bumps the version and
+triggers a four-round pass.
+
 ### Canonicalization rule (BLOCK-1)
 
 One rule, applied identically at write and read:
@@ -855,6 +883,44 @@ signing was the considered, deferred alternative.)
   the ledger or the byte-verify path. Touch-ID-gating the signing key and per-entry ledger signing are
   deferred (out of scope v1). Design + plan:
   `docs/superpowers/specs/2026-06-06-hardware-attested-provenance-design.md`.
+
+### Tiered rapid trust — stat fast-check + backfill-on-verify (2026-06-08/09)
+
+Determining trust *rapidly* is a different question from proving integrity. Re-hashing
+is O(size) — minutes for a 68GB file — with no cryptographic shortcut. So trust is tiered:
+
+- **Origin** — established at download (recorded `sha256`, optional SE attestation).
+- **Integrity** — the full re-hash (`goh verify --all`), now responsive: `FileDigest`
+  gained `onBytesHashed`/`isCancelled` so the run streams progress and honors mid-file
+  cancel (the tray shows a live bar + ETA). A load-bearing fix shipped with it: the
+  streaming hash now drains an `autoreleasepool` per 1 MiB chunk — without it the
+  autoreleased `FileHandle.read` buffers accumulated to tens of GB on a multi-GB file and
+  the OS jetsam-killed the process (a silent SIGKILL with no crash report).
+- **Rapid liveness** — `goh verify --quick` / the tray Trust window: one `lstat` per file
+  comparing size + mtime(sec,nsec) + (inode, device) against a recorded baseline. O(1), no
+  content read. It is a **heuristic, not a proof** — it catches deletion / truncation /
+  replacement but NOT bit-rot or a `touch -r` tamper that preserves metadata. Enforced at
+  the model layer: `looksUnchanged` is a DISTINCT presenter state from `verified` (different
+  label + icon), so a UI change can never collapse the heuristic into a cryptographic claim.
+
+The baseline is the five additive-optional `recordedStat*` integer fields (`recordedStatSize`
+= `st_size`; `recordedMtimeSeconds`/`recordedMtimeNanoseconds` = `st_mtimespec`;
+`recordedInode`/`recordedDevice`) — stored as raw integers, NOT a Swift `Date`, because
+`PropertyListEncoder` round-trips a `Date` through a `Double` and loses `st_mtimespec`
+nanoseconds, which would mark nearly every unchanged file "changed." `mtime` (not `ctime`)
+is the comparison field precisely because the post-completion Spotlight `setxattr` bumps
+`ctime` but not `mtime`.
+
+**Capture is TOCTOU-tight:** the baseline is `fstat`'d on the engine's still-open file
+descriptor at the moment SHA-256 finalizes (same inode whose bytes were hashed), threaded
+through the widened `completedDownloadHandler` into the `ProvenanceEntry`.
+**Backfill-on-verify:** a successful deep verify is the moment the bytes are cryptographically
+confirmed, so it records the baseline then — pre-feature entries become fast-checkable after
+one `goh verify --all`, no re-download. Only `.ok` entries are backfilled (a `.failed`/
+`.missing` file gets nothing), so a baseline is only ever written for bytes that just passed a
+full hash; `recordedStatSize` is always the `fstat` `st_size`, never the hashed byte count.
+Designs: `docs/superpowers/specs/2026-06-08-tiered-rapid-trust-design.md`,
+`docs/superpowers/specs/2026-06-09-backfill-on-verify-design.md`.
 
 ## IPC
 
@@ -1238,6 +1304,21 @@ backward-compatible and does not bump the version.
   per-version semantics note, not CI.
 - Confirm at implementation that the Swift XPC API exposes top-level dictionary
   fields via primitive accessors independently of decoding `payload`.
+
+#### `featureLevel` — the additive-behavior axis (2026-06-09)
+
+`protocolVersion` is a FROZEN wire contract: it bumps only on a breaking message change,
+and additive-optional fields deliberately do NOT bump it. That leaves a blind spot — a new
+client talking to an OLD daemon over the same `protocolVersion` silently loses new
+*behavior* (e.g. an old daemon that doesn't write the rapid-trust baseline fields).
+`GohFeatureLevel.current: Int` is a SECOND, monotonic axis for exactly this: bumped per
+release that adds daemon behavior a client depends on (featureLevel 1 = "daemon writes stat
+baselines on `recordVerified`"). The daemon reports it additively in `LsReply.featureLevel:
+Int?` (`decodeIfPresent`; `protocolVersion` stays 4). The client compares the daemon's
+reported level to its own; `nil` (a pre-feature daemon) means "older than level 1" → stale.
+This drives the self-healing upgrade (§Daemon self-healing upgrade). It is NOT the wire
+`protocolVersion` and never gates message compatibility — only behavior freshness. Bump it
+in any release that adds daemon behavior a client depends on.
 
 ### 5 · Serialization
 
@@ -2558,6 +2639,44 @@ currently-detected clipboard URL.
 
 Approach B ("set-once defaults") is a future additive layer; this slice delivers
 per-download control via Approach A.
+
+### Download dashboard (2026-06-07, Slice: tray-download-dashboard)
+
+The menu-bar popover gained rich per-download rows plus a dedicated resizable
+`Window(id: "downloads")` dashboard: file-type icon + middle-truncated filename, a
+determinate `ProgressView` (indeterminate spinner when `Content-Length` is unknown), and a
+secondary line of `downloaded/total · % · rolling-speed · ETA · N connections`; completed/
+failed rows are retained with a provenance verify badge. Two fixes shipped with it: the
+popover no longer collapses to zero height (the `maxHeight`-only `ScrollView` became a
+`fixedSize` top-N `VStack` — a flexible/min-height frame got squeezed in the content-hugging
+popover and the centered rows overflowed onto neighbours), and the displayed speed is the
+rolling window above (§Display speed). Framing is ROADMAP's "opt-in window, not a GUI clone."
+Design: `docs/superpowers/specs/2026-06-07-tray-download-dashboard-design.md`.
+
+## Daemon self-healing upgrade (2026-06-09)
+
+A `.pkg`/`brew` upgrade replaces the on-disk binaries but does NOT restart the running
+`gohd`, so a new client silently talks to an old daemon (the feature-skew blind spot —
+§`featureLevel`). The daemon **cannot fix this by restarting itself**: its LaunchAgent is
+`KeepAlive { SuccessfulExit: false }` (relaunch only on a NON-zero exit) — by design, so
+`brew services stop` works — which means a clean `exit(0)` is not relaunched, and flipping to
+`KeepAlive: true` would make the daemon un-stoppable. So the **client drives the restart**:
+when `goh verify` (or `doctor`, the scoped paths) sees a stale `featureLevel` AND the daemon
+is idle (zero `.active` jobs), it re-checks idle, runs `launchctl kickstart -k
+gui/<uid>/dev.goh.daemon` (force-restart in the user's own domain, bypassing KeepAlive),
+polls `.ls` until the new daemon reports a current level, then proceeds. It is
+**best-effort**: any failure degrades to a one-line notice and never changes the command's
+exit code; verify still works daemon-stopped. The plist is unchanged.
+
+**Download safety.** Auto-restart is idle-gated, so in steady state it never targets an active
+transfer. A download caught in the rare idle-check→kickstart race is handled by the daemon's
+existing `reconcileActiveJobsOnStartup`: it resumes from checkpoint if one exists (checkpoints
+write every 1 MiB), otherwise it is marked failed-retryable and surfaced — never silently
+lost. `goh daemon restart [--force]` is the explicit path (idle-refuses with exit 64 unless
+`--force`); the tray surfaces a neutral notice + an idle-gated restart. `getuid()` is confined
+to `LaunchctlDaemonRestarter`'s `Darwin`-importing file (not reachable via Foundation on the
+stable CI SDK). Design:
+`docs/superpowers/specs/2026-06-09-daemon-upgrade-self-heal-design.md`.
 
 ## Dependencies
 
