@@ -110,9 +110,15 @@ struct GohMenuProgressStreamTests {
     /// `streamCount` workers could park there at once, the barrier would never reach
     /// its count, and the parked workers — blocked, not suspended — would never yield,
     /// deadlocking until the time limit fails the test.
+    ///
+    /// `streamCount` is derived from the active core count rather than hard-coded:
+    /// the cooperative pool's width scales with cores, so a fixed size could exceed
+    /// the pool on a small runner (real starvation) yet fit within it on a high-core
+    /// machine (false pass). Pinning it to 4× the core count keeps it comfortably
+    /// wider than the pool everywhere while staying well under GCD's thread ceiling.
     @Test(.timeLimit(.minutes(1)))
     func blockingSubscribeRunsOffCooperativePool() async throws {
-        let streamCount = 48
+        let streamCount = max(16, ProcessInfo.processInfo.activeProcessorCount * 4)
         let barrier = StartupBarrier(count: streamCount)
 
         let baselines = try await withThrowingTaskGroup(of: [ProgressSnapshot].self) { group in
