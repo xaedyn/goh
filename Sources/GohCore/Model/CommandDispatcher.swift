@@ -173,7 +173,7 @@ public struct CommandDispatcher: Sendable {
                 return .job(admitQueuedJob(job))
 
             case .ls:
-                return .list(LsReply(jobs: store.allJobs()))
+                return .list(LsReply(jobs: store.allJobs(), featureLevel: GohFeatureLevel.current))
 
             case .pause(let jobID):
                 if store.job(id: jobID)?.state == .active {

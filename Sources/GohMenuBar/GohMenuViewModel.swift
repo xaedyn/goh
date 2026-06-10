@@ -12,14 +12,18 @@ public protocol GohMenuClient: AnyObject {
     /// Sends a batch of verify-produced baselines to the daemon. Best-effort:
     /// callers must not propagate errors to the UI. Never blocks the verify run.
     func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws
+    /// One-shot `.ls` call — returns the daemon's current job list and feature level.
+    func ls() async throws -> LsReply
 }
 
 @MainActor
 public final class GohMenuViewModel: ObservableObject {
     @Published public private(set) var state: GohMenuState
     @Published public private(set) var trustOverview: GohTrustOverview = .empty
+    @Published public private(set) var daemonSkew: DaemonSkew?
 
     private let client: GohMenuClient
+    private let restarter: (any DaemonRestarting)?
     private let presenter: GohMenuPresenter
     private let clipboard: GohClipboardURLDetector
     private let pasteboardText: () -> String?
@@ -40,6 +44,7 @@ public final class GohMenuViewModel: ObservableObject {
 
     public init(
         client: GohMenuClient,
+        restarter: (any DaemonRestarting)? = nil,
         presenter: GohMenuPresenter = GohMenuPresenter(),
         clipboard: GohClipboardURLDetector = GohClipboardURLDetector(),
         pasteboardText: @escaping () -> String?,
@@ -50,6 +55,7 @@ public final class GohMenuViewModel: ObservableObject {
         trustReader: (any ProvenanceReading)? = nil
     ) {
         self.client = client
+        self.restarter = restarter
         self.presenter = presenter
         self.clipboard = clipboard
         self.pasteboardText = pasteboardText
@@ -178,6 +184,28 @@ public final class GohMenuViewModel: ObservableObject {
         openDoctorCommand()
     }
 
+    /// Queries the daemon's featureLevel and classifies skew. Safe to call from any task;
+    /// `@Published` is assigned on the MainActor (this type is @MainActor).
+    public func checkDaemonSkew() async {
+        guard let reply = try? await client.ls() else { return }
+        let activeCount = reply.jobs.filter { $0.state == .active }.count
+        daemonSkew = DaemonSkewCheck.evaluate(
+            reported: reply.featureLevel,
+            expected: GohFeatureLevel.current,
+            activeDownloadCount: activeCount)
+    }
+
+    /// Restarts the daemon when idle. Only acts when `daemonSkew == .staleIdle` and
+    /// no active downloads exist. Optimistically clears `daemonSkew`; the next
+    /// `checkDaemonSkew()` call will confirm the new state.
+    public func restartDaemon() async {
+        guard let lsReply = try? await client.ls() else { return }
+        let activeCount = lsReply.jobs.filter { $0.state == .active }.count
+        guard activeCount == 0, let restarter else { return }
+        try? restarter.kickstart()
+        daemonSkew = nil  // optimistic reset; next checkDaemonSkew() confirms
+    }
+
     /// Factory that creates an AddDownloadViewModel without exposing the private client.
     /// Pre-fills the URL field with the currently-detected clipboard URL if any.
     public func makeAddDownloadViewModel(
@@ -194,7 +222,8 @@ public final class GohMenuViewModel: ObservableObject {
             health: health,
             snapshots: snapshots,
             clipboardURL: clipboardURL,
-            ledgerOutcome: ledgerOutcome)
+            ledgerOutcome: ledgerOutcome,
+            daemonSkew: daemonSkew)
     }
 
     private func applyProgressSnapshots(_ snapshots: [ProgressSnapshot]) {

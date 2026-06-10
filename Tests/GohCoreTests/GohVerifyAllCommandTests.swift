@@ -139,4 +139,21 @@ struct GohVerifyAllCommandTests {
         let _: (String, Bool) -> GohCommandLineResult = GohVerifyCommand.run(lockPath:strictUntracked:)
         // Test passes by compilation alone.
     }
+
+    @Test("verify --all with stale idle daemon triggers auto-heal before verification")
+    func verifyAllWithStaleIdleDaemonTriggersAutoHeal() throws {
+        let restarter = StubRestarter(shouldSucceed: true)
+        // Sequence: stale (initial classify), stale (re-check idle), current (poll)
+        let sequenced = SequencedLsSender(replies: [
+            LsReply(jobs: [], featureLevel: nil),
+            LsReply(jobs: [], featureLevel: nil),
+            LsReply(jobs: [], featureLevel: GohFeatureLevel.current),
+        ])
+        let result = GohVerifyAllCommand.run(
+            provenanceStorePath: "",
+            send: sequenced.sender(),
+            restarter: restarter)
+        #expect(restarter.kickstartCalled == 1)
+        #expect(result.exitCode == 0)   // no entries → 0; auto-heal never changes exit code
+    }
 }

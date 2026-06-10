@@ -46,8 +46,15 @@ public enum GohVerifyAllCommand {
         provenanceStorePath: String,
         json: Bool = false,
         generatedAt: Date = Date(),
-        send: GohCommandLine.Sender? = nil
+        send: GohCommandLine.Sender? = nil,
+        restarter: (any DaemonRestarting)? = nil
     ) -> GohCommandLineResult {
+
+        // ── Step 0: Best-effort daemon auto-heal (AC5) ──────────────────────────
+        // Never changes the command's exit code; degrades to a stderr notice.
+        if let send {
+            DaemonAutoHeal.runIfNeeded(send: send, restarter: restarter)
+        }
 
         // ── Step 1: Classify ledger ────────────────────────────────────────────
         let outcome = ProvenanceLedgerReader.read(at: provenanceStorePath)

@@ -135,6 +135,9 @@ nonisolated public struct GohMenuState: Sendable, Equatable {
     public var primaryAction: GohMenuPrimaryAction
     public var recoveryAction: GohMenuRecoveryAction?
     public var rows: [GohMenuJobRow]
+    /// Neutral informational notice when the running daemon is an older build.
+    /// `nil` when the daemon is current or skew state is unknown.
+    public var daemonSkewNotice: String?
 
     public init(
         health: GohMenuHealth,
@@ -144,7 +147,8 @@ nonisolated public struct GohMenuState: Sendable, Equatable {
         aggregateSpeedText: String,
         primaryAction: GohMenuPrimaryAction,
         recoveryAction: GohMenuRecoveryAction?,
-        rows: [GohMenuJobRow]
+        rows: [GohMenuJobRow],
+        daemonSkewNotice: String? = nil
     ) {
         self.health = health
         self.healthTitle = healthTitle
@@ -154,5 +158,6 @@ nonisolated public struct GohMenuState: Sendable, Equatable {
         self.primaryAction = primaryAction
         self.recoveryAction = recoveryAction
         self.rows = rows
+        self.daemonSkewNotice = daemonSkewNotice
     }
 }

@@ -22,6 +22,8 @@ private final class SpyMenuClient: GohMenuClient {
         if shouldThrow { throw URLError(.notConnectedToInternet) }
         recordedBatches.append(entries)
     }
+
+    func ls() async throws -> LsReply { LsReply(jobs: [], featureLevel: nil) }
 }
 
 // ── Fake ledger reader ────────────────────────────────────────────────────────

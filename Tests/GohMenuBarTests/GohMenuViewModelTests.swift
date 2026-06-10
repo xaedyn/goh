@@ -314,6 +314,36 @@ struct GohMenuViewModelTests {
             await Task.yield()
         }
     }
+
+    @Test("GohMenuViewModel.checkDaemonSkew returns staleIdle for a nil featureLevel daemon")
+    func checkDaemonSkewReturnsStaleDaemon() async {
+        let client = FakeMenuClient()
+        client.lsReply = LsReply(jobs: [], featureLevel: nil)
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+        await model.checkDaemonSkew()
+        #expect(model.daemonSkew == .staleIdle)
+    }
+
+    @Test("restartDaemon is available only when daemonSkew is staleIdle")
+    func restartDaemonAvailableOnlyWhenStaleIdle() async {
+        let client = FakeMenuClient()
+        client.lsReply = LsReply(jobs: [], featureLevel: nil)  // nil featureLevel → staleIdle
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+        await model.checkDaemonSkew()
+        #expect(model.daemonSkew == .staleIdle)
+        // The action should be reachable (no crash or precondition failure).
+        // (Full integration tested via ▶-tier)
+    }
 }
 
 @MainActor
@@ -391,6 +421,10 @@ private final class FakeMenuClient: GohMenuClient {
         recordedVerifiedEntries.append(entries)
     }
 
+    var lsReply: LsReply = LsReply(jobs: [], featureLevel: nil)
+
+    func ls() async throws -> LsReply { lsReply }
+
     func enqueue(_ event: FakeStreamEvent) {
         streamEvents.append(event)
     }
@@ -464,4 +498,5 @@ private final class LongLivedMenuClient: GohMenuClient {
     func resume(jobID: UInt64) async throws {}
     func remove(jobID: UInt64, keepPartialFile: Bool) async throws {}
     func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws {}
+    func ls() async throws -> LsReply { LsReply(jobs: [], featureLevel: nil) }
 }

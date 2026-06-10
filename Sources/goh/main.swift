@@ -289,6 +289,72 @@ let result = GohCommandLine(
         if json { args.append("--json") }
         if let c = connections { args += ["--connections", "\(c)"] }
         return GohDiagnoseCommand.run(arguments: args)
+    },
+    daemon: { force in
+        // Step 1: Read current queue to get active count and featureLevel.
+        let requestID = UUID()
+        let lsRequest = try GohEnvelope(
+            protocolVersion: CommandService.protocolVersion,
+            requestID: requestID,
+            messageType: .request,
+            payload: Command.ls)
+            .xpcDictionary()
+        let lsResponse = try sendOneShot(
+            XPCDictionary(lsRequest), validationMode: validationMode)
+        let lsReply: LsReply
+        switch lsResponse.decodeGohReply(as: LsReply.self) {
+        case .reply(_, let payload): lsReply = payload
+        case .daemonError(_, let err):
+            return GohCommandLineResult(exitCode: 1,
+                standardError: "goh: daemon error reading queue: \(err)\n")
+        case .malformed:
+            return GohCommandLineResult(exitCode: 1,
+                standardError: "goh: malformed daemon reply\n")
+        }
+        let activeCount = lsReply.jobs.filter { $0.state == .active }.count
+
+        // Step 2: Idle-gate (unless --force).
+        if !force && activeCount > 0 {
+            return GohCommandLineResult(
+                exitCode: 64,
+                standardError: "goh: \(activeCount) active download(s) running."
+                    + " Use --force to restart anyway.\n")
+        }
+        if force && activeCount > 0 {
+            fputs("goh: Restarting background service (force) —"
+                + " active downloads may be interrupted.\n", stderr)
+        }
+
+        // Step 3: Kickstart. (No uid: — LaunchctlDaemonRestarter defaults it internally in its
+        // own Darwin-importing file, so getuid() is never called here. See B-1 fix.)
+        let restarter = LaunchctlDaemonRestarter(
+            machServiceName: GohXPCService.machServiceName)
+        do {
+            try restarter.kickstart()
+        } catch {
+            return GohCommandLineResult(
+                exitCode: 1,
+                standardError: "goh: could not restart background service: \(error)\n")
+        }
+
+        // Step 4: Poll up to 5s / 250ms for the new daemon.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.25)
+            if let polled = try? GohCommandClient(
+                    send: { req in try sendOneShot(req, validationMode: validationMode) })
+                .send(.ls, expecting: LsReply.self),
+               let level = polled.featureLevel,
+               level >= GohFeatureLevel.current {
+                return GohCommandLineResult(
+                    exitCode: 0,
+                    standardOutput: "Background service restarted.\n")
+            }
+        }
+        return GohCommandLineResult(
+            exitCode: 0,
+            standardOutput: "Background service restart initiated"
+                + " (did not confirm new version within 5s — run: goh doctor).\n")
     }
 ) { request in
     try sendOneShot(request, validationMode: validationMode)

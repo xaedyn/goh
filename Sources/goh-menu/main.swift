@@ -83,6 +83,17 @@ final class LiveGohMenuClient: GohMenuClient {
         }
     }
 
+    func ls() async throws -> LsReply {
+        do {
+            return try await Self.sendOneShot(
+                .ls,
+                expecting: LsReply.self,
+                validationMode: validationMode)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private nonisolated static func makeSubscription(
         validationMode: PeerValidationMode
     ) throws -> LiveProgressSubscription {
@@ -200,6 +211,8 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
         self.menuClientForTrust = menuClient
         self.model = GohMenuViewModel(
             client: menuClient,
+            restarter: LaunchctlDaemonRestarter(
+                machServiceName: GohXPCService.machServiceName),
             pasteboardText: { NSPasteboard.general.string(forType: .string) },
             revealInFinder: { destination in
                 NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: destination)])
