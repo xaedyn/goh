@@ -5,7 +5,26 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-10 (code-quality review session) — **Full-project review → phased fix train (IN PROGRESS)**
+### 2026-06-10 (goh forget slice) — **`feat/goh-forget` — enterprise-pipeline complete, Phase 1 IN PROGRESS**
+
+Roadmap slice picked up after the code-quality fix train (PRs #109–112) merged. Full
+enterprise-pipeline run: CCB → clarity → ACs → research (industry + dependency) → 2 approach
+memos → **USER GATE: Approach 1 "Preview-and-Confirm" + full CLI+tray scope** → design
+validation (3 gaps fixed) → spec (adversarial review **2 rounds → approved**) → plan
+(adversarial review 2 rounds → approved). Artifacts under `docs/superpowers/research|specs|
+progress|retrospectives/2026-06-10-goh-forget-*` and `docs/plans/2026-06-10-goh-forget-plan.md`.
+
+**Design:** `goh forget <path>` (immediate; corrupt ledger → exit 6; untracked → exit 1) and
+`goh forget --missing` (dry-run preview, mount-annotated, deletes nothing) / `--missing
+--confirm` (sends stored destinationPaths verbatim). New additive `Command.forgetProvenance`
++ `ForgetProvenanceReply{forgotCount}` (protocolVersion stays 4); `ProvenanceStore.forget(
+paths:)->Int` (entries-only, never unlinks a file, atomic write); `GohFeatureLevel` 1→2 with a
+fresh-`.ls` stale-daemon gate so an old daemon errors loudly instead of silently obeying;
+dispatcher returns `.failure` on store-write throw. **Phase 1** (CLI+daemon, 8 TDD tasks,
+independently shippable) building now; **Phase 2** (tray Forget action across 5 GohMenuClient
+conformers) deferred to a follow-up slice.
+
+### 2026-06-10 (code-quality review session) — **Full-project review → phased fix train (PRs #109–112 MERGED)**
 
 A six-agent full-codebase quality review (all ~19k production lines) produced 2
 critical + 8 major + perf/minor findings. User chose: fix **all of it**, phased,
