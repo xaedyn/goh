@@ -24,6 +24,21 @@ dispatcher returns `.failure` on store-write throw. **Phase 1** (CLI+daemon, 8 T
 independently shippable) building now; **Phase 2** (tray Forget action across 5 GohMenuClient
 conformers) deferred to a follow-up slice.
 
+**Phase 1 COMPLETE — PR open.** 8 atomic TDD commits (`fa6722f`..`beb6803`):
+ProvenanceStore.forget → wire types → featureLevel 1→2 → golden fixtures →
+GohForgetCommand → GohCommandLine parse/dispatch → CommandDispatcher case. Executed
+via subagent-driven-development (implementer per task) with a dedicated Opus review
+of the CLI runner and a final **stack-aware-code-review APPROVED** over the whole diff
+(all 10 categories PASS). `swift build -warnings-as-errors` clean; `swift test`
+**945/945** (+40). Frozen intact: protocolVersion 4, ProvenanceRecord v1, VerifyAllReport,
+launchd plist. One advisory follow-up: the `--missing` parse tests read the real default
+ledger (read-only, tolerant assertions — safe but not fully hermetic).
+
+**NEXT: Phase 2 (tray Forget action)** — add `GohMenuClient.forget(paths:)` to the
+protocol + all 5 conformers, a TrustWindowViewModel forget action with a preview/confirm
+sheet, and a Forget affordance on MISSING rows. See
+`docs/superpowers/progress/2026-06-10-goh-forget-phase1.md` for the contract Phase 2 builds on.
+
 ### 2026-06-10 (code-quality review session) — **Full-project review → phased fix train (PRs #109–112 MERGED)**
 
 A six-agent full-codebase quality review (all ~19k production lines) produced 2
