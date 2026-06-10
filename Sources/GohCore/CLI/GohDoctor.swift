@@ -195,7 +195,8 @@ public struct GohDoctor {
     private func xpcFindings() -> [Finding] {
         do {
             let reply = try probes.readQueue()
-            return [
+            // Start with the two existing findings (reachable + queue-readable).
+            var findings: [Finding] = [
                 Finding(
                     severity: .ok,
                     title: "XPC reachable",
@@ -207,6 +208,38 @@ public struct GohDoctor {
                     detail: nil,
                     recovery: nil),
             ]
+            // Append featureLevel / skew finding.
+            let daemonLevel = reply.featureLevel
+            let clientLevel = GohFeatureLevel.current
+            if let daemonLevel {
+                let skew = DaemonSkewCheck.evaluate(
+                    reported: daemonLevel,
+                    expected: clientLevel,
+                    activeDownloadCount: reply.jobs.filter { $0.state == .active }.count)
+                // B-2 fix: do NOT embed [ok]/[warn] in the title — GohDoctor.format already
+                // prepends "[\(severity.label)] ". Embedding it again renders "[ok] [ok] …".
+                if skew == .current {
+                    findings.append(Finding(
+                        severity: .ok,
+                        title: "daemon featureLevel: \(daemonLevel) (current)",
+                        detail: nil,
+                        recovery: nil))
+                } else {
+                    findings.append(Finding(
+                        severity: .warning,
+                        title: "daemon featureLevel: \(daemonLevel) (client expects \(clientLevel)) — skew detected",
+                        detail: "The background service is an older build. New behavior is unavailable until it restarts.",
+                        recovery: "Run: goh daemon restart"))
+                }
+            } else {
+                // nil = pre-feature daemon (stale)
+                findings.append(Finding(
+                    severity: .warning,
+                    title: "daemon featureLevel: unknown (client expects \(clientLevel)) — skew detected",
+                    detail: "The background service predates featureLevel tracking. It needs a restart.",
+                    recovery: "Run: goh daemon restart"))
+            }
+            return findings
         } catch {
             return [
                 Finding(

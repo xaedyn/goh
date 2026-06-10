@@ -78,6 +78,35 @@ struct GohDoctorTests {
         #expect(result.standardOutput.contains("Run: export GOH_XPC_ALLOW_UNVALIDATED_PEERS=1"))
     }
 
+    @Test("doctor shows ok featureLevel finding when current")
+    func doctorShowsOkFeatureLevelWhenCurrent() {
+        let paths = DoctorPaths()
+        var probes = Self.probes(paths: paths)
+        // Override readQueue to return current featureLevel
+        probes.readQueue = {
+            LsReply(jobs: [Self.makeJob(id: 6, state: .completed)], featureLevel: GohFeatureLevel.current)
+        }
+        let result = GohDoctor(probes: probes).run()
+        #expect(result.exitCode == 0)
+        #expect(result.standardOutput.contains("[ok] daemon featureLevel: \(GohFeatureLevel.current) (current)"))
+    }
+
+    @Test("doctor flags daemon featureLevel skew as warning")
+    func doctorFlagsFeatureLevelSkewAsWarning() {
+        let paths = DoctorPaths()
+        var probes = Self.probes(paths: paths)
+        probes.readQueue = {
+            LsReply(jobs: [], featureLevel: nil)   // nil = stale
+        }
+        let result = GohDoctor(probes: probes).run()
+        #expect(result.exitCode == 0)   // warning → not a failure exit
+        #expect(result.standardOutput.contains("[warn]"))
+        #expect(result.standardOutput.contains("skew"))
+        #expect(result.standardOutput.contains("goh daemon restart"))
+        // Must end with "Healthy with warnings."
+        #expect(result.standardOutput.hasSuffix("Healthy with warnings.\n"))
+    }
+
     private static func probes(
         paths: DoctorPaths,
         existing: Set<String>? = nil,
@@ -87,7 +116,7 @@ struct GohDoctorTests {
         launchctlLoaded: Bool = true,
         queueResult: Result<LsReply, Error> = .success(LsReply(jobs: [
             makeJob(id: 6, state: .completed),
-        ]))
+        ], featureLevel: GohFeatureLevel.current))
     ) -> GohDoctorProbes {
         let existing = existing ?? [
             paths.goh,
