@@ -222,7 +222,8 @@ public final class GohMenuViewModel: ObservableObject {
             health: health,
             snapshots: snapshots,
             clipboardURL: clipboardURL,
-            ledgerOutcome: ledgerOutcome)
+            ledgerOutcome: ledgerOutcome,
+            daemonSkew: daemonSkew)
     }
 
     private func applyProgressSnapshots(_ snapshots: [ProgressSnapshot]) {

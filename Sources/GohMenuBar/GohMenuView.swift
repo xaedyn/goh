@@ -23,6 +23,7 @@ public struct GohMenuView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            daemonSkewSection
             recoveryAction
             primaryAction
             addDownloadButton
@@ -72,6 +73,33 @@ public struct GohMenuView: View {
             .buttonStyle(.borderless)
             .accessibilityLabel("Refresh clipboard")
             .help("Refresh clipboard")
+        }
+    }
+
+    @ViewBuilder
+    private var daemonSkewSection: some View {
+        switch model.daemonSkew {
+        case .staleIdle:
+            Button {
+                Task { await model.restartDaemon() }
+            } label: {
+                Label("Restart background service", systemImage: "arrow.clockwise.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityLabel("Restart background service to apply the latest update")
+            .help("Restart background service — no active downloads detected")
+        case .staleBusy:
+            if let notice = model.state.daemonSkewNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .current, nil:
+            EmptyView()
         }
     }
 
