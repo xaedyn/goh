@@ -216,4 +216,71 @@ struct JobStoreStartupReconciliationTests {
         #expect(!message.contains("/"))
         #expect(!message.contains(".corrupt-"))
     }
+
+    @Test("end-to-end: checkpointed active job is requeued AND re-scheduled by the main loop")
+    func activeJobWithCheckpointIsRequeuedAndRescheduled() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = JobStore()
+        let active = try makeActiveJob(store: store, directory: directory)
+        let partialSize: UInt64 = 2 << 20
+        try Data(count: Int(partialSize)).write(to: URL(filePath: active.destination))
+
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+        try checkpointStore.save(DownloadCheckpoint(
+            jobID: active.id,
+            url: active.url,
+            destination: active.destination,
+            partialFileSize: partialSize,
+            totalBytes: 4 << 20,
+            strongETag: "\"strong-validator\"",
+            completedPieces: [
+                CheckpointPiece(start: 0, length: 1 << 20),
+                CheckpointPiece(start: 1 << 20, length: 1 << 20),
+            ],
+            updatedAt: Date()))
+
+        let result = store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore)
+
+        // Phase 1 assertion: the job is in requeuedJobIDs (existing behavior).
+        #expect(result.requeuedJobIDs == [active.id])
+        #expect(result.failedJobIDs.isEmpty)
+
+        // Phase 2 assertion: the gohd main-loop pattern (RELY — do not change gohd).
+        // Simulate: for job in store.allJobs() where job.state == .queued { schedule(job) }
+        var scheduledIDs: [UInt64] = []
+        for job in store.allJobs() where job.state == .queued {
+            scheduledIDs.append(job.id)
+        }
+        #expect(scheduledIDs == [active.id], "requeued job must be picked up by the scheduler loop")
+        // The requeued job has the checkpoint's progress applied.
+        let requeued = try #require(store.job(id: active.id))
+        #expect(requeued.progress.bytesCompleted == partialSize)
+    }
+
+    @Test("end-to-end: uncheckpointed active job is failed-retryable and surfaced — never silently dropped")
+    func activeJobWithoutCheckpointIsFailedRetryableAndSurfaced() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = JobStore()
+        let active = try makeActiveJob(store: store, directory: directory)
+        let checkpointStore = CheckpointStore(directoryURL: directory.appending(path: "checkpoints"))
+
+        let result = store.reconcileActiveJobsOnStartup(checkpoints: checkpointStore)
+
+        // Must appear in failedJobIDs (the daemon logs this path — "surfaced").
+        #expect(result.failedJobIDs == [active.id])
+        #expect(result.requeuedJobIDs.isEmpty)
+
+        // The job is NOT silently dropped — it is failed with retryEligible = true.
+        let failed = try #require(store.job(id: active.id))
+        #expect(failed.state == .failed)
+        #expect(failed.retryEligible == true)
+
+        // It is NOT in the scheduler loop (state != .queued).
+        let scheduledIDs = store.allJobs().filter { $0.state == .queued }.map(\.id)
+        #expect(!scheduledIDs.contains(active.id), "failed job must NOT be re-scheduled")
+    }
 }
