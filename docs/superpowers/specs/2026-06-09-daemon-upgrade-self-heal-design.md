@@ -2,167 +2,183 @@
 date: 2026-06-09
 feature: daemon-upgrade-self-heal
 type: design-spec
-status: draft — pending adversarial-spec-review + user approval
+status: draft — round 2 (round-1 adversarial-spec-review block issues addressed)
 ---
 
 # Design — Self-Healing Daemon Upgrade (version-skew aware)
 
 ## 1. Problem
 
-After an upgrade, the on-disk binaries (`goh`, `gohd`, `goh-menu`) are new but the **running
-`gohd` is still the old build** until it restarts. A `.pkg`/`brew` upgrade replaces the file
-but does NOT restart the daemon. Result: a new client talks to an old daemon and **silently
-loses new behavior** (the backfill-on-verify bug — old daemon dropped the new baseline
-fields). Worse, an old daemon writing the ledger can strip new additive-optional fields on
-round-trip. The user has no signal and no easy fix beyond a manual `launchctl kickstart -k`.
+After an upgrade, the on-disk binaries are new but the **running `gohd` is still the old
+build** until it restarts. A `.pkg`/`brew` upgrade replaces the file but does NOT restart the
+daemon. A new client then talks to an old daemon and **silently loses new behavior** (the
+backfill-on-verify bug — old daemon dropped the new baseline fields), and an old daemon
+writing the ledger can strip new additive-optional fields on round-trip. The wire
+`protocolVersion` doesn't catch this (additive changes don't bump it). The user gets no signal
+and no easy fix beyond a manual `launchctl kickstart -k`.
 
 ## 2. The launchd constraint that shapes the design
 
-`Resources/dev.goh.daemon.plist`: `KeepAlive = { SuccessfulExit: false }` (restart only on a
-NON-zero exit), `RunAtLoad: true`, `MachServices: { dev.goh.daemon }`. So:
-- A clean `exit(0)` (the daemon's SIGTERM path) is **NOT relaunched** by launchd — by design,
-  so `brew services stop` can actually stop it. Flipping to `KeepAlive: true` would break stop.
-- Therefore the daemon **cannot self-restart by cleanly exiting.** The restart must be driven
-  externally (`launchctl kickstart -k`, which force-restarts regardless of KeepAlive).
-
-Conclusion: **clients drive the restart** (CLI + tray), idle-gated for safety. The daemon
-barely changes — it only *reports* a feature level. No risky daemon-lifecycle code.
+`Resources/dev.goh.daemon.plist`: `KeepAlive = { SuccessfulExit: false }` (relaunch on NON-zero
+exit only), `RunAtLoad: true`, `MachServices: { dev.goh.daemon }`. So a clean `exit(0)` is NOT
+relaunched (by design, so `brew services stop` works) — **the daemon cannot self-restart by
+exiting**, and `KeepAlive: true` would break stop. Therefore the **client drives the restart**
+via `launchctl kickstart -k gui/<uid>/dev.goh.daemon` (force-restart, bypasses KeepAlive),
+idle-gated. The daemon barely changes — it only *reports* a feature level. Existing recovery:
+on startup the daemon runs `reconcileActiveJobsOnStartup` which re-queues/resumes jobs that were
+`.active` when it last stopped — so a download caught by a restart is automatically resumed
+(load-bearing for §9 FM2).
 
 ## 3. The model
 
-- **`featureLevel: Int`** — a monotonic integer (in GohCore, shared by client + daemon),
-  bumped each release that adds **daemon behavior a client depends on** (distinct from the
-  frozen wire `protocolVersion`; e.g. backfill-baseline-writing = featureLevel 1). The daemon
-  reports its built-in `featureLevel`; the client compares it to its own.
-- **One round-trip tells the client everything:** `goh doctor` already sends `.ls`; the
-  `LsReply` additively carries `featureLevel` AND the reply's `jobs` reveal active-download
-  state. So a single `.ls` answers "stale daemon?" and "idle?" together.
-- **Idle-gated restart:** stale + idle (no `.active` jobs) → the client transparently
-  `kickstart -k`s the daemon, waits for the new one, proceeds. Stale + busy → proceed against
-  the old daemon + a one-line notice (never interrupt a download).
+- **`featureLevel: Int`** — a monotonic integer (GohCore, shared by client + daemon), bumped per
+  release that adds **daemon behavior a client depends on** (distinct from frozen
+  `protocolVersion`; featureLevel 1 = "daemon writes stat baselines on recordVerified"). The
+  daemon reports its built-in level; the client compares to its own.
+- **`nil` reported == stale.** A pre-feature daemon omits the field → `nil`, which means "older
+  than featureLevel 1" → **treated as stale** (NOT "unknown/do-nothing"). This is what makes the
+  *first* upgrade self-heal. (`nil` can only come from an OLDER daemon; a newer daemon always
+  reports a level. Old-client + new-daemon is the reverse and reads `.current` — no false skew.)
+- **One round-trip tells the client everything:** the client sends `.ls` (as `goh doctor`
+  already does); the `LsReply` additively carries `featureLevel`, and its `jobs` reveal the
+  active-download count. So one `.ls` answers "stale?" and "idle?" together.
+- **Idle-gated restart:** stale + idle → the client re-checks idle and `kickstart -k`s the
+  daemon, polls for the new one, proceeds. Stale + busy → proceed against the old daemon + a
+  one-line notice (no automatic restart while downloads run).
 
 ## 4. Scope
 
 ### In scope
-1. `GohFeatureLevel.current: Int` constant in GohCore (start at 1). Bumped per release that
-   changes client-depended daemon behavior.
+1. `GohFeatureLevel.current: Int = 1` (GohCore). Bumped deliberately per release that changes
+   client-depended daemon behavior (a documented release step, like protocolVersion).
 2. `LsReply` gains `featureLevel: Int?` (additive-optional, `decodeIfPresent`; `protocolVersion`
-   stays 4). The daemon populates it with `GohFeatureLevel.current`.
-3. A reusable **skew check + safe-restart** helper (GohCore, pure where possible): given the
-   daemon's reported level, the client's level, and the active-job count → decide
-   `.current` / `.staleIdle` / `.staleBusy` / `.unknown` (old daemon reports nil → `.unknown`,
-   treated like stale-but-can't-confirm-idle → notice only, never auto-restart on nil).
-4. **CLI auto-heal:** before a command that needs an up-to-date daemon (at minimum the
-   verify/backfill path; ideally any daemon command), the CLI reads `.ls`, and if `.staleIdle`
-   it runs `launchctl kickstart -k gui/<uid>/dev.goh.daemon`, waits (bounded poll) for the new
-   daemon to answer, then proceeds. `.staleBusy`/`.unknown` → proceed + a one-line stderr
-   notice. Never blocks or fails the command on restart trouble (best-effort; fall back to
-   proceeding against whatever daemon answers).
-5. **`goh daemon restart`** — explicit, safe restart command: idle by default (refuses if
-   active downloads, suggesting `--force`); `--force` restarts anyway (documented to interrupt
-   in-flight downloads, which resume via checkpoint).
-6. **`goh doctor`** reports the daemon `featureLevel` vs the CLI's, flags skew, and prints the
-   safe restart instruction.
-7. **Tray:** surfaces the same skew (a non-alarming notice in the menu/Trust window: "A newer
-   background service is ready — it activates when downloads finish") and offers a Restart
-   action that is idle-gated.
+   stays 4). The daemon sets it to `GohFeatureLevel.current`.
+3. Pure skew classifier: `DaemonSkewCheck.evaluate(reported: Int?, expected: Int,
+   activeDownloadCount: Int) -> DaemonSkew` →
+   - `reported == nil` OR `reported < expected` → `activeDownloadCount == 0 ? .staleIdle : .staleBusy`
+   - `reported >= expected` → `.current`
+4. **CLI auto-heal**, scoped to the commands where skew causes silent data loss — **`verify
+   --all` (backfill), `verify --quick`, and `doctor`** (NOT every verb — avoids a blanket extra
+   round-trip): the client reads `.ls`, classifies, and:
+   - `.staleIdle` → **re-read `.ls` to reconfirm 0 active** (tighten the TOCTOU window), then
+     `launchctl kickstart -k gui/<uid>/dev.goh.daemon`, then **poll `.ls` (bounded ~5s) until the
+     reply reports `featureLevel >= current`** (the NEW daemon); then proceed. If still stale or
+     unreachable after the timeout → emit the notice and proceed against whatever answers
+     (best-effort; the command never fails because of restart trouble).
+   - `.staleBusy` → proceed + one-line stderr notice (no restart).
+   - kickstart unavailable / non-launchd / `launchctl` non-zero → emit notice, proceed
+     (degrade to notice-only; the command still succeeds, exit code unchanged).
+5. **`goh daemon restart`** — a new top-level verb `daemon` with subcommand `restart` and an
+   optional `--force` flag (grammar/help in §6). Idle by default: refuses with a clear message +
+   a fixed non-zero exit code (64-class usage refusal) when downloads are active and `--force`
+   is absent; `--force` restarts regardless (documented: interrupts in-flight downloads, which
+   the daemon's startup reconciliation re-queues/resumes).
+6. **`goh doctor`** reports the daemon's `featureLevel` vs the CLI's, flags skew, prints the safe
+   restart instruction.
+7. **Tray:** surfaces the same skew (a neutral notice: "A newer background service is ready — it
+   activates when downloads finish") with an idle-gated Restart action; never alarming.
 
 ### Out of scope (explicit)
-- **Daemon self-restart / changing the launchd plist KeepAlive** — rejected (§9): would break
-  deliberate stop; clean exit isn't relaunched anyway.
-- **`SMAppService` migration of the daemon** — separate, larger effort; the raw LaunchAgent
-  stays.
-- **Auto-bumping featureLevel** — it's a manual, deliberate release step (like protocolVersion).
-- **Forcing a restart when busy** — never automatic; only via explicit `goh daemon restart --force`.
+- **Daemon self-restart / plist `KeepAlive` change / `SMAppService` migration** — §10.
+- **Auto-bumping featureLevel** — deliberate per-release step.
+- **Automatic restart while downloads are active** — only `goh daemon restart --force` interrupts
+  (and even then the startup reconciliation resumes).
 
 ## 5. Success criteria (falsifiable)
 
-- **AC1** The daemon includes `featureLevel == GohFeatureLevel.current` in every `LsReply`;
-  an old client ignoring it still decodes the reply (additive-optional; `protocolVersion`
-  stays 4).
-- **AC2** The skew helper returns `.staleIdle` when reported < current AND active count == 0;
-  `.staleBusy` when reported < current AND active > 0; `.current` when reported >= current;
-  `.unknown` when reported is nil. (Pure, table-tested.)
-- **AC3** `goh daemon restart` with no active downloads restarts the daemon (a follow-up `.ls`
-  reports `featureLevel == current` / a fresh daemon); with active downloads and no `--force`
-  it refuses with exit code + message and does NOT restart; with `--force` it restarts.
-- **AC4** A skewed-but-idle CLI command auto-restarts then proceeds against the new daemon
-  (integration-level; may be a seam test on the decision + a stubbed restart).
-- **AC5** A skewed-but-busy CLI command does NOT restart, proceeds, and emits the notice; exit
-  code is the command's own (the notice never changes it).
-- **AC6** `goh doctor` shows the daemon featureLevel, flags skew when present, and prints the
-  restart instruction.
-- **AC7** Frozen: `protocolVersion` stays 4; `LsReply` change is additive-optional (golden/IPC
-  tests for existing replies unchanged); no other wire/contract change.
-- **AC8** The ledger is untouched by a restart (restart reloads it; a test/▶ note confirms the
-  daemon reload path is the existing one) — no trust-data loss.
+- **AC1** The daemon includes `featureLevel == GohFeatureLevel.current` in every `LsReply`; an
+  old client ignoring it still decodes the reply (additive-optional; `protocolVersion` stays 4).
+- **AC2** `DaemonSkewCheck.evaluate` table: `(nil, 1, 0) → .staleIdle`; `(nil, 1, 2) → .staleBusy`;
+  `(0, 1, 0) → .staleIdle`; `(1, 1, 0) → .current`; `(2, 1, 0) → .current` (old client/new daemon).
+  Pure, no I/O.
+- **AC3** `goh daemon restart` with 0 active downloads restarts the daemon (a follow-up `.ls`
+  reports `featureLevel == current` from a fresh daemon); with active downloads and no `--force`
+  it refuses (fixed non-zero exit, message, daemon NOT restarted); with `--force` it restarts.
+- **AC4** (integration/▶-tier) After installing a newer daemon binary, an idle auto-heal command
+  triggers a kickstart and the follow-up `.ls` reports the new `featureLevel` — i.e. the real
+  restart swaps the binary (not just a stubbed seam). A unit-tier seam test covers the
+  decision→action wiring with an injected restarter.
+- **AC5** A `.staleBusy` command does NOT restart, proceeds, emits the notice; its exit code is
+  the command's own (notice never changes it).
+- **AC6** `goh doctor` shows the daemon featureLevel, flags skew when present, prints the restart
+  instruction.
+- **AC7** kickstart-unavailable (injected failing restarter) → the auto-heal command degrades to
+  notice-only, still succeeds, exit code unchanged.
+- **AC8** A download `.active` across a restart is re-queued/resumed by the daemon's existing
+  `reconcileActiveJobsOnStartup` (reference/extend the existing reconciliation test) — no lost
+  work; the auto-heal "never interrupt in steady state; auto-resume in the rare window" invariant
+  is thus honest.
+- **AC9** Frozen: `protocolVersion` stays 4; the `LsReply` change is additive-optional (existing
+  IPC/reply-decoder/golden tests unchanged); no other wire/contract change; the ledger is
+  byte-identical across a restart (assert post-restart read == pre-restart).
 
 ## 6. Interface contracts
 
 ```swift
-// GohCore — the monotonic feature axis (NOT the frozen wire protocolVersion).
 public enum GohFeatureLevel { public static let current: Int = 1 }   // 1 = backfill baseline writes
+// NOTE: deliberately Int (a fresh feature axis), NOT the wire protocolVersion (UInt32).
 
 // LsReply (additive-optional; protocolVersion stays 4):
-//   public var featureLevel: Int?   // daemon's GohFeatureLevel.current; nil from pre-feature daemons
-//   decode with decodeIfPresent; old clients ignore it.
+//   public var featureLevel: Int?    // daemon's GohFeatureLevel.current; nil from pre-feature daemons
+//   encode always; decode with decodeIfPresent. Old clients ignore it.
 
-public enum DaemonSkew: Sendable, Equatable { case current, staleIdle, staleBusy, unknown }
+public enum DaemonSkew: Sendable, Equatable { case current, staleIdle, staleBusy }
 public enum DaemonSkewCheck {
     public static func evaluate(reported: Int?, expected: Int, activeDownloadCount: Int) -> DaemonSkew
-    // reported == nil → .unknown; reported < expected → (activeDownloadCount==0 ? .staleIdle : .staleBusy);
-    // reported >= expected → .current
 }
+// Restart seam (injectable for tests): a `DaemonRestarting` protocol with a live impl that runs
+//   `launchctl kickstart -k gui/<uid>/dev.goh.daemon` (uid = getuid(); label =
+//   GohXPCService.machServiceName) as a subprocess and returns success/failure. Tests inject a
+//   stub (success / failure / records calls).
 ```
-- **Restart mechanism:** `launchctl kickstart -k gui/<uid>/dev.goh.daemon` (uid from `getuid()`;
-  label `GohXPCService.machServiceName`). Force-restart regardless of KeepAlive. The CLI runs it
-  as a subprocess; after it returns, the CLI polls `.ls` (bounded, e.g. ~5s) until the daemon
-  answers, then proceeds. All best-effort: on any failure, proceed against whatever daemon answers
-  + the notice.
-- **Idle source:** active count = `LsReply.jobs.filter { $0.state == .active }.count` (the client
-  already has the jobs from the same `.ls`). Daemon-side `goh daemon restart` uses the same.
+- **CLI grammar:** `goh daemon restart [--force]`. New `daemon` verb parsed in `GohCommandLine.parse`;
+  unknown `daemon` subcommands → usage error (exit 64). `goh daemon restart` help line added.
+- **Poll-after-kickstart:** loop `.ls` up to ~5s (small fixed interval); success = reply
+  `featureLevel >= current`; on timeout → notice + proceed. If the OLD daemon answers mid-poll,
+  keep polling until new-or-timeout (don't accept stale).
+- **Idle source:** `LsReply.jobs.filter { $0.state == .active }.count`. `.queued` does NOT block:
+  a queued job killed by a restart simply re-queues (it never started) — and `reconcileActiveJobsOnStartup`
+  re-admits it. Only `.active` (a live transfer) is the thing worth avoiding, and §9/AC8 cover the
+  rare race.
 
 ## 7. Frozen-contract handling
-- `protocolVersion` stays 4 (the `LsReply` field is additive-optional). Existing IPC/golden tests
-  for `LsReply`/other replies unchanged (AC7).
-- No change to `ProvenanceRecord`/`VerifyAllReport`/governor/`JobProgress`.
-- The launchd plist is NOT changed (KeepAlive semantics preserved → stop still works).
+- `protocolVersion` stays 4 (the `LsReply` field is additive-optional; existing reply-decoder /
+  golden / IPC tests unchanged — AC9).
+- No change to `ProvenanceRecord` / `VerifyAllReport` / governor / `JobProgress`.
+- The launchd plist is NOT changed (KeepAlive semantics preserved → `brew services stop` works).
 
 ## 8. Rollout & compatibility
-- New client + old daemon (the upgrade window): old daemon's `LsReply.featureLevel` is nil →
-  `.unknown` → the client shows the notice and (if the user runs `goh daemon restart` or the
-  idle auto-heal fires once the user is on a featureLevel-aware path) the daemon swaps. After the
-  first restart, both are new. (Note: a pre-feature daemon reports nil, so the FIRST upgrade to
-  this feature can't auto-confirm idle from featureLevel alone — it still has the jobs list, so
-  idle detection works; `.unknown` means "can't confirm the daemon understands featureLevel," so
-  auto-restart is gated to `.staleIdle` only, i.e. once daemons report a level. For the very first
-  rollout, `goh doctor`/the notice guides a manual `goh daemon restart`.)
-- Old client + new daemon: client ignores the new `LsReply` field; no effect.
-- Restart never touches the ledger (reloaded from disk) — no trust-data loss (AC8).
+- **First upgrade to this feature** (the case that matters): the running old daemon omits
+  `featureLevel` → `nil` → `.staleIdle`/`.staleBusy`. When idle, the next scoped command
+  (`verify`/`doctor`) auto-restarts it → the new daemon now reports level 1. When busy, the notice
+  guides the user (or `goh daemon restart`). So self-heal works from the first upgrade (FM1 fixed).
+- New client + old daemon: handled as above. Old client + new daemon: client ignores the new
+  field; daemon reports a level the old client never reads — no effect.
+- A restart never touches the ledger (reloaded from disk) and active downloads resume via
+  startup reconciliation (AC8) — no trust-data loss, no lost transfers.
 - Rollback: removing the feature leaves an ignored additive field; no migration.
 
 ## 9. Security & privacy
-- **No new attack surface from reporting featureLevel** (it's a constant in a reply the client
-  already receives). `kickstart` targets the user's own per-user launchd domain (`gui/<uid>`);
-  no privilege escalation, no sudo.
-- **Restart safety:** idle-gated by default; trust ledger persists (atomic on-disk file reloaded
-  on launch). `--force` is opt-in and documented to interrupt (resumable) downloads.
-- **Honest skew signaling** replaces silent feature loss — the security-relevant win (a stale
-  daemon that silently drops trust-baseline writes is now surfaced, and the old-daemon-strips-
-  fields hazard window is minimized + visible).
+- featureLevel reporting adds no attack surface (a constant in an already-received reply).
+  `kickstart` targets the user's own `gui/<uid>` launchd domain — no sudo, no escalation.
+- **FM2 (idle/restart race), resolved:** auto-restart is idle-gated with a re-check immediately
+  before kickstart (tiny window). If a download nonetheless starts in that sub-second window and is
+  killed by the restart, the new daemon's existing `reconcileActiveJobsOnStartup` **re-queues and
+  resumes it** — no lost work. The honest invariant: *auto-restart never interrupts a download in
+  steady state; a transfer caught in the rare restart window is automatically resumed.* `--force`
+  is the only path that interrupts deliberately (also resumed).
+- Honest skew signaling replaces silent feature loss (the security-relevant win: a stale daemon
+  silently dropping trust-baseline writes is now surfaced and auto-corrected when idle).
 
 ## 10. Considered alternatives
-- **Daemon self-restarts when idle (exit + launchd relaunch)** — REJECTED: `KeepAlive
-  = SuccessfulExit:false` means a clean exit is NOT relaunched; using `exit(1)` to force relaunch
-  abuses crash semantics (throttled ~10s, pollutes logs) and risks an unstoppable restart loop.
-  Client-driven `kickstart -k` is cleaner and keeps lifecycle code out of the daemon.
-- **`KeepAlive: true`** — REJECTED: breaks `brew services stop` (daemon would relaunch on every
-  deliberate stop).
-- **Installer postinstall restart** — REJECTED as the primary: blunt, can interrupt active
-  downloads, and the `.pkg` is verified to have NO postinstall scripts; also doesn't fix the
-  old-daemon-strips-fields hazard for non-installer paths. The client-driven idle-gated restart
-  covers all entry points.
-- **`SMAppService` daemon** — deferred: larger migration; not needed for this.
-- **Auto-bump featureLevel from git/build** — rejected: a deliberate per-release bump (like
-  protocolVersion) is clearer about when skew actually matters.
+- **Daemon self-restarts by exiting** — REJECTED: `KeepAlive=SuccessfulExit:false` won't relaunch
+  a clean exit; `exit(1)` to force relaunch abuses crash semantics (throttle, log noise, loop risk).
+- **`KeepAlive: true`** — REJECTED: breaks `brew services stop`.
+- **Installer postinstall restart** — REJECTED as primary: blunt, can interrupt downloads, the
+  `.pkg` is verified to have NO postinstall, and it misses non-installer paths. Client-driven
+  idle-gated restart covers every entry point.
+- **`.unknown` "do nothing" on nil** — REJECTED (round-1 FM1): nil means older-than-level-1 =
+  stale; doing nothing leaves the first upgrade permanently un-healed.
+- **Auto-heal on every CLI verb** — REJECTED: needless per-command round-trip; scoped to the
+  commands where skew causes silent data loss (§4.4).
 ```
