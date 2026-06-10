@@ -116,6 +116,28 @@ struct CommandTests {
         }
     }
 
+    @Test("ForgetProvenanceRequest and ForgetProvenanceReply round-trip")
+    func forgetProvenancePayloadRoundTrip() throws {
+        let request = ForgetProvenanceRequest(paths: [
+            "/Users/u/Downloads/a.bin",
+            "/tmp/b.iso",
+        ])
+        #expect(try roundTrip(request) == request)
+
+        let empty = ForgetProvenanceRequest(paths: [])
+        #expect(try roundTrip(empty) == empty)
+
+        let reply = ForgetProvenanceReply(forgotCount: 2)
+        #expect(try roundTrip(reply) == reply)
+    }
+
+    @Test("forgetProvenance Command case round-trips")
+    func forgetProvenanceCommandRoundTrip() throws {
+        let command: Command = .forgetProvenance(
+            request: ForgetProvenanceRequest(paths: ["/tmp/x"]))
+        #expect(try roundTrip(command) == command)
+    }
+
     @Test("RecordVerifiedProvenanceRequest and VerifiedProvenanceEntry round-trip")
     func recordVerifiedProvenancePayloadRoundTrip() throws {
         let entry = VerifiedProvenanceEntry(

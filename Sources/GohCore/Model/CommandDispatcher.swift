@@ -243,6 +243,10 @@ public struct CommandDispatcher: Sendable {
                     warn?("recordVerifiedProvenance: provenance store write failed for \(validEntries.count) entr\(validEntries.count == 1 ? "y" : "ies"): \(error)")
                 }
                 return .ack
+
+            case .forgetProvenance:
+                // TODO Task 7: implement forgetProvenance dispatch
+                return .failure(GohError(code: .invalidArgument, message: "forgetProvenance not yet implemented"))
             }
         } catch let error as GohError {
             return .failure(error)

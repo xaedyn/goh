@@ -43,3 +43,12 @@ public struct RmReply: Codable, Sendable, Equatable {
 public struct AckReply: Codable, Sendable, Equatable {
     public init() {}
 }
+
+/// The `forgetProvenance` command's success reply.
+/// `forgotCount` is the number of ledger entries actually removed by this call
+/// (entries whose canonical `destinationPath` matched a requested path). The CLI
+/// asserts `forgotCount == paths.count`; a smaller count is a non-success outcome.
+public struct ForgetProvenanceReply: Codable, Sendable, Equatable {
+    public var forgotCount: Int
+    public init(forgotCount: Int) { self.forgotCount = forgotCount }
+}
