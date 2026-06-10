@@ -1242,23 +1242,24 @@ case .verifyQuick:
         provenanceStorePath: provenanceStorePathResolver() ?? "",
         send: send,
         restarter: LaunchctlDaemonRestarter(
-            uid: Int(getuid()),
             machServiceName: GohXPCService.machServiceName))
 ```
-Note: `getuid()` is already called at `goh/main.swift` L133 via `{ Int(getuid()) }`;
-this call is in `GohCommandLine.run()` inside `GohCore`, which imports Darwin
-through Foundation. No new import is required in `GohCommandLine.swift`.
+**B-1 fix — do NOT call `getuid()` here.** `GohCommandLine.swift` imports only
+`Foundation` + `XPC` (NOT `Darwin`), and `getuid()` must not be assumed reachable via
+Foundation on CI's stable SDK (the cross-SDK C-API skew gotcha). `LaunchctlDaemonRestarter`
+already defaults its `uid` to `Int(Darwin.getuid())` INTERNALLY (its own file imports
+`Darwin` — Task 5). So construct it WITHOUT a `uid:` argument; `getuid()` stays confined to
+the restarter's Darwin-importing file. No `import Darwin` is added to `GohCommandLine.swift`.
 
 Similarly, the `.verifyAll` dispatch site (in `GohCommandLine.run()`) gains
-`restarter: LaunchctlDaemonRestarter(uid: Int(getuid()), machServiceName: GohXPCService.machServiceName)`.
-The `send` parameter is already threaded to `GohVerifyAllCommand.run` — confirm
-at the actual dispatch site before editing.
+`restarter: LaunchctlDaemonRestarter(machServiceName: GohXPCService.machServiceName)` (again,
+no `uid:` — defaulted internally). The `send` parameter is already threaded to
+`GohVerifyAllCommand.run` — confirm at the actual dispatch site before editing.
 
-`goh/main.swift` itself does NOT need changes for the verify paths — the `send`
-closure is already passed as the trailing closure at L293–294; `GohCommandLine.run()`
-uses `self.send` internally. The `LaunchctlDaemonRestarter` is constructed inside
-`GohCommandLine.run()` at the dispatch site, using `GohXPCService.machServiceName`
-(available from `GohCore`) and `getuid()` (available via Foundation/Darwin).
+`goh/main.swift` itself does NOT need changes for the verify paths — the `send` closure is
+already passed as the trailing closure at L293–294; `GohCommandLine.run()` uses `self.send`
+internally and constructs the restarter without ever calling `getuid()` (it's defaulted in
+`LaunchctlDaemonRestarter`, whose file imports `Darwin`).
 
 **Step 4 — Run expecting pass**
 ```
@@ -1485,9 +1486,9 @@ daemon: { force in
             + " active downloads may be interrupted.\n", stderr)
     }
 
-    // Step 3: Kickstart.
+    // Step 3: Kickstart. (No uid: — LaunchctlDaemonRestarter defaults it internally in its
+    // own Darwin-importing file, so getuid() is never called here. See B-1 fix.)
     let restarter = LaunchctlDaemonRestarter(
-        uid: Int(getuid()),
         machServiceName: GohXPCService.machServiceName)
     do {
         try restarter.kickstart()
@@ -1631,16 +1632,18 @@ private func xpcFindings() -> [Finding] {
                 reported: daemonLevel,
                 expected: clientLevel,
                 activeDownloadCount: reply.jobs.filter { $0.state == .active }.count)
+            // B-2 fix: do NOT embed [ok]/[warn] in the title — GohDoctor.format already
+            // prepends "[\(severity.label)] ". Embedding it again renders "[ok] [ok] …".
             if skew == .current {
                 findings.append(Finding(
                     severity: .ok,
-                    title: "[ok] daemon featureLevel: \(daemonLevel) (current)",
+                    title: "daemon featureLevel: \(daemonLevel) (current)",
                     detail: nil,
                     recovery: nil))
             } else {
                 findings.append(Finding(
                     severity: .warning,
-                    title: "[warn] daemon featureLevel: \(daemonLevel) (client expects \(clientLevel)) — skew detected",
+                    title: "daemon featureLevel: \(daemonLevel) (client expects \(clientLevel)) — skew detected",
                     detail: "The background service is an older build. New behavior is unavailable until it restarts.",
                     recovery: "Run: goh daemon restart"))
             }
@@ -1648,7 +1651,7 @@ private func xpcFindings() -> [Finding] {
             // nil = pre-feature daemon (stale)
             findings.append(Finding(
                 severity: .warning,
-                title: "[warn] daemon featureLevel: unknown (client expects \(clientLevel)) — skew detected",
+                title: "daemon featureLevel: unknown (client expects \(clientLevel)) — skew detected",
                 detail: "The background service predates featureLevel tracking. It needs a restart.",
                 recovery: "Run: goh daemon restart"))
         }
