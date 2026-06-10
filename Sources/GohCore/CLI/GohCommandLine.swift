@@ -268,6 +268,18 @@ public struct GohCommandLine {
                         exitCode: 1, standardError: "The daemon command is not configured.\n")
                 }
                 return try daemon(force)
+
+            case .forgetPath(let path):
+                return GohForgetCommand.run(
+                    path: path,
+                    provenanceStorePath: provenanceStorePathResolver() ?? "",
+                    send: send)
+
+            case .forgetMissing(let confirm):
+                return GohForgetCommand.runMissing(
+                    provenanceStorePath: provenanceStorePathResolver() ?? "",
+                    confirm: confirm,
+                    send: send)
             }
         } catch let error as ParseError {
             return GohCommandLineResult(
@@ -337,6 +349,8 @@ private enum ParsedCommand: Equatable {
     case resume(UInt64)
     case remove(RmRequest)
     case daemon(force: Bool)
+    case forgetPath(path: String)
+    case forgetMissing(confirm: Bool)
 }
 
 private enum OutputFormat: Equatable {
@@ -524,6 +538,10 @@ extension GohCommandLine {
             return try parseDaemon(rest)
         }
 
+        if arguments.first == "forget" {
+            return try parseForget(Array(arguments.dropFirst()))
+        }
+
         if arguments.count == 1, let url = arguments.first, !url.hasPrefix("-") {
             return .foreground(AddRequest(url: url))
         }
@@ -543,6 +561,51 @@ extension GohCommandLine {
             else { throw ParseError(message: "unknown daemon restart option \(arg)") }
         }
         return .daemon(force: force)
+    }
+
+    private static func parseForget(_ arguments: [String]) throws -> ParsedCommand {
+        var missing = false
+        var confirm = false
+        var path: String?
+
+        for arg in arguments {
+            switch arg {
+            case "--missing":
+                missing = true
+            case "--confirm":
+                confirm = true
+            default:
+                guard !arg.hasPrefix("-") else {
+                    throw ParseError(message: "unknown forget option \(arg)")
+                }
+                guard path == nil else {
+                    throw ParseError(message: "forget accepts at most one path argument")
+                }
+                path = arg
+            }
+        }
+
+        // Mutual exclusion: --missing and a positional path are incompatible.
+        if missing, let p = path {
+            throw ParseError(message: "--missing and a positional path are mutually exclusive (got: \(p))")
+        }
+        // --confirm without --missing is a usage error.
+        if confirm, !missing {
+            throw ParseError(message: "--confirm is only valid with --missing")
+        }
+        // --confirm with a positional path is a usage error.
+        if confirm, path != nil {
+            throw ParseError(message: "--confirm is only valid with --missing")
+        }
+
+        if missing {
+            return .forgetMissing(confirm: confirm)
+        }
+
+        guard let p = path else {
+            throw ParseError(message: "forget requires a path or --missing")
+        }
+        return .forgetPath(path: p)
     }
 
     private static func parseAdd(_ arguments: [String]) throws -> AddRequest {
@@ -771,6 +834,9 @@ extension GohCommandLine {
           goh pause <id>
           goh resume <id>
           goh rm [--keep] <id>
+          goh forget <path>              (removes a tracked path's provenance entry; exit: 0 ok · 1 untracked · 6 ledger-error)
+          goh forget --missing           (dry-run: list absent-file entries; exit: 0 ok · 6 ledger-error)
+          goh forget --missing --confirm (remove absent-file entries; exit: 0 ok · 1 partial/error · 6 ledger-error)
           goh daemon restart [--force]   (refuses with active downloads unless --force; exit 64 on refusal)
           goh auth import safari
 
