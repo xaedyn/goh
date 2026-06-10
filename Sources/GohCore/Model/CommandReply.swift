@@ -2,9 +2,31 @@
 /// order. `add`, `pause`, and `resume` reply with a bare ``JobSummary``.
 public struct LsReply: Codable, Sendable, Equatable {
     public var jobs: [JobSummary]
+    /// The daemon's compiled-in ``GohFeatureLevel/current``.
+    /// `nil` from a pre-feature daemon (older than featureLevel 1).
+    /// Additive-optional: old clients ignore it; new clients treat nil as stale.
+    /// `protocolVersion` stays 4.
+    public var featureLevel: Int?
 
-    public init(jobs: [JobSummary]) {
+    public init(jobs: [JobSummary], featureLevel: Int? = nil) {
         self.jobs = jobs
+        self.featureLevel = featureLevel
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case jobs, featureLevel
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        jobs = try c.decode([JobSummary].self, forKey: .jobs)
+        featureLevel = try c.decodeIfPresent(Int.self, forKey: .featureLevel)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(jobs, forKey: .jobs)
+        try c.encodeIfPresent(featureLevel, forKey: .featureLevel)
     }
 }
 
