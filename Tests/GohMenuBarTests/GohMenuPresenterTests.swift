@@ -198,4 +198,27 @@ struct GohMenuPresenterTests {
                 actualConnectionCount: state == .active ? 8 : 0),
             lanes: [])
     }
+
+    @Test("presenter includes daemonSkewNotice when daemonSkew is staleBusy")
+    func presenterIncludesStaleBusyNotice() {
+        let presenter = GohMenuPresenter()
+        let state = presenter.state(
+            health: .connected,
+            snapshots: [],
+            clipboardURL: nil,
+            daemonSkew: .staleBusy)
+        #expect(state.daemonSkewNotice != nil)
+        #expect(state.daemonSkewNotice?.contains("downloads finish") == true)
+    }
+
+    @Test("presenter daemonSkewNotice is nil when current")
+    func presenterNilNoticeWhenCurrent() {
+        let presenter = GohMenuPresenter()
+        let state = presenter.state(
+            health: .connected,
+            snapshots: [],
+            clipboardURL: nil,
+            daemonSkew: .current)
+        #expect(state.daemonSkewNotice == nil)
+    }
 }

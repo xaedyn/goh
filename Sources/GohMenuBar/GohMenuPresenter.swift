@@ -8,7 +8,8 @@ nonisolated public struct GohMenuPresenter: Sendable {
         health: GohMenuHealth,
         snapshots: [ProgressSnapshot],
         clipboardURL: URL?,
-        ledgerOutcome: ProvenanceReadOutcome? = nil
+        ledgerOutcome: ProvenanceReadOutcome? = nil,
+        daemonSkew: DaemonSkew? = nil
     ) -> GohMenuState {
         let jobs = snapshots.map(\.job).sorted { $0.id < $1.id }
         let activeJobs = jobs.filter { $0.state == .active }
@@ -31,6 +32,16 @@ nonisolated public struct GohMenuPresenter: Sendable {
             ledgerMap = [:]
         }
 
+        let skewNotice: String?
+        switch daemonSkew {
+        case .staleBusy:
+            skewNotice = "A newer background service is ready — it activates when downloads finish."
+        case .staleIdle:
+            skewNotice = "Background service is ready to update."
+        case .current, nil:
+            skewNotice = nil
+        }
+
         return GohMenuState(
             health: health,
             healthTitle: healthCopy.title,
@@ -41,7 +52,8 @@ nonisolated public struct GohMenuPresenter: Sendable {
                 clipboardURL: clipboardURL,
                 recoveryAction: healthCopy.recovery),
             recoveryAction: healthCopy.recovery,
-            rows: jobs.map { row(for: $0, ledgerMap: ledgerMap) })
+            rows: jobs.map { row(for: $0, ledgerMap: ledgerMap) },
+            daemonSkewNotice: skewNotice)
     }
 
     private func primaryAction(
