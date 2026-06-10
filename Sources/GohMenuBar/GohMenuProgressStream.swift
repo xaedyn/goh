@@ -26,13 +26,21 @@ nonisolated public enum GohMenuProgressStream {
     ) -> AsyncThrowingStream<[ProgressSnapshot], any Error> {
         AsyncThrowingStream { continuation in
             let cancellation = GohMenuProgressSubscriptionCancellation()
-            let task = Task.detached {
+
+            // Run the blocking subscribe round-trip and `receiveNotification()` loop on a
+            // dedicated GCD thread, NOT the Swift cooperative pool. `receiveNotification()`
+            // parks the calling thread until the daemon sends the next progress notification;
+            // doing that on a `Task.detached` (cooperative-pool) thread pins a cooperative
+            // worker indefinitely and can starve all structured concurrency — the deadlock
+            // class that hung CI for 6h (see MEMORY.md "Sync→async bridge pool deadlock").
+            // This mirrors the proven off-pool pattern in `TrustWindowViewModel.startVerify`.
+            DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let subscription = try makeSubscription()
                     cancellation.install(subscription)
                     defer { cancellation.cancel() }
 
-                    guard !Task.isCancelled else {
+                    guard !cancellation.isCancelled else {
                         continuation.finish()
                         return
                     }
@@ -45,7 +53,7 @@ nonisolated public enum GohMenuProgressStream {
                             .subscribe(request: SubscribeRequest(scope: .all)),
                             expecting: SubscribeReply.self)
 
-                    guard !Task.isCancelled else {
+                    guard !cancellation.isCancelled else {
                         continuation.finish()
                         return
                     }
@@ -54,16 +62,14 @@ nonisolated public enum GohMenuProgressStream {
                     consumeProgressNotifications(
                         requestID: requestID,
                         subscription: subscription,
+                        cancellation: cancellation,
                         continuation: continuation)
-                } catch is CancellationError {
-                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: GohMenuErrorMapper.map(error))
                 }
             }
 
             continuation.onTermination = { @Sendable _ in
-                task.cancel()
                 cancellation.cancel()
             }
         }
@@ -72,9 +78,13 @@ nonisolated public enum GohMenuProgressStream {
     private static func consumeProgressNotifications(
         requestID: UUID,
         subscription: GohMenuProgressSubscription,
+        cancellation: GohMenuProgressSubscriptionCancellation,
         continuation: AsyncThrowingStream<[ProgressSnapshot], any Error>.Continuation
     ) {
-        while !Task.isCancelled {
+        // The loop is unblocked on cancellation by `cancellation.cancel()` interrupting the
+        // blocking `receiveNotification()` (it throws `.interrupted`); this guard only avoids
+        // entering a fresh blocking receive when cancel landed between two notifications.
+        while !cancellation.isCancelled {
             do {
                 let envelope = try subscription.receiveNotification()
                 guard envelope.messageType == .notification else {
@@ -157,6 +167,10 @@ nonisolated public enum GohMenuErrorMapper {
 /// already-installed subscription or immediately canceling a later install.
 nonisolated private final class GohMenuProgressSubscriptionCancellation: @unchecked Sendable {
     private let state = Mutex(State())
+
+    var isCancelled: Bool {
+        state.withLock { $0.cancelled }
+    }
 
     func install(_ subscription: GohMenuProgressSubscription) {
         let shouldCancel = state.withLock { state in

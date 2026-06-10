@@ -5,6 +5,33 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-10 (code-quality review session) — **Full-project review → phased fix train (IN PROGRESS)**
+
+A six-agent full-codebase quality review (all ~19k production lines) produced 2
+critical + 8 major + perf/minor findings. User chose: fix **all of it**, phased,
+**trust-layer fixes before the `goh forget` slice**, then `goh forget`, then the
+rest — as **atomic PRs**. Sequence:
+
+- **Phase 1 (stop-the-bleeding):** PR1 cooperative-pool block in
+  `GohMenuProgressStream`; PR2 CI `timeout-minutes` + `swift test -warnings-as-errors`.
+- **Phase 2 (trust layer, before forget):** PR3 `goh attest` double-scan;
+  PR4 verify-family stderr routing + `jsonErrorResult` fail-closed.
+- **→ then `goh forget` (the queued roadmap slice).**
+- **Phases 3–7 (after forget):** menu-bar wiring (`checkDaemonSkew` inert,
+  `.reconnecting` unreachable, `sizeText`==`progressText`, threadIdentifier, dedup);
+  engine/model correctness (governor `remainingBytes`, checkpoint init O(N²),
+  CommandService reply, Safari-cookie bounds); perf (double-fsync **needs
+  durability investigation first**, ChunkAssembler, sync-poll interval, JobStore
+  index); test hygiene (SE `.enabled(if:)`, lockfile encoder golden, gohd smoke,
+  transition tests, sleep/vacuous-assertion fixes); CLI/security minors.
+
+**PR1 DONE** (`fix/menubar-progress-stream-pool`): moved the blocking subscribe +
+`receiveNotification()` loop off the Swift cooperative pool onto a GCD global queue
+(mirrors `TrustWindowViewModel.startVerify`), added a 48-way starvation-barrier
+regression test that deadlocks-to-time-limit if the work ever returns to the
+cooperative pool. `swift build -warnings-as-errors` clean; `swift test` **904/904**
+(+1). No frozen contract touched.
+
 ### 2026-06-09 (daemon-self-heal session) — **Self-healing daemon upgrade MERGED via #106 (full pipeline: spec 2 rounds + plan 2 rounds + 13 tasks/3 phases + final review APPROVED); CONFIRMED end-to-end on test8**
 
 **Real-upgrade convergence confirmed (test8, 2026-06-10):** user cut `0.1.0-test8`, installed, ran `goh verify --all` with NO manual `launchctl` — the new CLI auto-restarted the stale test7 daemon to test8 (`goh doctor` now reports `daemon featureLevel: 1 (current)`), AND the deep verify recorded the 68GB file's baseline so `goh verify --quick` shows it OK (was "no baseline"). #105 + #106 both proven live. A deleted file (`10Mb.dat`) correctly shows MISSING / "no baseline" — surfacing the next-slice gap below.
