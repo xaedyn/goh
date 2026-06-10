@@ -5,7 +5,11 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-09 (daemon-self-heal session) — **Self-healing daemon upgrade BUILT on `feat/daemon-upgrade-self-heal` (full pipeline: spec 2 rounds + plan 2 rounds + 13 tasks/3 phases + final review APPROVED FOR MERGE); NOT yet pushed/PR'd at time of writing**
+### 2026-06-09 (daemon-self-heal session) — **Self-healing daemon upgrade MERGED via #106 (full pipeline: spec 2 rounds + plan 2 rounds + 13 tasks/3 phases + final review APPROVED); CONFIRMED end-to-end on test8**
+
+**Real-upgrade convergence confirmed (test8, 2026-06-10):** user cut `0.1.0-test8`, installed, ran `goh verify --all` with NO manual `launchctl` — the new CLI auto-restarted the stale test7 daemon to test8 (`goh doctor` now reports `daemon featureLevel: 1 (current)`), AND the deep verify recorded the 68GB file's baseline so `goh verify --quick` shows it OK (was "no baseline"). #105 + #106 both proven live. A deleted file (`10Mb.dat`) correctly shows MISSING / "no baseline" — surfacing the next-slice gap below.
+
+**NEXT SLICE — `goh forget` (ledger pruning).** Gap found 2026-06-10: a file deleted from disk lingers in the provenance ledger forever (verify --all reports MISSING; --quick reports "no baseline") with NO removal path — `goh rm` removes download *jobs*, not provenance entries, and the tray Trust window has no "forget" action. Proposed: explicit **`goh forget <path>`** + **`goh forget --missing`** (prune entries whose files are gone) + a tray Trust-window "Forget" action. **Never automatic** — a MISSING file may be on an unmounted external drive, not deleted, so pruning must be a deliberate user action (caveat in help text). Small slice: a daemon `forgetProvenance` command + `ProvenanceStore.forget(paths:)` (atomic write) + CLI verb + tray button. Not started; run through the normal spec→plan→build pipeline.
 
 Fixes the root cause behind "every file shows no baseline after an upgrade": a `.pkg`/`brew` upgrade replaces binaries but does NOT restart the running `gohd`, so a new client silently talks to an old daemon (which dropped the new baseline-write behavior — the #105 footgun). The wire `protocolVersion` (4) doesn't catch additive skew, so this adds a separate **`featureLevel`** axis and makes upgrades self-heal.
 
