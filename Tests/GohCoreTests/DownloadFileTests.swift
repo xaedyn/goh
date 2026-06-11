@@ -130,6 +130,31 @@ struct DownloadFileTests {
         #expect(try Data(contentsOf: url) == whole)
     }
 
+    // The `write` return value is the engine's fsync-deduplication signal: it
+    // reports `true` exactly when this call fsynced (the accumulated checkpoint
+    // interval was reached), so the engine can skip a redundant explicit
+    // `file.sync()`. A `false` return means the bytes are NOT yet durable, so a
+    // partial/final flush MUST still sync explicitly. This locks that contract.
+    @Test("write() returns whether it fsynced: false below the checkpoint, true on crossing it, false again after the reset")
+    func writeReportsSyncOnCheckpointCrossing() throws {
+        let url = try temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let checkpoint = 1 << 20  // 1 MiB — DownloadFile.checkpointInterval
+        let half = Data(repeating: 0x11, count: checkpoint / 2)
+        let file = try DownloadFile(path: url.path, expectedSize: nil)
+
+        // First half-MiB write: accumulated 0.5 MiB < 1 MiB → no sync yet.
+        #expect(try file.write(half, at: 0) == false)
+        // Second half-MiB write: accumulated 1 MiB ≥ 1 MiB → fsync, counter reset.
+        #expect(try file.write(half, at: UInt64(checkpoint / 2)) == true)
+        // A fresh small write after the reset is below the interval again → no sync.
+        let small = Data(repeating: 0x22, count: 4096)
+        #expect(try file.write(small, at: UInt64(checkpoint)) == false)
+
+        try file.finish()
+    }
+
     @Test("redactedDescription of openFailed carries no filesystem path")
     func redactedDescriptionOmitsPath() {
         let error = DownloadFileError.openFailed(path: "/Users/secret/private.iso", errno: 13)

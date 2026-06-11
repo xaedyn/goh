@@ -57,7 +57,16 @@ public final class DownloadFile: Sendable {
 
     /// Writes `data` at `offset`, and fsyncs once a checkpoint interval of
     /// writes has accumulated across all callers.
-    public func write(_ data: Data, at offset: UInt64) throws {
+    ///
+    /// - Returns: `true` when this call fsynced (the accumulated checkpoint
+    ///   interval was reached and the writes are now durable), `false` when it
+    ///   did not. The engine uses this to skip a redundant explicit `sync()`
+    ///   after a full-buffer flush while still syncing a partial/final flush —
+    ///   preserving the "bytes are fsynced before they are recorded" invariant
+    ///   on every path (a `false` return means the just-written bytes are NOT
+    ///   yet durable, so the caller must sync before recording them).
+    @discardableResult
+    public func write(_ data: Data, at offset: UInt64) throws -> Bool {
         try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
             var done = 0
@@ -78,6 +87,7 @@ public final class DownloadFile: Sendable {
             return false
         }
         if shouldSync { try sync() }
+        return shouldSync
     }
 
     /// Reads up to `count` bytes from `offset` — fewer only at end of file.

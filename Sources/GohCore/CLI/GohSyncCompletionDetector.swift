@@ -19,8 +19,11 @@ struct CompletionDetector {
     let send: GohCommandLine.Sender
     let watchdogSeconds: TimeInterval
 
-    /// Per-poll pause, kept short so the watchdog test resolves quickly.
-    var pollInterval: TimeInterval = 0.01
+    /// Per-poll pause. 250 ms matches the rest of the codebase's poll cadence
+    /// (`DaemonAutoHeal`, spec §6); a full `ls` — which deserializes the entire
+    /// job list — every 10 ms cost up to ~12,000 XPC round-trips per asset. Kept
+    /// as a `var` so a caller or test can override it.
+    var pollInterval: TimeInterval = 0.25
     /// Max consecutive thrown `ls` calls before declaring a transport failure.
     var maxLsRetries = 3
 

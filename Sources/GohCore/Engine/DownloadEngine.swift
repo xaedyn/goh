@@ -444,8 +444,11 @@ public struct DownloadEngine: Sendable {
             guard !buffer.isEmpty else { return }
             let pieceStart = range.start + written
             let pieceLength = UInt64(buffer.count)
-            try file.write(buffer, at: pieceStart)
-            try file.sync()
+            // write() auto-fsyncs on a full-buffer (checkpoint-sized) flush; only
+            // sync explicitly when it did not, so a partial/final flush is still
+            // made durable BEFORE recordCompletedPiece records it.
+            let synced = try file.write(buffer, at: pieceStart)
+            if !synced { try file.sync() }
             try recorder.recordCompletedPiece(start: pieceStart, length: pieceLength)
             written += pieceLength
             buffer.removeAll(keepingCapacity: true)
@@ -1002,8 +1005,13 @@ public struct DownloadEngine: Sendable {
             let pieceStart = range.start + written
             let pieceLength = UInt64(buffer.count)
             try trace.timed(index, .write) {
-                try file.write(buffer, at: pieceStart)
-                if checkpointRecorder != nil { try file.sync() }
+                // write() auto-fsyncs on a full-buffer (checkpoint-sized) flush.
+                // When a checkpointRecorder is present, the piece must be durable
+                // before it is recorded below — so sync explicitly only when
+                // write() didn't. With no recorder there is nothing to make
+                // crash-safe mid-stream; the closing file.finish() syncs.
+                let synced = try file.write(buffer, at: pieceStart)
+                if checkpointRecorder != nil && !synced { try file.sync() }
             }
             if let checkpointRecorder {
                 try checkpointRecorder.recordCompletedPiece(
