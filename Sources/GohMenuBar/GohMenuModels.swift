@@ -4,7 +4,6 @@ import GohCore
 nonisolated public enum GohMenuHealth: Sendable, Equatable {
     case connecting
     case connected
-    case reconnecting
     case failed(GohMenuError)
 }
 

@@ -183,11 +183,6 @@ nonisolated public struct GohMenuPresenter: Sendable {
             return ("Connecting to gohd", nil, nil)
         case .connected:
             return ("gohd connected", nil, nil)
-        case .reconnecting:
-            return (
-                "Reconnecting to gohd",
-                "Downloads continue in the daemon while the companion reconnects.",
-                nil)
         case .failed(.peerValidation(let detail)):
             return (
                 "Peer validation blocked",
