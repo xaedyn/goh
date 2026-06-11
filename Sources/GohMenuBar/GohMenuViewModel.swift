@@ -39,6 +39,7 @@ public final class GohMenuViewModel: ObservableObject {
     private var clipboardURL: URL?
     private var ledgerOutcome: ProvenanceReadOutcome?
     private var progressTask: Task<Void, Never>?
+    private var skewTask: Task<Void, Never>?
     private let trustReader: (any ProvenanceReading)?
     /// Called synchronously at the end of every `applyProgressSnapshots` call (seed first, then
     /// updates). Set this BEFORE calling `start()` so the seed delivery is captured. Plain closure
@@ -76,6 +77,7 @@ public final class GohMenuViewModel: ObservableObject {
 
     deinit {
         progressTask?.cancel()
+        skewTask?.cancel()
     }
 
     public func start() {
@@ -99,6 +101,7 @@ public final class GohMenuViewModel: ObservableObject {
             }
         }
         Task { await loadTrustOverview() }
+        skewTask = Task { [weak self] in await self?.checkDaemonSkew() }
     }
 
     public func loadTrustOverview() async {
@@ -126,6 +129,13 @@ public final class GohMenuViewModel: ObservableObject {
     public func stop() {
         progressTask?.cancel()
         progressTask = nil
+        skewTask?.cancel()
+        skewTask = nil
+    }
+
+    /// Test-only: awaits the daemon-skew check started by `start()`.
+    func awaitSkewCheckForTesting() async {
+        await skewTask?.value
     }
 
     public func refreshClipboard() async {

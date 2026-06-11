@@ -59,4 +59,29 @@ struct JobDisplayFormatterTests {
             bytesCompleted: 2048, bytesTotal: 1024, bytesPerSecond: 0)
         #expect(JobDisplayFormatter.progressText(progress) == "2 KB/1 KB (100%)")
     }
+
+    @Test("sizeText renders downloaded/total without the percent suffix")
+    func sizeTextOmitsPercent() {
+        let progress = JobProgress(
+            bytesCompleted: 512, bytesTotal: 1024, bytesPerSecond: 0)
+        #expect(JobDisplayFormatter.sizeText(progress) == "512 B/1 KB")
+    }
+
+    @Test("sizeText renders `bytesCompleted/?` when total is unknown")
+    func sizeTextUnknownTotal() {
+        let progress = JobProgress(
+            bytesCompleted: 2048, bytesTotal: nil, bytesPerSecond: 0)
+        #expect(JobDisplayFormatter.sizeText(progress) == "2 KB/?")
+    }
+
+    @Test("durationText renders seconds, minutes+seconds, and hours+minutes")
+    func durationTextTiers() {
+        #expect(JobDisplayFormatter.durationText(seconds: 0) == "0s")
+        #expect(JobDisplayFormatter.durationText(seconds: 45) == "45s")
+        #expect(JobDisplayFormatter.durationText(seconds: 59) == "59s")
+        #expect(JobDisplayFormatter.durationText(seconds: 90) == "1m 30s")
+        #expect(JobDisplayFormatter.durationText(seconds: 3599) == "59m 59s")
+        #expect(JobDisplayFormatter.durationText(seconds: 3600) == "1h 0m")
+        #expect(JobDisplayFormatter.durationText(seconds: 7380) == "2h 3m")
+    }
 }

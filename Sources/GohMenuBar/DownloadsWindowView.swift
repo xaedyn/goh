@@ -75,7 +75,7 @@ private struct DownloadRowView: View {
 
     private var secondaryText: String {
         var parts: [String] = []
-        if row.stateText == "Paused" { parts.append("Paused") }
+        if row.isPaused { parts.append("Paused") }
         parts.append(row.sizeText)
         if let eta = row.etaText { parts.append("ETA \(eta)") }
         if let elapsed = row.elapsedText { parts.append(elapsed) }

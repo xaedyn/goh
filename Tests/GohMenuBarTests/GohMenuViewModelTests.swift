@@ -329,6 +329,24 @@ struct GohMenuViewModelTests {
         #expect(model.daemonSkew == .staleIdle)
     }
 
+    @Test("start() runs the daemon-skew check so the stale-daemon notice surfaces")
+    func startRunsDaemonSkewCheck() async {
+        let client = FakeMenuClient()
+        client.lsReply = LsReply(jobs: [], featureLevel: nil)  // nil featureLevel → staleIdle
+        client.enqueue(.end)  // bounded progress stream so start() does not block
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+
+        model.start()
+        await model.awaitSkewCheckForTesting()
+
+        #expect(model.daemonSkew == .staleIdle)
+    }
+
     @Test("restartDaemon is available only when daemonSkew is staleIdle")
     func restartDaemonAvailableOnlyWhenStaleIdle() async {
         let client = FakeMenuClient()

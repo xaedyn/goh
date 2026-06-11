@@ -4,7 +4,6 @@ import GohCore
 nonisolated public enum GohMenuHealth: Sendable, Equatable {
     case connecting
     case connected
-    case reconnecting
     case failed(GohMenuError)
 }
 
@@ -56,6 +55,9 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
     public var title: String
     public var subtitle: String
     public var stateText: String
+    /// True when the job is paused. Drives paused-specific display without an
+    /// English-string compare against `stateText`.
+    public var isPaused: Bool
     public var progressText: String
     public var speedText: String
     public var destination: String
@@ -82,6 +84,7 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         title: String,
         subtitle: String,
         stateText: String,
+        isPaused: Bool = false,
         progressText: String,
         speedText: String,
         destination: String,
@@ -98,6 +101,7 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         self.title = title
         self.subtitle = subtitle
         self.stateText = stateText
+        self.isPaused = isPaused
         self.progressText = progressText
         self.speedText = speedText
         self.destination = destination

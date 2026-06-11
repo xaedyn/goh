@@ -46,7 +46,7 @@ public enum JobDisplayFormatter {
     /// which we deliberately make consistent.
     public static func progressText(_ progress: JobProgress) -> String {
         guard let total = progress.bytesTotal else {
-            return "\(formatBytes(progress.bytesCompleted))/?"
+            return sizeText(progress)
         }
         let percent: Int
         if total == 0 {
@@ -56,6 +56,31 @@ public enum JobDisplayFormatter {
                 (Double(progress.bytesCompleted) / Double(total) * 100).rounded())
             percent = min(100, max(0, rawPercent))
         }
-        return "\(formatBytes(progress.bytesCompleted))/\(formatBytes(total)) (\(percent)%)"
+        return "\(sizeText(progress)) (\(percent)%)"
+    }
+
+    /// Formats a job's downloaded/total size as `bytesCompleted/bytesTotal`,
+    /// or `bytesCompleted/?` when the total is unknown.
+    ///
+    /// This is `progressText` without the trailing ` (percent%)` suffix — used
+    /// where the percent is shown separately (e.g. a progress bar already
+    /// conveys the fraction).
+    public static func sizeText(_ progress: JobProgress) -> String {
+        guard let total = progress.bytesTotal else {
+            return "\(formatBytes(progress.bytesCompleted))/?"
+        }
+        return "\(formatBytes(progress.bytesCompleted))/\(formatBytes(total))"
+    }
+
+    /// Formats a whole-second duration as `Ns`, `Nm Ns`, or `Nh Nm`.
+    ///
+    /// Sub-minute durations show seconds; under an hour shows minutes and
+    /// seconds; an hour or more shows hours and minutes (seconds dropped).
+    /// Callers holding a fractional `Double` convert to whole seconds first —
+    /// truncating or rounding per their own semantics.
+    public static func durationText(seconds: UInt64) -> String {
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+        return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
     }
 }

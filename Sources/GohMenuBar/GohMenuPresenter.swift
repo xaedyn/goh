@@ -79,14 +79,16 @@ nonisolated public struct GohMenuPresenter: Sendable {
         if job.state == .active, let total = job.progress.bytesTotal, job.progress.bytesPerSecond > 0 {
             let remaining = total >= job.progress.bytesCompleted ? total - job.progress.bytesCompleted : 0
             let eta = remaining / job.progress.bytesPerSecond
-            etaText = etaString(seconds: eta)
+            etaText = JobDisplayFormatter.durationText(seconds: eta)
         } else {
             etaText = nil
         }
 
         let referenceDate: Date = job.completedAt ?? job.lastProgressAt ?? Date()
         let elapsedSeconds = max(0, referenceDate.timeIntervalSince(job.createdAt))
-        let elapsedText: String? = elapsedSeconds > 0 ? elapsedString(seconds: elapsedSeconds) : nil
+        let elapsedText: String? = elapsedSeconds > 0
+            ? JobDisplayFormatter.durationText(seconds: UInt64(elapsedSeconds))
+            : nil
 
         let connectionText: String? = job.actualConnectionCount > 0
             ? "\(job.actualConnectionCount) connection\(job.actualConnectionCount == 1 ? "" : "s")"
@@ -111,30 +113,18 @@ nonisolated public struct GohMenuPresenter: Sendable {
                 : destinationURL.lastPathComponent,
             subtitle: job.destination,
             stateText: stateDisplay(for: job.state),
+            isPaused: job.state == .paused,
             progressText: JobDisplayFormatter.progressText(job.progress),
             speedText: JobDisplayFormatter.formatBytes(job.progress.bytesPerSecond) + "/s",
             destination: job.destination,
             url: job.url,
             controls: controls(for: job),
             progressFraction: progressFraction,
-            sizeText: JobDisplayFormatter.progressText(job.progress),
+            sizeText: JobDisplayFormatter.sizeText(job.progress),
             etaText: etaText,
             elapsedText: elapsedText,
             connectionText: connectionText,
             verifyStatus: verifyStatus)
-    }
-
-    private func etaString(seconds: UInt64) -> String {
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
-        return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
-    }
-
-    private func elapsedString(seconds: Double) -> String {
-        let s = UInt64(seconds)
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
-        return "\(s / 3600)h \((s % 3600) / 60)m"
     }
 
     /// Canonicalize a filesystem path for ledger-key matching, mirroring the
@@ -183,11 +173,6 @@ nonisolated public struct GohMenuPresenter: Sendable {
             return ("Connecting to gohd", nil, nil)
         case .connected:
             return ("gohd connected", nil, nil)
-        case .reconnecting:
-            return (
-                "Reconnecting to gohd",
-                "Downloads continue in the daemon while the companion reconnects.",
-                nil)
         case .failed(.peerValidation(let detail)):
             return (
                 "Peer validation blocked",
