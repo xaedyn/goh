@@ -73,6 +73,22 @@ struct GohMenuPresenterTests {
         #expect(state.rows[0].progressText == "2 KB/1 KB (100%)")
     }
 
+    @Test("isPaused is true for a paused job and false otherwise")
+    func isPausedReflectsJobState() {
+        let state = GohMenuPresenter().state(
+            health: .connected,
+            snapshots: [
+                snapshot(id: 1, state: .paused, completed: 512, total: 1024, speed: 0),
+                snapshot(id: 2, state: .active, completed: 512, total: 1024, speed: 0),
+            ],
+            clipboardURL: nil)
+
+        let paused = state.rows.first { $0.id == 1 }
+        let active = state.rows.first { $0.id == 2 }
+        #expect(paused?.isPaused == true)
+        #expect(active?.isPaused == false)
+    }
+
     @Test("sizeText shows downloaded/total without the redundant percent")
     func sizeTextOmitsPercentWhileProgressTextKeepsIt() {
         let state = GohMenuPresenter().state(

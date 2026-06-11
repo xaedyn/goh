@@ -113,6 +113,7 @@ nonisolated public struct GohMenuPresenter: Sendable {
                 : destinationURL.lastPathComponent,
             subtitle: job.destination,
             stateText: stateDisplay(for: job.state),
+            isPaused: job.state == .paused,
             progressText: JobDisplayFormatter.progressText(job.progress),
             speedText: JobDisplayFormatter.formatBytes(job.progress.bytesPerSecond) + "/s",
             destination: job.destination,
