@@ -77,4 +77,40 @@ struct LockfileCodecTests {
         let first = LockfileCodec.encode(lock).components(separatedBy: "\n").first!
         #expect(first.hasPrefix("lockfileVersion"))
     }
+
+    // A round-trip (encode→decode) proves the encoder is *parseable*, not that
+    // its byte layout is *frozen*. `gohfile.lock` is the on-disk wire format an
+    // external tool may read, so a field-order / whitespace / quoting drift that
+    // still round-trips would ship silently. This pins the encoder output
+    // byte-for-byte against a committed golden — calibration approach: the
+    // fixture was produced once by this exact encoder, then frozen.
+    @Test("encoder output is byte-for-byte stable against the committed golden")
+    func encoderByteGolden() throws {
+        // Representative lockfile: two entries; the second URL carries an
+        // embedded double-quote so the golden also pins TOML string escaping.
+        let entry1 = LockfileCodec.LockEntry(
+            url: "https://example.org/datasets/mnist.tar.gz",
+            path: "data/mnist.tar.gz",
+            sha256: "sha256:6f1e2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f",
+            size: 11594722,
+            downloadedAt: "2026-05-29T14:08:51Z"
+        )
+        let entry2 = LockfileCodec.LockEntry(
+            url: "https://example.org/datasets/labels \"v2\".csv",
+            path: "data/labels.csv",
+            sha256: "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            size: 4096,
+            downloadedAt: "2026-05-29T14:09:03Z"
+        )
+        let lock = LockfileCodec.Lockfile(
+            manifestHash: "sha256:a3f9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1",
+            entries: [entry1, entry2]
+        )
+
+        let encoded = LockfileCodec.encode(lock)
+        let golden = try fixture("toml-lockfile-encoded-golden")
+
+        #expect(encoded == golden,
+            "lockfile encoder output drifted from the committed golden — the on-disk wire format changed")
+    }
 }
