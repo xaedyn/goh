@@ -3,7 +3,7 @@ date: 2026-06-10
 feature: goh-forget
 type: phase-artifact
 phase: 1
-status: planned
+status: complete
 ---
 
 # Phase 1 Complete — Interface Contract for Phase 2 (Tray)

@@ -76,7 +76,7 @@ All Phase 1 files; see Task breakdown below.
 
 ## Dependency Order
 
-```
+```text
 Task 0  STATE.md branch note
 Task 1  ProvenanceStore.forget (store method + tests)
 Task 2  Command wire types (ForgetProvenanceRequest, ForgetProvenanceReply, CommandOutcome.forgotProvenance, CommandService arm)
@@ -496,7 +496,7 @@ In `Sources/GohCore/Model/GohFeatureLevel.swift`, change `public static let curr
 
 Read the existing featureLevel section in `DESIGN.md` and add after the featureLevel-1 paragraph:
 
-```
+```text
 **featureLevel 2** (`GohFeatureLevel.current = 2`, merged with `feat/goh-forget`)
 — the daemon honors the `forgetProvenance` command (`Command.forgetProvenance`,
 `ForgetProvenanceRequest`, `ForgetProvenanceReply`). A new CLI (`featureLevel < 2`
@@ -1558,7 +1558,7 @@ In `run()`, after `case .daemon(let force):` dispatch arm (and before the closin
 
 In `usage()`, after the `goh rm [--keep] <id>` line, add:
 
-```
+```text
           goh forget <path>              (removes a tracked path's provenance entry; exit: 0 ok · 1 untracked · 6 ledger-error)
           goh forget --missing           (dry-run: list absent-file entries; exit: 0 ok · 6 ledger-error)
           goh forget --missing --confirm (remove absent-file entries; exit: 0 ok · 1 partial/error · 6 ledger-error)

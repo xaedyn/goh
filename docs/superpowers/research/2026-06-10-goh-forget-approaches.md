@@ -12,7 +12,9 @@ Both approaches share the same skeleton (settled by codebase precedent, not a li
   confirmation (git-rm model). Works on any tracked path; a path with no ledger entry is a
   clear non-zero "not tracked" error (AC3).
 - New `Command.forgetProvenance(request:)` + `ProvenanceStore.forget(paths:)` mirroring the
-  `recordVerifiedProvenance` end-to-end path; reply is `.ack`; canonicalization in the daemon.
+  `recordVerifiedProvenance` end-to-end path; canonicalization in the daemon. (Reply: spec
+  review later replaced the original `.ack` with a count-bearing `ForgetProvenanceReply{forgotCount}`
+  so the CLI can detect a zero/short removal — see the spec and `CommandReply.swift`.)
 - `--missing` candidate set = entries whose file is absent via one `lstat` (`LiveFileStatProbe`
   → `.notFound`), never a re-hash.
 - `protocolVersion` stays 4; `ProvenanceRecord.currentVersion` stays 1; `GohFeatureLevel` → 2
