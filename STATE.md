@@ -34,10 +34,28 @@ of the CLI runner and a final **stack-aware-code-review APPROVED** over the whol
 launchd plist. One advisory follow-up: the `--missing` parse tests read the real default
 ledger (read-only, tolerant assertions — safe but not fully hermetic).
 
-**NEXT: Phase 2 (tray Forget action)** — add `GohMenuClient.forget(paths:)` to the
-protocol + all 5 conformers, a TrustWindowViewModel forget action with a preview/confirm
-sheet, and a Forget affordance on MISSING rows. See
-`docs/superpowers/progress/2026-06-10-goh-forget-phase1.md` for the contract Phase 2 builds on.
+**Phase 1 MERGED via #113.**
+
+### 2026-06-10 (goh forget Phase 2) — **`feat/goh-forget-tray` — tray Forget action COMPLETE, PR open**
+
+Phase 2 of goh forget (deferred from the approved spec, AC5). Plan
+(`docs/plans/2026-06-10-goh-forget-phase2-plan.md`) ran adversarial-plan-review **2 rounds
+→ approved** — round 1 caught a real gate bug (gating on `displayStatus == .missing` would
+hide Forget on verified-then-deleted files, the common case, because `displayStatus` returns
+`.verified` whenever `verifiedAt != nil`); fixed by gating on the fast-check truth
+`fastStatuses[path] == .missing`, exposed as a unit-tested `isForgettable(path:)` predicate.
+
+3 atomic commits (`b402c4e`..`6ac60d2`): `GohMenuClient.forget(paths:)` + 5 conformers →
+`TrustWindowViewModel.forgetRow`/`isForgettable` + tests → `TrustWindowView` visible Forget
+button on MISSING rows + destructive `.confirmationDialog`. Executed via
+subagent-driven-development; **final stack-aware-code-review APPROVED** (all 10 categories
+PASS). `swift build -warnings-as-errors` clean; `swift test` **950/950** (+5). **No
+daemon/wire/store change** — `git diff main -- Sources/GohCore` empty; protocolVersion 4,
+ProvenanceRecord v1 intact. Spec-deviation note: spec §6 said a "preview/confirm sheet"; the
+tray ships a visible Forget button + `.confirmationDialog` (more HIG-idiomatic destructive
+confirm) — recorded in the PR.
+
+**goh forget feature is now COMPLETE** (CLI+daemon in #113, tray in this PR).
 
 ### 2026-06-10 (code-quality review session) — **Full-project review → phased fix train (PRs #109–112 MERGED)**
 

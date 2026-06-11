@@ -5,6 +5,9 @@ import GohCore
 public struct TrustWindowView: View {
     @ObservedObject private var viewModel: TrustWindowViewModel
 
+    /// Path whose Forget confirmation dialog is currently presented (nil = none).
+    @State private var confirmForgetPath: String?
+
     public init(viewModel: TrustWindowViewModel) {
         self.viewModel = viewModel
     }
@@ -64,16 +67,48 @@ public struct TrustWindowView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(viewModel.rows, id: \.displayPath) { row in
-                        TrustEntryRowView(
-                            row: row,
-                            liveResult: liveResult(for: row),
-                            displayStatus: GohTrustPresenter.displayStatus(
-                                verifiedAt: row.verifiedAt,
-                                fastStatus: viewModel.fastStatuses[row.displayPath]))
+                        HStack(alignment: .top, spacing: 8) {
+                            TrustEntryRowView(
+                                row: row,
+                                liveResult: liveResult(for: row),
+                                displayStatus: GohTrustPresenter.displayStatus(
+                                    verifiedAt: row.verifiedAt,
+                                    fastStatus: viewModel.fastStatuses[row.displayPath]))
+                            // AC5: a visible (discoverable) Forget affordance — ONLY on rows
+                            // whose file is MISSING on disk (ENOENT). Gated on the tested
+                            // `isForgettable` predicate (fast-check truth), NOT displayStatus,
+                            // so a verified-then-deleted file still exposes Forget while a
+                            // present / present-but-unreadable file exposes none.
+                            if viewModel.isForgettable(path: row.displayPath) {
+                                Button {
+                                    confirmForgetPath = row.displayPath     // VERBATIM canonical destinationPath
+                                } label: {
+                                    Label("Forget", systemImage: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Remove this missing file's saved provenance record")
+                            }
+                        }
                     }
                 }
             }
             .frame(maxHeight: 320)
+            .confirmationDialog(
+                "Forget this download's provenance?",
+                isPresented: Binding(
+                    get: { confirmForgetPath != nil },
+                    set: { if !$0 { confirmForgetPath = nil } }),
+                titleVisibility: .visible,
+                presenting: confirmForgetPath
+            ) { path in
+                Button("Forget", role: .destructive) {
+                    confirmForgetPath = nil
+                    Task { await viewModel.forgetRow(path: path) }
+                }
+                Button("Cancel", role: .cancel) { confirmForgetPath = nil }
+            } message: { path in
+                Text("Removes the saved download record for \(URL(fileURLWithPath: path).lastPathComponent). The file is already missing; this does not delete anything from disk.")
+            }
         }
     }
 

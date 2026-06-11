@@ -122,6 +122,27 @@ public final class TrustWindowViewModel: ObservableObject {
         fastStatuses = statuses
     }
 
+    // MARK: - Forget (AC5)
+
+    /// Whether a row's file is currently MISSING on disk (ENOENT), making its
+    /// provenance entry eligible for a one-click Forget. Keys off the fast-check
+    /// truth (`fastStatuses`), NOT the composite display status: a file that was
+    /// verified and later deleted carries `verifiedAt != nil`, so its `displayStatus`
+    /// is `.verified(at:)` even though its file is gone — gating on display status
+    /// would hide Forget on exactly that common case. `FastCheckStatus.missing` is
+    /// strictly ENOENT, so a present-but-unreadable file is NOT forgettable.
+    public func isForgettable(path: String) -> Bool {
+        fastStatuses[path] == .missing
+    }
+
+    /// Removes the given path's provenance entry via the daemon, then refreshes the
+    /// overview so the row disappears. Best-effort: a send error is swallowed (never
+    /// surfaced as an error state), matching the `recordVerifiedProvenance` idiom.
+    public func forgetRow(path: String) async {
+        try? await menuClient?.forget(paths: [path])
+        await loadOverview()
+    }
+
     // MARK: - Verify now
 
     /// Start a background verify run. Disabled while already running.
