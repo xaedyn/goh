@@ -84,8 +84,8 @@ struct TrustWindowViewModelBackfillTests {
         await vm.loadOverview()
         vm.startVerify()
 
-        // Wait for the run to complete.
-        try await Task.sleep(for: .seconds(3))
+        // Wait for the off-main run to settle (deterministic — no fixed sleep).
+        try await awaitRunSettled(vm)
 
         // The finished run should have sent at least 1 baseline.
         #expect(!spy.recordedBatches.isEmpty,
@@ -129,20 +129,29 @@ struct TrustWindowViewModelBackfillTests {
 
         await vm.loadOverview()
         vm.startVerify()
-        // Cancel almost immediately — before both files finish.
+        // Cancel almost immediately — before both files finish. This small sleep is
+        // inherent to the cancel timing (let the run start), not a settle wait.
         try await Task.sleep(for: .milliseconds(50))
         vm.cancelVerify()
 
-        // Wait for the run to settle.
-        try await Task.sleep(for: .seconds(2))
+        // Wait for the off-main run to settle (deterministic — no fixed sleep).
+        try await awaitRunSettled(vm)
 
-        // Even a cancelled run must send whatever baselines were collected.
-        // (May be 0 if cancelled before any file completed — that is acceptable.)
-        // The key invariant: no crash, no UI error.
-        // If at least 1 entry was verified before cancel, it was sent.
-        // We assert the spy was called at most once (not multiple times for the same run).
+        // The run must settle to a TERMINAL state — `.cancelled` if the cancel beat
+        // completion, or `.finished` if the tiny files completed first (both valid; the
+        // race is inherent). The real behavioral checks (vs the old near-vacuous
+        // `count <= 1` alone): it is never stuck in `.running`/`.idle`, it sends at most
+        // one batch, and it never sends an empty batch.
+        switch vm.runState {
+        case .cancelled, .finished:
+            break
+        default:
+            Issue.record("cancelled run must settle to a terminal state; got \(vm.runState)")
+        }
         #expect(spy.recordedBatches.count <= 1,
             "Baseline send should happen at most once per run (collected batch)")
+        #expect(spy.recordedBatches.allSatisfy { !$0.isEmpty },
+            "a cancelled run must never send an empty baseline batch")
     }
 
     // Best-effort: send failure must not affect runState or UI.
@@ -174,13 +183,27 @@ struct TrustWindowViewModelBackfillTests {
 
         await vm.loadOverview()
         vm.startVerify()
-        try await Task.sleep(for: .seconds(3))
+        try await awaitRunSettled(vm)
 
         // runState must be .finished (not .failed), and the VM is not stuck.
         if case .finished = vm.runState {
             // Expected — send failure must not corrupt run state.
         } else {
             Issue.record("runState must be .finished even when send throws; got \(vm.runState)")
+        }
+    }
+
+    /// Deterministically waits for the off-main verify run to leave `.running`,
+    /// replacing fixed multi-second sleeps. The `await` yields so the MainActor can
+    /// apply the queued terminal `runState`; bounded (~4s) so a real hang fails fast.
+    private func awaitRunSettled(_ vm: TrustWindowViewModel) async throws {
+        var spins = 0
+        while case .running = vm.runState, spins < 2000 {
+            try await Task.sleep(for: .milliseconds(2))
+            spins += 1
+        }
+        if case .running = vm.runState {
+            Issue.record("verify run did not settle after \(spins) spins (~\(spins * 2) ms) — still .running")
         }
     }
 }
