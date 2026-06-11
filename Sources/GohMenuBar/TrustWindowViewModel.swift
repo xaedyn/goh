@@ -280,17 +280,12 @@ public final class TrustWindowViewModel: ObservableObject {
                 if rate > 0 {
                     let remaining = Double(max(0, p.totalBytes - p.bytesHashed))
                     let secs = remaining / rate
-                    etaText = "ETA " + Self.formatDuration(secs)
+                    etaText = "ETA " + JobDisplayFormatter.durationText(
+                        seconds: UInt64(max(0, secs.rounded())))
                 }
             }
         }
         return VerifyLiveStats(fraction: fraction, byteText: byteText, etaText: etaText)
     }
 
-    private static func formatDuration(_ seconds: Double) -> String {
-        let s = Int(seconds.rounded())
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
-        return "\(s / 3600)h \((s % 3600) / 60)m"
-    }
 }

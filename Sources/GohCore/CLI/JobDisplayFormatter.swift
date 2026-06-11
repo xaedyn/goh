@@ -71,4 +71,16 @@ public enum JobDisplayFormatter {
         }
         return "\(formatBytes(progress.bytesCompleted))/\(formatBytes(total))"
     }
+
+    /// Formats a whole-second duration as `Ns`, `Nm Ns`, or `Nh Nm`.
+    ///
+    /// Sub-minute durations show seconds; under an hour shows minutes and
+    /// seconds; an hour or more shows hours and minutes (seconds dropped).
+    /// Callers holding a fractional `Double` convert to whole seconds first —
+    /// truncating or rounding per their own semantics.
+    public static func durationText(seconds: UInt64) -> String {
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+        return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+    }
 }
