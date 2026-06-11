@@ -129,6 +129,13 @@ public struct SafariBinaryCookiesParser: Sendable {
         }
 
         let pageCount = Int(try reader.readUInt32BE(context: "page count"))
+        // Cap before building the (0..<pageCount) loop: an attacker-supplied
+        // count near UInt32.max would otherwise spin billions of iterations /
+        // allocations before readBytes eventually throws. Real Safari cookie
+        // files have at most a handful of pages; 65_536 is generous-but-bounded.
+        guard pageCount <= Self.maxPageCount else {
+            throw SafariBinaryCookiesError.truncated(context: "page count \(pageCount) exceeds cap \(Self.maxPageCount)")
+        }
         let pageSizes = try (0..<pageCount).map { pageIndex in
             Int(try reader.readUInt32BE(context: "page \(pageIndex) size"))
         }
@@ -148,6 +155,14 @@ public struct SafariBinaryCookiesParser: Sendable {
         }
 
         let cookieCount = Int(try reader.readUInt32LE(context: "page \(pageIndex) cookie count"))
+        // Cap before the (0..<cookieCount) loop, same rationale as page count:
+        // an absurd count would otherwise allocate/iterate before readBytes
+        // throws. A single page holds far fewer than a million cookies; the
+        // bound stays generous while keeping a crafted file from hanging us.
+        guard cookieCount <= Self.maxCookieCountPerPage else {
+            throw SafariBinaryCookiesError.truncated(
+                context: "page \(pageIndex) cookie count \(cookieCount) exceeds cap \(Self.maxCookieCountPerPage)")
+        }
         let offsets = try (0..<cookieCount).map { cookieIndex in
             try reader.readUInt32LE(context: "page \(pageIndex) cookie \(cookieIndex) offset")
         }
@@ -274,6 +289,13 @@ public struct SafariBinaryCookiesParser: Sendable {
     }
 
     private static let recordHeaderSize = 56
+
+    /// Upper bound on the file's page count — guards the page-size loop against
+    /// a crafted count. Real Safari Cookies.binarycookies files have a handful.
+    static let maxPageCount = 65_536
+
+    /// Upper bound on a single page's cookie count — guards the offset loop.
+    static let maxCookieCountPerPage = 1_000_000
 }
 
 private struct BinaryCookieReader {

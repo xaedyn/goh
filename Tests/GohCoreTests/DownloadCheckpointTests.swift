@@ -51,6 +51,44 @@ struct DownloadCheckpointTests {
         ])
     }
 
+    @Test("init merges unsorted/overlapping input identically to sequential recordCompletedPiece, preserving updatedAt")
+    func initMergesInOnePassPreservingUpdatedAt() {
+        let inputPieces = [
+            CheckpointPiece(start: 3 << 20, length: 1 << 20),
+            CheckpointPiece(start: 0, length: 1 << 20),
+            CheckpointPiece(start: 1 << 20, length: 2 << 20),  // adjacent to start 0 piece
+            CheckpointPiece(start: 2 << 20, length: 3 << 20),  // overlaps prior + closes gap to 3<<20
+            CheckpointPiece(start: 123, length: 0),            // zero-length: dropped
+        ]
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let viaInit = DownloadCheckpoint(
+            jobID: 1,
+            url: "https://example.com/f",
+            destination: "/tmp/f",
+            partialFileSize: 5 << 20,
+            totalBytes: 5 << 20,
+            completedPieces: inputPieces,
+            updatedAt: fixedDate)
+
+        // Reference: apply the same pieces sequentially via recordCompletedPiece.
+        var sequential = DownloadCheckpoint(
+            jobID: 1,
+            url: "https://example.com/f",
+            destination: "/tmp/f",
+            partialFileSize: 5 << 20,
+            totalBytes: 5 << 20,
+            updatedAt: fixedDate)
+        for piece in inputPieces {
+            sequential.recordCompletedPiece(start: piece.start, length: piece.length)
+        }
+
+        #expect(viaInit.completedPieces == sequential.completedPieces)
+        #expect(viaInit.completedPieces == [CheckpointPiece(start: 0, length: 5 << 20)])
+        // updatedAt is the passed-in value, NOT a fresh Date() from the merge.
+        #expect(viaInit.updatedAt == fixedDate)
+    }
+
     @Test("save then load round-trips a checkpoint")
     func saveLoadRoundTrip() throws {
         let directory = try temporaryDirectory()

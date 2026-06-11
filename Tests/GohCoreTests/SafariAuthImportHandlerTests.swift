@@ -65,6 +65,31 @@ struct SafariAuthImportHandlerTests {
         ) == "old=still-here")
     }
 
+    @Test("an over-cap cookie file is rejected without buffering the whole thing")
+    func oversizedFileIsRejected() throws {
+        // Inject a tiny cap so the test stays cheap; production uses 64 MiB.
+        let importer = SafariAuthImporter(maxFileSize: 1_024)
+        let store = ImportedCookieStore(cookies: [
+            cookie(domain: ".example.com", name: "old", value: "still-here"),
+        ])
+        // A file comfortably over the injected 1 KiB cap.
+        let fileURL = try temporaryCookieFile(contents: Data(repeating: 0x41, count: 8_192))
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let fd = open(fileURL.path, O_RDONLY)
+        #expect(fd >= 0)
+        defer { close(fd) }
+
+        #expect(throws: SafariAuthImportError.self) {
+            try importer.importCookies(fromFileDescriptor: fd, into: store)
+        }
+        // Existing cookies untouched on rejection.
+        #expect(store.snapshotHeader(
+            forJobID: 9,
+            url: URL(string: "https://downloads.example.com/archive.zip")!,
+            now: Date(timeIntervalSinceReferenceDate: 120)
+        ) == "old=still-here")
+    }
+
     private func temporaryCookieFile(contents: Data) throws -> URL {
         let fileURL = FileManager.default.temporaryDirectory
             .appending(path: "goh-auth-import-handler-\(UUID().uuidString)")
