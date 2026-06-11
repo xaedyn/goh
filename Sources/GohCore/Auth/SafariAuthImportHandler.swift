@@ -4,13 +4,24 @@ import Foundation
 public enum SafariAuthImportError: Error, Equatable {
     case readFailed(errnoCode: Int32)
     case tooManyCookies(Int)
+    case fileTooLarge(bytes: Int)
 }
 
 public struct SafariAuthImporter: Sendable {
-    private let parser: SafariBinaryCookiesParser
+    /// Default hard cap on the cookie file we will buffer. Real Safari
+    /// Cookies.binarycookies files are kilobytes; 64 MiB is generous-but-bounded
+    /// and stops a crafted/huge fd from exhausting memory before parsing.
+    public static let defaultMaxFileSize = 64 * 1024 * 1024
 
-    public init(parser: SafariBinaryCookiesParser = SafariBinaryCookiesParser()) {
+    private let parser: SafariBinaryCookiesParser
+    private let maxFileSize: Int
+
+    public init(
+        parser: SafariBinaryCookiesParser = SafariBinaryCookiesParser(),
+        maxFileSize: Int = SafariAuthImporter.defaultMaxFileSize
+    ) {
         self.parser = parser
+        self.maxFileSize = maxFileSize
     }
 
     public func importCookies(
@@ -38,6 +49,9 @@ public struct SafariAuthImporter: Sendable {
 
             if bytesRead > 0 {
                 data.append(contentsOf: buffer.prefix(bytesRead))
+                guard data.count <= maxFileSize else {
+                    throw SafariAuthImportError.fileTooLarge(bytes: data.count)
+                }
             } else if bytesRead == 0 {
                 return data
             } else if errno != EINTR {
@@ -78,6 +92,8 @@ public struct SafariAuthImportHandler: Sendable {
             "could not read Safari cookie file: errno \(errnoCode)"
         case SafariAuthImportError.tooManyCookies(let count):
             "Safari cookie file contains too many cookies: \(count)"
+        case SafariAuthImportError.fileTooLarge(let bytes):
+            "Safari cookie file is too large: \(bytes) bytes"
         case is SafariBinaryCookiesError:
             "malformed Safari cookie file: \(error)"
         default:

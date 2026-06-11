@@ -119,6 +119,34 @@ struct SafariBinaryCookiesTests {
         }
     }
 
+    @Test("rejects an absurd page count promptly instead of spinning")
+    func rejectAbsurdPageCount() {
+        var file = Data("cook".utf8)
+        file.appendUInt32BE(0xFFFF_FFFF)   // ~4.29B pages — must be capped, not iterated
+
+        #expect(throws: SafariBinaryCookiesError.self) {
+            try SafariBinaryCookiesParser().parse(file)
+        }
+    }
+
+    @Test("rejects an absurd per-page cookie count promptly instead of spinning")
+    func rejectAbsurdCookieCount() {
+        // A single page declaring a near-UInt32.max cookie count. The cap must
+        // fire before the (0..<cookieCount) offset loop allocates/iterates.
+        var page = Data([0, 0, 1, 0])      // page magic
+        page.appendUInt32LE(0xFFFF_FFFF)   // ~4.29B cookies
+
+        var file = Data("cook".utf8)
+        file.appendUInt32BE(1)             // one page
+        file.appendUInt32BE(UInt32(page.count))
+        file.append(page)
+        file.appendUInt64BE(0)
+
+        #expect(throws: SafariBinaryCookiesError.self) {
+            try SafariBinaryCookiesParser().parse(file)
+        }
+    }
+
     @Test("cookie header includes only domain, path, secure, and expiry matches")
     func cookieHeaderFiltersMatches() throws {
         let now = Date(timeIntervalSinceReferenceDate: 1_000)
