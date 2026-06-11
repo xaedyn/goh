@@ -71,10 +71,10 @@ struct SecureEnclaveSignerTests {
     // MARK: - SE path (gated — skip gracefully in CI VM)
 
     // AC4: SecureEnclaveSigner.createOrOpen persists only the opaque handle
-    @Test("AC4: createOrOpen creates a handle file and persists only opaque bytes")
+    @Test("AC4: createOrOpen creates a handle file and persists only opaque bytes",
+          .enabled(if: SecureEnclave.isAvailable))
     func createOrOpenPersistsHandle() throws {
         // AC4: hardware-rooted — private material is only the opaque handle
-        guard SecureEnclave.isAvailable else { return }  // skip in CI VM without SE
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("goh-se-test-\(UUID().uuidString)")
@@ -104,10 +104,10 @@ struct SecureEnclaveSignerTests {
     }
 
     // AC1/AC4: SE signer produces a valid ECDSA-P256 signature verifiable with embedded pub
-    @Test("AC1/AC4: SE signer sign→verify round-trip")
+    @Test("AC1/AC4: SE signer sign→verify round-trip",
+          .enabled(if: SecureEnclave.isAvailable))
     func seSignerRoundTrip() throws {
         // AC1: tamper-evident; AC4: hardware-rooted
-        guard SecureEnclave.isAvailable else { return }
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("goh-se-sign-\(UUID().uuidString)")
@@ -135,9 +135,9 @@ struct SecureEnclaveSignerTests {
     }
 
     // createOrOpen is idempotent — re-opening an existing handle returns the same kid
-    @Test("createOrOpen is idempotent: same kid on second open")
+    @Test("createOrOpen is idempotent: same kid on second open",
+          .enabled(if: SecureEnclave.isAvailable))
     func createOrOpenIsIdempotent() throws {
-        guard SecureEnclave.isAvailable else { return }
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("goh-se-idem-\(UUID().uuidString)")
@@ -155,9 +155,9 @@ struct SecureEnclaveSignerTests {
     // This is the O_EXCL "already-exists → open existing" contract from spec §4.
     // The sequential-re-open test above only verifies the happy path; this test verifies
     // that a pre-created handle is preserved (not clobbered) and yields the same key identity.
-    @Test("createOrOpen: handle already present → opens existing key, does not clobber")
+    @Test("createOrOpen: handle already present → opens existing key, does not clobber",
+          .enabled(if: SecureEnclave.isAvailable))
     func createOrOpenDoesNotClobberExistingHandle() throws {
-        guard SecureEnclave.isAvailable else { return }
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("goh-se-noclobber-\(UUID().uuidString)")

@@ -144,9 +144,9 @@ struct GohAttestIntegrationTests {
     // MARK: - Full SE pipeline (gated)
 
     // AC1/AC4: full SE pipeline — attest with real SE key, verify offline
-    @Test("AC1/AC4: SE pipeline — attest + verify-attestation end-to-end")
+    @Test("AC1/AC4: SE pipeline — attest + verify-attestation end-to-end",
+          .enabled(if: SecureEnclave.isAvailable))
     func sePipeline() throws {
-        guard SecureEnclave.isAvailable else { return }
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("goh-int-se-\(UUID().uuidString)")

@@ -123,9 +123,9 @@ struct GohAttestCommandTests {
     // MARK: - SE path (gated)
 
     // AC4: attest with real SE key produces a valid artifact
-    @Test("AC4: attest with real SE key produces artifact with SE-signed sig")
+    @Test("AC4: attest with real SE key produces artifact with SE-signed sig",
+          .enabled(if: SecureEnclave.isAvailable))
     func seSignedAttest() throws {
-        guard SecureEnclave.isAvailable else { return }
 
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("goh-attest-se-\(UUID().uuidString)")
