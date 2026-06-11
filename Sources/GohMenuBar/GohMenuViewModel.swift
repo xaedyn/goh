@@ -14,6 +14,10 @@ public protocol GohMenuClient: AnyObject {
     func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws
     /// One-shot `.ls` call — returns the daemon's current job list and feature level.
     func ls() async throws -> LsReply
+    /// Removes the given paths' provenance entries via the daemon (`forgetProvenance`).
+    /// Best-effort from the UI's perspective: callers swallow errors (the row simply
+    /// stays until a successful run), matching `recordVerifiedProvenance`.
+    func forget(paths: [String]) async throws
 }
 
 @MainActor

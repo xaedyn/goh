@@ -425,6 +425,8 @@ private final class FakeMenuClient: GohMenuClient {
 
     func ls() async throws -> LsReply { lsReply }
 
+    func forget(paths: [String]) async throws {}
+
     func enqueue(_ event: FakeStreamEvent) {
         streamEvents.append(event)
     }
@@ -499,4 +501,5 @@ private final class LongLivedMenuClient: GohMenuClient {
     func remove(jobID: UInt64, keepPartialFile: Bool) async throws {}
     func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws {}
     func ls() async throws -> LsReply { LsReply(jobs: [], featureLevel: nil) }
+    func forget(paths: [String]) async throws {}
 }

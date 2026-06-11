@@ -94,6 +94,17 @@ final class LiveGohMenuClient: GohMenuClient {
         }
     }
 
+    func forget(paths: [String]) async throws {
+        do {
+            let _: ForgetProvenanceReply = try await Self.sendOneShot(
+                .forgetProvenance(request: ForgetProvenanceRequest(paths: paths)),
+                expecting: ForgetProvenanceReply.self,
+                validationMode: validationMode)
+        } catch {
+            throw Self.map(error)
+        }
+    }
+
     private nonisolated static func makeSubscription(
         validationMode: PeerValidationMode
     ) throws -> LiveProgressSubscription {

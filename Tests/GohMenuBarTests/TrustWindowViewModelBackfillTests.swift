@@ -24,6 +24,15 @@ private final class SpyMenuClient: GohMenuClient {
     }
 
     func ls() async throws -> LsReply { LsReply(jobs: [], featureLevel: nil) }
+
+    // Spy state for forget (mirrors recordedBatches/shouldThrow)
+    var forgotPaths: [[String]] = []
+    var forgetShouldThrow = false
+
+    func forget(paths: [String]) async throws {
+        if forgetShouldThrow { throw GohMenuError.daemonUnavailable("spy forced") }
+        forgotPaths.append(paths)
+    }
 }
 
 // ── Fake ledger reader ────────────────────────────────────────────────────────
