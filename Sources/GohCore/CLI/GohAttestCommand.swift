@@ -213,7 +213,7 @@ public enum GohAttestCommand {
         try writeAtomically(data: data, to: url, permissions: 0o600)
     }
 
-    /// Atomic write: temp → chmod → fsync → rename → fsync(dir).
+    /// Atomic write: exclusive-create temp at target mode → fsync → rename → fsync(dir).
     private static func writeArtifactAtomically(data: Data, to path: String) throws {
         let url = URL(fileURLWithPath: path)
         try writeAtomically(data: data, to: url, permissions: 0o644)
@@ -224,9 +224,14 @@ public enum GohAttestCommand {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = dir.appending(path: ".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
         do {
-            try data.write(to: tmp)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: permissions], ofItemAtPath: tmp.path)
+            // Create the temp file AT its target mode from the first instant via
+            // O_CREAT|O_EXCL — no umask window where keys.json (0600) sits
+            // world-readable before a later chmod.
+            do {
+                try writeFileExclusively(data, to: tmp.path, mode: mode_t(permissions))
+            } catch is AtomicFileWriteError {
+                throw CocoaError(.fileWriteUnknown)
+            }
             let fd = open(tmp.path, O_RDONLY)
             if fd >= 0 {
                 defer { close(fd) }

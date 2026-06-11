@@ -167,6 +167,42 @@ struct ProvenanceStoreTests {
         #expect(posixPerms == 0o600)
     }
 
+    // Atomic write creates the temp at the target mode from the first instant
+    // (O_CREAT|O_EXCL, mode 0600) — no world-readable umask window. We can't
+    // observe the (immediately-renamed) temp directly, so we assert the
+    // post-write invariant: the FINAL file is exactly 0600 AND round-trips,
+    // across an overwrite (a second record() rewrites via the same path).
+    @Test("atomic write: final file is exactly 0600 and round-trips after an overwrite")
+    func atomicWriteEndsAt0600AndRoundTrips() throws {
+        let dir = try tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let fileURL = dir.appendingPathComponent("provenance.plist")
+        let store = ProvenanceStore(fileURL: fileURL)
+        _ = store.load()
+
+        // First write.
+        try store.record(entry: fixedEntry(path: "/Users/u/Downloads/first.bin"))
+        var perms = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.posixPermissions] as? Int
+        #expect(perms == 0o600)
+
+        // Overwrite (exercises the create-temp-at-mode path a second time).
+        let second = fixedEntry(
+            path: "/Users/u/Downloads/second.bin",
+            sha256: "sha256:" + String(repeating: "c", count: 64))
+        try store.record(entry: second)
+
+        perms = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.posixPermissions] as? Int
+        #expect(perms == 0o600)
+
+        // Round-trips: a fresh reader sees both entries.
+        let reader = ProvenanceStore(fileURL: fileURL)
+        let result = reader.load()
+        #expect(result.record.entries.count == 2)
+        #expect(reader.lookup(destinationPath: "/Users/u/Downloads/second.bin")?.sha256
+            == "sha256:" + String(repeating: "c", count: 64))
+    }
+
     // No temp file left behind after write.
     @Test("record() leaves no temporary file behind")
     func noTempFileLeft() throws {
