@@ -59,4 +59,18 @@ struct JobDisplayFormatterTests {
             bytesCompleted: 2048, bytesTotal: 1024, bytesPerSecond: 0)
         #expect(JobDisplayFormatter.progressText(progress) == "2 KB/1 KB (100%)")
     }
+
+    @Test("sizeText renders downloaded/total without the percent suffix")
+    func sizeTextOmitsPercent() {
+        let progress = JobProgress(
+            bytesCompleted: 512, bytesTotal: 1024, bytesPerSecond: 0)
+        #expect(JobDisplayFormatter.sizeText(progress) == "512 B/1 KB")
+    }
+
+    @Test("sizeText renders `bytesCompleted/?` when total is unknown")
+    func sizeTextUnknownTotal() {
+        let progress = JobProgress(
+            bytesCompleted: 2048, bytesTotal: nil, bytesPerSecond: 0)
+        #expect(JobDisplayFormatter.sizeText(progress) == "2 KB/?")
+    }
 }

@@ -117,7 +117,7 @@ nonisolated public struct GohMenuPresenter: Sendable {
             url: job.url,
             controls: controls(for: job),
             progressFraction: progressFraction,
-            sizeText: JobDisplayFormatter.progressText(job.progress),
+            sizeText: JobDisplayFormatter.sizeText(job.progress),
             etaText: etaText,
             elapsedText: elapsedText,
             connectionText: connectionText,
