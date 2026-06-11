@@ -14,6 +14,8 @@ public enum CommandOutcome: Sendable, Equatable {
     case authImported(AuthImportSafariReply)
     /// `recordVerifiedProvenance` — zero-payload acknowledgement.
     case ack
+    /// `forgetProvenance` — the count of entries actually removed.
+    case forgotProvenance(ForgetProvenanceReply)
     /// Any command — a structured failure.
     case failure(GohError)
 }

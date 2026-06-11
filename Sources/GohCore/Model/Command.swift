@@ -12,6 +12,7 @@ public enum Command: Codable, Sendable, Equatable {
     case authImportSafari(request: AuthImportSafariRequest)
     case subscribe(request: SubscribeRequest)
     case recordVerifiedProvenance(request: RecordVerifiedProvenanceRequest)
+    case forgetProvenance(request: ForgetProvenanceRequest)
 }
 
 /// The `add` command's request payload (`DESIGN.md` §3.1).
@@ -77,6 +78,19 @@ public struct AuthImportSafariReply: Codable, Sendable, Equatable {
 public struct RecordVerifiedProvenanceRequest: Codable, Sendable, Equatable {
     public var entries: [VerifiedProvenanceEntry]
     public init(entries: [VerifiedProvenanceEntry]) { self.entries = entries }
+}
+
+/// The `forgetProvenance` command's request payload.
+/// Removes the ledger entries whose canonical `destinationPath` matches one of
+/// `paths`. The daemon canonicalizes each path via
+/// `URL(fileURLWithPath:).standardizedFileURL.path` before matching (the
+/// `recordVerifiedProvenance` precedent). A path matching no entry is a no-op.
+/// `forgetProvenance` NEVER touches the file at any path — it removes ledger
+/// entries only. Reply is `ForgetProvenanceReply`, carrying the count actually
+/// removed (`forgotCount`).
+public struct ForgetProvenanceRequest: Codable, Sendable, Equatable {
+    public var paths: [String]
+    public init(paths: [String]) { self.paths = paths }
 }
 
 /// One entry in a `recordVerifiedProvenance` batch.

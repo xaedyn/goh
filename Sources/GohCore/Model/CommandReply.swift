@@ -43,3 +43,21 @@ public struct RmReply: Codable, Sendable, Equatable {
 public struct AckReply: Codable, Sendable, Equatable {
     public init() {}
 }
+
+/// The `forgetProvenance` command's success reply.
+/// `forgotCount` is the number of ledger entries actually removed by this call
+/// (entries whose canonical `destinationPath` matched a requested path).
+///
+/// `ProvenanceStore.forget(paths:)` is idempotent at the store layer — a path
+/// matching no entry is silently skipped. The CLI, however, only ever sends paths
+/// it has *just* confirmed are tracked (`forget <path>` after a ledger lookup match;
+/// `forget --missing --confirm` from a fresh enumeration of stored entries), so under
+/// that invariant `forgotCount` is expected to equal `paths.count`. A smaller count
+/// therefore means an entry was concurrently removed between the CLI's read and the
+/// daemon's write — a race the CLI surfaces as a non-success outcome rather than a
+/// clean success line. (Store-write failure is a separate path: it throws and the
+/// dispatcher returns `.failure`, not this reply.)
+public struct ForgetProvenanceReply: Codable, Sendable, Equatable {
+    public var forgotCount: Int
+    public init(forgotCount: Int) { self.forgotCount = forgotCount }
+}

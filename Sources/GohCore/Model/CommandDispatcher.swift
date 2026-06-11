@@ -243,6 +243,26 @@ public struct CommandDispatcher: Sendable {
                     warn?("recordVerifiedProvenance: provenance store write failed for \(validEntries.count) entr\(validEntries.count == 1 ? "y" : "ies"): \(error)")
                 }
                 return .ack
+
+            case .forgetProvenance(let request):
+                guard let provenanceStore else {
+                    // No store configured (test/headless): nothing could be removed.
+                    // Return 0 removed — not a phantom success, not an error.
+                    warn?("forgetProvenance: provenance store unavailable; skipped \(request.paths.count) path(s)")
+                    return .forgotProvenance(ForgetProvenanceReply(forgotCount: 0))
+                }
+                do {
+                    let forgotCount = try provenanceStore.forget(paths: request.paths)
+                    return .forgotProvenance(ForgetProvenanceReply(forgotCount: forgotCount))
+                } catch {
+                    // Foreground destructive command — do NOT mirror recordVerifiedProvenance's
+                    // best-effort .ack-on-throw. A write failure (atomic-write / rename) is a
+                    // structured failure the CLI surfaces as a non-zero exit (AC4).
+                    warn?("forgetProvenance: provenance store write failed for \(request.paths.count) path(s): \(error)")
+                    return .failure(GohError(
+                        code: .destinationUnwritable,
+                        message: "could not rewrite the provenance ledger: \(error)"))
+                }
             }
         } catch let error as GohError {
             return .failure(error)

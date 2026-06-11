@@ -1320,6 +1320,21 @@ This drives the self-healing upgrade (§Daemon self-healing upgrade). It is NOT 
 `protocolVersion` and never gates message compatibility — only behavior freshness. Bump it
 in any release that adds daemon behavior a client depends on.
 
+**featureLevel 2** (`GohFeatureLevel.current = 2`, merged with `feat/goh-forget`)
+— the daemon honors the `forgetProvenance` command (`Command.forgetProvenance`,
+`ForgetProvenanceRequest`, `ForgetProvenanceReply`). A new CLI (`featureLevel < 2`
+or unreachable) refuses to send `forgetProvenance` with a clear "daemon too old"
+message and exit 1, rather than silently dropping the command. A CLI older than
+featureLevel 2 ignores this bump — `LsReply.featureLevel` is additive-optional.
+`GohFeatureLevel.current` goes `1 → 2` in the same commit as the dispatcher case
+and CLI runner.
+
+Error-handling divergence: `forgetProvenance` returns a structured `.failure` reply
+when `ProvenanceStore.forget(paths:)` throws (e.g. atomic-write / rename failure),
+rather than mirroring `recordVerifiedProvenance`'s best-effort `.ack`-on-throw. A
+destructive ledger mutation that fails mid-write must be surfaced to the caller as
+a non-zero exit, not silently swallowed.
+
 ### 5 · Serialization
 
 #### 5.1 Codable for message bodies

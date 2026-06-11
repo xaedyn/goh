@@ -217,6 +217,41 @@ public final class ProvenanceStore: Sendable {
         inner.withLock { $0.record.entries }
     }
 
+    // MARK: — Delete
+
+    /// Removes every entry whose canonical `destinationPath` matches one of `paths`,
+    /// then atomically rewrites the ledger. Empty `paths` is a no-op (no lock, no
+    /// write). A path matching no entry is silently skipped (idempotent).
+    ///
+    /// INVARIANT (security): this method mutates `record.entries[]` ONLY. It MUST
+    /// NEVER unlink, truncate, or modify any file at any of `paths`. The only
+    /// filesystem writes are `writeAtomically`'s own temp/target/dir operations.
+    ///
+    /// Each input path is canonicalized via
+    /// `URL(fileURLWithPath:).standardizedFileURL.path` before matching, exactly
+    /// as `recordVerified` / `lookup` do — stored keys are already canonical.
+    ///
+    /// Returns the number of entries actually removed. Throws on `writeAtomically`
+    /// failure (the dispatcher turns that into a failure reply — not a best-effort .ack).
+    @discardableResult
+    public func forget(paths: [String]) throws -> Int {
+        guard !paths.isEmpty else { return 0 }
+        let canonical = Set(paths.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        })
+        return try inner.withLock { inner in
+            let before = inner.record.entries.count
+            inner.record.entries.removeAll { canonical.contains($0.destinationPath) }
+            let removed = before - inner.record.entries.count
+            // Only write when something actually changed — avoids a needless atomic
+            // rewrite (and fsync) when no requested path matched.
+            if removed != 0 {
+                try writeAtomically(&inner.record)
+            }
+            return removed
+        }
+    }
+
     // MARK: — Private helpers
 
     private func recoverToEmpty() -> ProvenanceLoadResult {

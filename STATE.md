@@ -5,7 +5,41 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-10 (code-quality review session) — **Full-project review → phased fix train (IN PROGRESS)**
+### 2026-06-10 (goh forget slice) — **`feat/goh-forget` — enterprise-pipeline complete, Phase 1 IN PROGRESS**
+
+Roadmap slice picked up after the code-quality fix train (PRs #109–112) merged. Full
+enterprise-pipeline run: CCB → clarity → ACs → research (industry + dependency) → 2 approach
+memos → **USER GATE: Approach 1 "Preview-and-Confirm" + full CLI+tray scope** → design
+validation (3 gaps fixed) → spec (adversarial review **2 rounds → approved**) → plan
+(adversarial review 2 rounds → approved). Artifacts under `docs/superpowers/research|specs|
+progress|retrospectives/2026-06-10-goh-forget-*` and `docs/plans/2026-06-10-goh-forget-plan.md`.
+
+**Design:** `goh forget <path>` (immediate; corrupt ledger → exit 6; untracked → exit 1) and
+`goh forget --missing` (dry-run preview, mount-annotated, deletes nothing) / `--missing
+--confirm` (sends stored destinationPaths verbatim). New additive `Command.forgetProvenance`
++ `ForgetProvenanceReply{forgotCount}` (protocolVersion stays 4); `ProvenanceStore.forget(
+paths:)->Int` (entries-only, never unlinks a file, atomic write); `GohFeatureLevel` 1→2 with a
+fresh-`.ls` stale-daemon gate so an old daemon errors loudly instead of silently obeying;
+dispatcher returns `.failure` on store-write throw. **Phase 1** (CLI+daemon, 8 TDD tasks,
+independently shippable) building now; **Phase 2** (tray Forget action across 5 GohMenuClient
+conformers) deferred to a follow-up slice.
+
+**Phase 1 COMPLETE — PR open.** 8 atomic TDD commits (`fa6722f`..`beb6803`):
+ProvenanceStore.forget → wire types → featureLevel 1→2 → golden fixtures →
+GohForgetCommand → GohCommandLine parse/dispatch → CommandDispatcher case. Executed
+via subagent-driven-development (implementer per task) with a dedicated Opus review
+of the CLI runner and a final **stack-aware-code-review APPROVED** over the whole diff
+(all 10 categories PASS). `swift build -warnings-as-errors` clean; `swift test`
+**945/945** (+40). Frozen intact: protocolVersion 4, ProvenanceRecord v1, VerifyAllReport,
+launchd plist. One advisory follow-up: the `--missing` parse tests read the real default
+ledger (read-only, tolerant assertions — safe but not fully hermetic).
+
+**NEXT: Phase 2 (tray Forget action)** — add `GohMenuClient.forget(paths:)` to the
+protocol + all 5 conformers, a TrustWindowViewModel forget action with a preview/confirm
+sheet, and a Forget affordance on MISSING rows. See
+`docs/superpowers/progress/2026-06-10-goh-forget-phase1.md` for the contract Phase 2 builds on.
+
+### 2026-06-10 (code-quality review session) — **Full-project review → phased fix train (PRs #109–112 MERGED)**
 
 A six-agent full-codebase quality review (all ~19k production lines) produced 2
 critical + 8 major + perf/minor findings. User chose: fix **all of it**, phased,
