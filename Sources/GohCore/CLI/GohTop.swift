@@ -99,7 +99,7 @@ public struct GohTop {
                 }
             }
         } catch let error as GohError {
-            standardError(Self.daemonErrorMessage(error))
+            standardError(CLIMessages.daemonError(error))
             return GohCommandLineResult(exitCode: 1)
         } catch let error as TopError {
             standardError("gohd returned an invalid reply: \(error.message)\n")
@@ -285,12 +285,5 @@ private extension GohTop {
 
     static func reconnectFailedMessage() -> String {
         "Could not reconnect to gohd.\nStart the daemon with: brew services start goh\n"
-    }
-
-    static func daemonErrorMessage(_ error: GohError) -> String {
-        if let message = error.message, !message.isEmpty {
-            return "gohd: \(message)\n"
-        }
-        return "gohd: \(error.code.rawValue)\n"
     }
 }
