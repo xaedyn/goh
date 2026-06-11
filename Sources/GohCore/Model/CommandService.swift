@@ -47,7 +47,13 @@ public struct CommandService: Sendable {
                 return nil
             }
             if header.protocolVersion != Self.protocolVersion {
-                return try? XPCDictionary(Self.envelope(
+                // try! is correct here: encoding a GohError envelope (a fixed,
+                // primitive Codable payload) cannot fail. A failure would be a
+                // programming error, and trapping — the daemon is relaunched by
+                // launchd on non-zero exit — is strictly better than silently
+                // returning nil, which gives the incompatible client NO reply
+                // and hangs it instead of the structured mismatch error.
+                return try! XPCDictionary(Self.envelope(
                     requestID: header.requestID,
                     messageType: .error,
                     payload: GohError(
@@ -55,7 +61,10 @@ public struct CommandService: Sendable {
                         message: "client protocol \(header.protocolVersion) does not match daemon protocol \(Self.protocolVersion)")))
             }
             if header.messageType != .request {
-                return try? XPCDictionary(Self.envelope(
+                // try! is correct here for the same reason as the version-mismatch
+                // reply above: encoding this primitive GohError envelope cannot
+                // fail; trapping beats silently hanging the client with nil.
+                return try! XPCDictionary(Self.envelope(
                     requestID: header.requestID,
                     messageType: .error,
                     payload: GohError(
