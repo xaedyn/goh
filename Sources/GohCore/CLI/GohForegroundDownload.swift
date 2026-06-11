@@ -192,7 +192,7 @@ public struct GohForegroundDownload {
                 }
             }
         } catch let error as GohError {
-            standardError(Self.daemonErrorMessage(error))
+            standardError(CLIMessages.daemonError(error))
             return GohCommandLineResult(exitCode: 1)
         } catch let error as ForegroundError {
             standardError("gohd returned an invalid reply: \(error.message)\n")
@@ -383,12 +383,5 @@ private extension GohForegroundDownload {
     static func progressLine(_ snapshot: ProgressSnapshot) -> String {
         let job = snapshot.job
         return "Job \(job.id) \(job.state.rawValue): \(JobDisplayFormatter.progressText(job.progress)) at \(JobDisplayFormatter.formatBytes(job.progress.bytesPerSecond))/s\n"
-    }
-
-    static func daemonErrorMessage(_ error: GohError) -> String {
-        if let message = error.message, !message.isEmpty {
-            return "gohd: \(message)\n"
-        }
-        return "gohd: \(error.code.rawValue)\n"
     }
 }

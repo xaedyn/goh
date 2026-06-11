@@ -849,26 +849,12 @@ extension GohCommandLine {
         case .daemon(let daemonError):
             return GohCommandLineResult(
                 exitCode: 1,
-                standardError: daemonErrorMessage(daemonError))
+                standardError: CLIMessages.daemonError(daemonError))
         case .malformedReply(let message):
             return GohCommandLineResult(
                 exitCode: 1,
                 standardError: "gohd returned an invalid reply: \(message)\n")
         }
-    }
-
-    private static func daemonErrorMessage(_ error: GohError) -> String {
-        if error.code == .protocolVersionMismatch {
-            let detail = error.message?.isEmpty == false
-                ? error.message!
-                : error.code.rawValue
-            return "gohd: \(detail)\nRestart the daemon with: brew services restart goh\n"
-        }
-
-        if let message = error.message, !message.isEmpty {
-            return "gohd: \(message)\n"
-        }
-        return "gohd: \(error.code.rawValue)\n"
     }
 
     private static func transportFailure(_ error: any Error) -> GohCommandLineResult {

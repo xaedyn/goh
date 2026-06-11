@@ -61,11 +61,12 @@ public struct SecureEnclaveSigner: Sendable {
             throw SecureEnclaveSignerError.secureEnclaveUnavailable
         }
 
-        if FileManager.default.fileExists(atPath: handleURL.path) {
-            return try openExisting(handleURL: handleURL)
-        } else {
-            return try createNew(handleURL: handleURL)
-        }
+        // No check-then-act: attempt the exclusive create FIRST. `createNew`
+        // persists the handle with `O_CREAT|O_EXCL`; on the EEXIST race
+        // (`handleAlreadyExists`) it falls through to open the winner's handle.
+        // Removing the prior `fileExists` pre-check makes this race-free and
+        // saves a `stat(2)` — the open path no longer has a TOCTOU window.
+        return try createNew(handleURL: handleURL)
     }
 
     // MARK: - Sign

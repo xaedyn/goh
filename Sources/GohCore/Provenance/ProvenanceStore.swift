@@ -7,6 +7,8 @@ public enum ProvenanceStoreError: Error {
     case fsyncOpenFailed(path: String, errno: Int32)
     case fsyncFailed(path: String, errno: Int32)
     case renameFailed(errno: Int32)
+    /// Creating/writing the temp file failed (errno carried).
+    case tempWriteFailed(path: String, errno: Int32)
 }
 
 /// The outcome of loading the provenance ledger.
@@ -26,9 +28,9 @@ public struct ProvenanceLoadResult: Sendable {
 /// Concurrency: all mutable state is guarded by a `Mutex`. The daemon is the
 /// SOLE WRITER; the CLI is a read-only consumer via direct file reads.
 ///
-/// Saves are atomic and durable — identical pattern to `HostProfileStore`
-/// (temp→`chmod 0600`→`fsync(tmp)`→`rename(2)`→`fsync(dir)`). The file is
-/// written at owner-only 0600 permissions.
+/// Saves are atomic and durable: the temp file is created at owner-only 0600
+/// from the first instant via `O_CREAT|O_EXCL` (no umask window), then
+/// `fsync(tmp)`→`rename(2)`→`fsync(dir)`. The final file is 0600.
 ///
 /// INTENTIONALLY NO TTL EVICTION — unlike `HostProfileStore` which TTL-evicts at
 /// 90 days. Evicting provenance entries would silently lose the user's own record
@@ -276,9 +278,16 @@ public final class ProvenanceStore: Sendable {
             path: ".\(fileURL.lastPathComponent).tmp-\(UUID().uuidString)")
 
         do {
-            try data.write(to: temporaryURL)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: temporaryURL.path)
+            // Create the temp file AT 0600 from the first instant it exists — no
+            // umask window (e.g. world-readable 0644) before a later chmod. The
+            // ledger may carry credential-bearing URLs, so the window is a leak.
+            do {
+                try writeFileExclusively(data, to: temporaryURL.path, mode: 0o600)
+            } catch let AtomicFileWriteError.openFailed(path, errno) {
+                throw ProvenanceStoreError.tempWriteFailed(path: path, errno: errno)
+            } catch let AtomicFileWriteError.writeFailed(path, errno) {
+                throw ProvenanceStoreError.tempWriteFailed(path: path, errno: errno)
+            }
             try Self.fsync(path: temporaryURL.path)
             guard rename(temporaryURL.path, fileURL.path) == 0 else {
                 throw ProvenanceStoreError.renameFailed(errno: errno)

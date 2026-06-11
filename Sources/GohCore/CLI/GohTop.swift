@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XPC
 
@@ -10,6 +11,12 @@ public struct GohTop {
     public var render: ([ProgressSnapshot]) -> String
     public var standardOutput: (String) -> Void
     public var standardError: (String) -> Void
+    /// Whether stdout is a real terminal. Alt-screen enter/exit escape sequences
+    /// are emitted ONLY when this is true, so `goh top | tee log` (a pipe) gets
+    /// clean output instead of `\x1B[?1049h…` control bytes. Defaults to a live
+    /// `isatty(STDOUT_FILENO)` check; injectable for tests. Mirrors the
+    /// `isatty` gate `GohTerminalExitMonitor` uses for raw mode.
+    public var isTTY: Bool
 
     public init(
         session: GohProgressSubscriptionSession,
@@ -19,7 +26,8 @@ public struct GohTop {
         shouldInterrupt: @escaping () -> Bool = { false },
         render: @escaping ([ProgressSnapshot]) -> String,
         standardOutput: @escaping (String) -> Void = { _ in },
-        standardError: @escaping (String) -> Void = { _ in }
+        standardError: @escaping (String) -> Void = { _ in },
+        isTTY: Bool = isatty(STDOUT_FILENO) == 1
     ) {
         self.session = session
         self.makeReconnectSession = reconnect
@@ -29,11 +37,12 @@ public struct GohTop {
         self.render = render
         self.standardOutput = standardOutput
         self.standardError = standardError
+        self.isTTY = isTTY
     }
 
     public func run() -> GohCommandLineResult {
-        standardOutput(Self.enterAltScreen)
-        defer { standardOutput(Self.exitAltScreen) }
+        if isTTY { standardOutput(Self.enterAltScreen) }
+        defer { if isTTY { standardOutput(Self.exitAltScreen) } }
         do {
             var activeSession = session
             defer { activeSession.cancel() }
@@ -90,7 +99,7 @@ public struct GohTop {
                 }
             }
         } catch let error as GohError {
-            standardError(Self.daemonErrorMessage(error))
+            standardError(CLIMessages.daemonError(error))
             return GohCommandLineResult(exitCode: 1)
         } catch let error as TopError {
             standardError("gohd returned an invalid reply: \(error.message)\n")
@@ -276,12 +285,5 @@ private extension GohTop {
 
     static func reconnectFailedMessage() -> String {
         "Could not reconnect to gohd.\nStart the daemon with: brew services start goh\n"
-    }
-
-    static func daemonErrorMessage(_ error: GohError) -> String {
-        if let message = error.message, !message.isEmpty {
-            return "gohd: \(message)\n"
-        }
-        return "gohd: \(error.code.rawValue)\n"
     }
 }
