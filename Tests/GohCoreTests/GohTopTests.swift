@@ -67,7 +67,8 @@ struct GohTopTests {
                 "render \(snapshots.map { $0.job.state.rawValue }.joined(separator: ","))\n"
             },
             standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
-            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+            standardError: { chunk in emittedError.withLock { $0 += chunk } },
+            isTTY: true
         ).run()
 
         #expect(sentCommands.withLock { $0 } == [
@@ -83,6 +84,49 @@ struct GohTopTests {
                 + "\u{1B}[?1049l"
         })
         #expect(emittedError.withLock { $0 } == "")
+    }
+
+    @Test("top emits alt-screen sequences only when stdout is a TTY")
+    func altScreenSequencesGatedOnTTY() throws {
+        func runTop(isTTY: Bool) -> String {
+            let baseline = Self.job(id: 1, state: .active)
+            let emittedOutput = Mutex("")
+            let session = GohProgressSubscriptionSession(
+                sendSync: { message in
+                    try message.withUnsafeUnderlyingDictionary { object in
+                        let envelope = try GohEnvelope<Command>(xpcDictionary: object)
+                        return try Self.reply(
+                            to: envelope,
+                            payload: SubscribeReply(
+                                revision: 1,
+                                snapshot: [ProgressSnapshot(job: baseline, lanes: [])]))
+                    }
+                },
+                receiveNotification: {
+                    throw GohXPCNotificationInboxError.interrupted
+                },
+                cancel: {}
+            )
+            _ = GohTop(
+                session: session,
+                shouldInterrupt: { true },
+                render: { _ in "render\n" },
+                standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
+                isTTY: isTTY
+            ).run()
+            return emittedOutput.withLock { $0 }
+        }
+
+        // Not a TTY (piped): NO alt-screen control bytes pollute the output.
+        let piped = runTop(isTTY: false)
+        #expect(!piped.contains("\u{1B}[?1049"))
+        #expect(!piped.contains("\u{1B}[?1049h"))
+        #expect(!piped.contains("\u{1B}[?1049l"))
+
+        // A real TTY: BOTH the enter and the paired exit are emitted.
+        let tty = runTop(isTTY: true)
+        #expect(tty.contains("\u{1B}[?1049h"))
+        #expect(tty.contains("\u{1B}[?1049l"))
     }
 
     @Test("top skips a stale notification (wrong requestID) instead of exiting with an error")
@@ -183,7 +227,8 @@ struct GohTopTests {
             reconnectPollInterval: .milliseconds(1),
             render: { snapshots in "render \(snapshots.count)\n" },
             standardOutput: { chunk in emittedOutput.withLock { $0 += chunk } },
-            standardError: { chunk in emittedError.withLock { $0 += chunk } }
+            standardError: { chunk in emittedError.withLock { $0 += chunk } },
+            isTTY: true
         ).run()
 
         #expect(result.exitCode == 1)
