@@ -126,6 +126,123 @@ struct ParallelismGovernorTests {
         #expect(result.committed == 16)
     }
 
+    // MARK: - Exhaustive Phase transition matrix
+    //
+    // The tests above drive convergence end-to-end; these pin each individual
+    // documented transition of `Phase` that `decide(...)` can produce, so a
+    // regression in one edge can't hide behind the aggregate convergence tests.
+    // Phase cases: .probe, .cruise(operatingN:), .pinned(n:).
+    // Edges driven by decide(): probe→probe (step up), probe→cruise (settle),
+    // cruise→cruise (hold), cruise→probe (reprobe), pinned→pinned (commit),
+    // plus the tiny-file commit and throttle→pinned (covered above).
+
+    /// Settle samples for the default config — feed exactly this many to arm a probe judgment.
+    private var settle: Int { ParallelismGovernor.Config.default.settleSamples }
+
+    @Test("probe→probe: a paying step emits addWorkers and stays in probe")
+    func probeStepUpStaysProbe() {
+        // Seed at 2; a strongly-scaling pipe means the 2→4 step pays off, so the
+        // governor steps UP (addWorkers) and remains in probe to test the next rung.
+        var gov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        for _ in 0..<settle { gov.record(aggregateBytesPerSecond: 20_000_000) }
+        let d = gov.decide(operatingN: 2, remainingBytes: 500_000_000)
+        #expect(d == .addWorkers(2), "2→4 is the first ladder step")
+        #expect(gov.phaseLabel == "probe", "must stay in probe after stepping up")
+    }
+
+    @Test("probe→cruise: a non-paying step settles back at the lower N (commit + cruise)")
+    func probeStepRejectedEntersCruise() {
+        // Arm a step up from 4 (baseline aggregate snapshot), then feed a sample
+        // showing NO gain over the baseline → governor must reject the step and
+        // enterCruise at the lower N=4.
+        var gov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        // First: drive a paying step 4→8 to arm aggregateBeforeStep at the 4-rung rate.
+        for _ in 0..<settle { gov.record(aggregateBytesPerSecond: 40_000_000) }
+        let up = gov.decide(operatingN: 4, remainingBytes: 500_000_000)
+        #expect(up == .addWorkers(4))  // 4→8, beginStep snapshots 40 MB/s at N=4
+        // Now feed samples at the SAME aggregate (no gain from the extra connections).
+        for _ in 0..<settle { gov.record(aggregateBytesPerSecond: 40_000_000) }
+        let settled = gov.decide(operatingN: 8, remainingBytes: 500_000_000)
+        #expect(settled == .commit(4), "no gain → settle back at the lower N=4")
+        #expect(gov.phaseLabel == "cruise")
+        #expect(gov.outcome.effectiveN == 4)
+        #expect(gov.outcome.stabilized)
+    }
+
+    @Test("probe→cruise: top-of-ladder settles at the cap (commit 16 + cruise)")
+    func probeTopOfLadderEntersCruise() {
+        // Seeded at the cap with a settled aggregate: no higher candidate exists,
+        // so decide must commit at 16 and enter cruise.
+        var gov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        for _ in 0..<settle { gov.record(aggregateBytesPerSecond: 80_000_000) }
+        let d = gov.decide(operatingN: 16, remainingBytes: 500_000_000)
+        #expect(d == .commit(16))
+        #expect(gov.phaseLabel == "cruise")
+    }
+
+    @Test("cruise→cruise: holds while below the reprobe cadence")
+    func cruiseHoldsBelowReprobeCadence() {
+        // Enter cruise at 16, then a single post-commit tick (cruiseTicks=1, well
+        // below reprobeCadence=40) must HOLD and stay in cruise.
+        var gov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        for _ in 0..<settle { gov.record(aggregateBytesPerSecond: 80_000_000) }
+        _ = gov.decide(operatingN: 16, remainingBytes: 500_000_000)  // → cruise
+        #expect(gov.phaseLabel == "cruise")
+        gov.record(aggregateBytesPerSecond: 80_000_000)
+        let d = gov.decide(operatingN: 16, remainingBytes: 500_000_000)
+        #expect(d == .hold)
+        #expect(gov.phaseLabel == "cruise")
+    }
+
+    @Test("cruise→probe: reprobe cadence re-enters probe and steps up")
+    func cruiseReprobeReentersProbe() {
+        // Enter cruise at 8 (a rung with a higher candidate above it), then tick
+        // past reprobeCadence so the governor re-probes the next rung (8→16):
+        // it must emit addWorkers and transition cruise→probe.
+        let cadence = ParallelismGovernor.Config.default.reprobeCadence
+        var gov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        // Settle into cruise at 8 by rejecting the 8→16 step (no gain).
+        for _ in 0..<settle { gov.record(aggregateBytesPerSecond: 50_000_000) }
+        _ = gov.decide(operatingN: 8, remainingBytes: 500_000_000)  // 8→16 step armed
+        for _ in 0..<settle { gov.record(aggregateBytesPerSecond: 50_000_000) }
+        let settled = gov.decide(operatingN: 16, remainingBytes: 500_000_000)
+        #expect(settled == .commit(8))
+        #expect(gov.phaseLabel == "cruise")
+        // Now tick the cruise forward past the reprobe cadence.
+        var reprobe: GovernorDecision = .hold
+        for _ in 0..<cadence {
+            gov.record(aggregateBytesPerSecond: 50_000_000)
+            reprobe = gov.decide(operatingN: 8, remainingBytes: 500_000_000)
+        }
+        #expect(reprobe == .addWorkers(8), "reprobe must step 8→16")
+        #expect(gov.phaseLabel == "probe", "reprobe must re-enter probe")
+    }
+
+    @Test("pinned→pinned: a pinned governor keeps committing its pin")
+    func pinnedStaysPinned() {
+        // notifyThrottleDetected pins at 1. Subsequent decides must keep returning
+        // backOffPinLow (throttleDetected short-circuits) and stay pinned.
+        var gov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        gov.notifyThrottleDetected()
+        #expect(gov.phaseLabel == "pinned")
+        #expect(gov.decide(operatingN: 8, remainingBytes: 500_000_000) == .backOffPinLow)
+        #expect(gov.decide(operatingN: 4, remainingBytes: 500_000_000) == .backOffPinLow)
+        #expect(gov.phaseLabel == "pinned")
+    }
+
+    @Test("tiny-file commit short-circuits regardless of phase (probe and cruise)")
+    func tinyFileCommitFromAnyPhase() {
+        // From probe (fresh governor): below threshold → commit(1).
+        var probeGov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        #expect(probeGov.decide(operatingN: 8, remainingBytes: 1) == .commit(1))
+        // From cruise: drive into cruise, then a tiny remaining → commit(1).
+        var cruiseGov = ParallelismGovernor(config: .default, rng: FixedRNG(value: 1))
+        for _ in 0..<settle { cruiseGov.record(aggregateBytesPerSecond: 80_000_000) }
+        _ = cruiseGov.decide(operatingN: 16, remainingBytes: 500_000_000)  // → cruise
+        #expect(cruiseGov.phaseLabel == "cruise")
+        #expect(cruiseGov.decide(operatingN: 16, remainingBytes: 1) == .commit(1))
+    }
+
     @Test("GovernorOutcome: effectiveN is non-nil iff N is a bandit candidate")
     func governorOutcomeEffectiveN() {
         let aligned = GovernorOutcome(effectiveN: 8, stabilized: true)
