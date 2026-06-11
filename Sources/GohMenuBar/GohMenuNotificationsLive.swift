@@ -48,6 +48,9 @@ public final class LiveNotificationService: GohMenuNotificationService {
         notifContent.title = content.title
         notifContent.body = content.body
         notifContent.sound = .default
+        // Stable thread groups goh's completion banners together in Notification
+        // Center instead of stacking them as unrelated alerts.
+        notifContent.threadIdentifier = "dev.goh.downloads"
 
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
