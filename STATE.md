@@ -5,6 +5,39 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases, all reviewed & green (PRs open)**
+
+Worked the remaining code-quality review backlog as 5 independent PRs off `main` (disjoint
+files; each `swift build -warnings-as-errors` clean + full suite green + a final
+stack-aware-code-review APPROVED). Each phase is one PR with atomic commits.
+
+- **Phase 3 — `fix/menubar-pass` (PR #115):** wired the dormant `checkDaemonSkew` into
+  `start()`; removed the unreachable `.reconnecting` health state; split `sizeText` from
+  `progressText` (dropped the redundant %); consolidated 3 duration formatters into
+  `JobDisplayFormatter.durationText` (byte-identical); notification `threadIdentifier`;
+  paused-row gated on a state field not a string compare.
+- **Phase 4 — `fix/engine-correctness` (PR #116):** governor now gets true remaining
+  (`total−delivered`, not the broken `queue.remainingBytes`) + dropped dead ChunkQueue
+  machinery; `DownloadCheckpoint.init` one-pass merge (was O(N²) + updatedAt clobber);
+  `CommandService` version-mismatch reply infallible (`try!`) so an incompatible client never
+  hangs; Safari binary-cookies parser bounds (page/cookie/file-size caps — DoS fix).
+- **Phase 5 — `perf/engine-and-poll` (PR #117):** `goh sync` completion-poll 10ms→250ms;
+  skip the redundant per-flush fsync via `write()→Bool` (durability invariant preserved,
+  verified site-by-site). Deferred JobStore index + ChunkAssembler coalesce (premature).
+- **Phase 6 — `test/hygiene` (PR #118, test-only):** SE tests `.enabled(if:)` (CI reports
+  skipped, not vacuous green); lockfile encoder byte-golden; exhaustive transition tests for
+  `ParallelismGovernor.Phase` + `TrustRunState`; deterministic backfill tests (8s of sleeps →
+  ~0.5s) + strengthened the vacuous cancel assertion. Deferred a `gohd` composition-root smoke
+  test (needs a main.swift refactor).
+- **Phase 7 — `fix/cli-security-minors` (this PR):** `goh top` alt-screen only on a TTY;
+  unified `daemonErrorMessage` → `CLIMessages` (foreground/top now get the restart hint);
+  dropped the `SecureEnclaveSigner` fileExists TOCTOU pre-check (create-then-fallback is
+  race-free); atomic-write temp files created at 0600 (no world-readable window). Assessed the
+  `GohXPCNotificationInbox` interrupt-flag finding and left it — a sticky interrupt is correct.
+
+**Earlier 2026-06-10:** code-quality fix train PRs #109–112 merged; `goh forget` Phases 1 (#113)
++ 2 (#114) merged — feature complete.
+
 ### 2026-06-10 (goh forget slice) — **`feat/goh-forget` — enterprise-pipeline complete, Phase 1 IN PROGRESS**
 
 Roadmap slice picked up after the code-quality fix train (PRs #109–112) merged. Full
