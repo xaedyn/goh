@@ -58,6 +58,9 @@ struct TrustWindowViewModelRunStateTests {
             try await Task.sleep(for: .milliseconds(2))
             spins += 1
         }
+        if case .running = vm.runState {
+            Issue.record("verify run did not settle after \(spins) spins (~\(spins * 2) ms) — still .running")
+        }
     }
 
     @Test("idle → running → finished")
