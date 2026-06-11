@@ -57,6 +57,10 @@ it. So Phases 1–2 land *before* the public launch in Phase 3.
   already exist — this is mostly a TOML parser plus verbs. **Gate:** freezes an
   on-disk format → starts with a four-round design pass, not code. No credentials
   needed. ~2–4 weeks.
+  - **Shipped since:** the trust layer is substantially built — tiered rapid-trust
+    (#104), backfill-on-verify (#105), self-healing daemon upgrade (#106), and
+    **`goh forget`** ledger pruning (CLI+daemon #113, tray Forget action #114) which
+    closes the "a deleted file lingers in the provenance ledger forever" gap.
 
 - **Phase 2 — Performance win** *(parity → beats aria2c).* Adaptive per-host
   range scheduling (probe-and-adapt for the optimal connection count per host,
@@ -175,9 +179,13 @@ bandwidth budgets; hashes beyond SHA-256.
   users. The daemon remains the source of truth.
 
   **MB1 shipped in v0.1** (PR #54, with Ghostty / iTerm / WezTerm / Alacritty /
-  kitty handoff added in PR #66) as a private-dogfood companion. Remaining
-  menu bar slices on the v0.2 backlog: notifications, launch-at-login, app
-  bundle packaging for public distribution, and a preferences UI.
+  kitty handoff added in PR #66) as a private-dogfood companion. Completion
+  notifications (with stable `threadIdentifier` grouping, #115) and a Trust-window
+  **Forget** action (#114) have since shipped. Remaining menu bar slices on the
+  v0.2 backlog: launch-at-login, app-bundle packaging for public distribution, a
+  preferences UI, the HIG redesign in `design_handoff_goh_menubar/`, and
+  **stream-reconnection after a daemon restart** (the tray currently shows
+  `.failed` until relaunch — the gap behind the removed dead `.reconnecting` state).
 - **Adaptive per-host range scheduling.** Slice 3b's competitive run validated
   saturated parity but not the ≥10 % amenable target — the residual gap is
   the structural HTTP/2-multiplexed-vs-N-TCP-connections difference between

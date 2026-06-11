@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases, all reviewed & green (PRs open)**
+### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases — all MERGED (PRs #115–119); `main` green, 976 tests**
 
 Worked the remaining code-quality review backlog as 5 independent PRs off `main` (disjoint
 files; each `swift build -warnings-as-errors` clean + full suite green + a final
@@ -37,6 +37,20 @@ stack-aware-code-review APPROVED). Each phase is one PR with atomic commits.
 
 **Earlier 2026-06-10:** code-quality fix train PRs #109–112 merged; `goh forget` Phases 1 (#113)
 + 2 (#114) merged — feature complete.
+
+**The full-project code-quality review is now fully worked through** (2 criticals + 8 majors +
+perf + minors + test gaps, across PRs #109–119). Nothing is blocking; `main` is green.
+
+**Deferred during the backlog (each flagged in-PR as its own future slice, NOT done):**
+- **Menu-bar stream reconnection after a daemon restart** — the real gap behind the removed
+  dead `.reconnecting` state: the tray currently shows `.failed` permanently if `gohd` restarts,
+  until the app is relaunched. A small reconnect-with-backoff slice. *(Highest-value pickup.)*
+- **`gohd` composition-root smoke test** — the daemon's startup wiring has no automated coverage
+  (needs a `main.swift` refactor to expose a testable assembly).
+- **`JobStore` O(1) id→index map** and **`ChunkAssembler` coalesce-insert** — micro-opts, premature
+  at current scale.
+- **Menu-bar HIG redesign** — the untracked `design_handoff_goh_menubar/` handoff has not been
+  applied to the tray code.
 
 ### 2026-06-10 (goh forget slice) — **`feat/goh-forget` — enterprise-pipeline complete, Phase 1 IN PROGRESS**
 
@@ -1678,11 +1692,14 @@ implementation ships.** From the gitignored strategy memo at
    — `goh diagnose` via `GOH_ENGINE_TRACE=1`, `goh doctor` health gate,
    Spotlight `kMDItemWhereFroms` provenance, sleep assertions, cellular
    auto-pause, the Safari cookie import via fd-passing.
-4. **Add `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`** —
-   ~30 minutes of writing right before the brew tap opens. `SECURITY.md`
-   is the most important (responsible disclosure address for a tool
-   that handles cookies and sensitive URLs).
+4. ~~Add `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`~~ — **DONE**
+   (all three are committed at the repo root as of 2026-06-11).
 5. **Submit to Hacker News + r/macapps + r/commandline + r/datahoarder.**
+
+   (Note 2026-06-11: `Formula/goh.rb` is still a pre-launch placeholder — `sha256`
+   is all-zeros and it points at a `v0.1.0` tag that does not exist yet; it needs a
+   real tagged release + checksum before `brew install` works. Signing/notarization
+   remains blocked on Apple Developer ID credentials being supplied as repo secrets.)
 
 **Alternative pickup if v0.1 launch prep is blocked on credentials:**
 Bet 2 from the memo — `gohfile.toml` + `goh sync` + `goh verify`.
