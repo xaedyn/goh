@@ -60,12 +60,38 @@ public struct DownloadCheckpoint: Codable, Sendable, Equatable {
         self.strongETag = strongETag
         self.lastModified = lastModified
         self.pieceSize = pieceSize
-        self.completedPieces = []
+        // Build completedPieces in a single sort + merge pass, identical to
+        // applying recordCompletedPiece sequentially but O(N log N) instead of
+        // O(N² log N), and without recordCompletedPiece's updatedAt = Date()
+        // side effect (which the old trailing re-assignment had to undo).
+        self.completedPieces = Self.mergedPieces(completedPieces)
         self.updatedAt = updatedAt
-        for piece in completedPieces {
-            recordCompletedPiece(start: piece.start, length: piece.length)
+    }
+
+    /// Sorts pieces by start and merges overlapping/adjacent intervals once,
+    /// matching `recordCompletedPiece`'s semantics: zero-length and
+    /// end-overflowing pieces are dropped, and pieces touching or overlapping
+    /// (`piece.start <= last.end`) coalesce.
+    private static func mergedPieces(_ pieces: [CheckpointPiece]) -> [CheckpointPiece] {
+        let sorted = pieces
+            .filter { $0.length > 0 && !$0.hasOverflowingEnd }
+            .sorted { $0.start < $1.start }
+
+        var merged: [CheckpointPiece] = []
+        for piece in sorted {
+            guard var last = merged.popLast() else {
+                merged.append(piece)
+                continue
+            }
+            if piece.start <= last.end {
+                last.length = max(last.end, piece.end) - last.start
+                merged.append(last)
+            } else {
+                merged.append(last)
+                merged.append(piece)
+            }
         }
-        self.updatedAt = updatedAt
+        return merged
     }
 
     /// Records a durable interval, maintaining sorted non-overlapping pieces.
