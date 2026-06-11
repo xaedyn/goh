@@ -851,8 +851,14 @@ public struct DownloadEngine: Sendable {
                             lastSampledTotal = nowTotal
                             lastSampledAt = nowInstant
                         }
+                        // Feed the governor the TRUE remaining = total − delivered.
+                        // `queue.remainingBytes` counted only not-yet-pulled bytes,
+                        // hitting 0 once every chunk is in-flight and falsely tripping
+                        // the tiny-file guard (→ commit(1)) mid-transfer of a large
+                        // file. `nowTotal` is bytesWritten.value (delivered so far).
+                        let remaining = total > nowTotal ? total - nowTotal : 0
                         let decision = governor.decide(
-                            operatingN: targetN, remainingBytes: queue.remainingBytes)
+                            operatingN: targetN, remainingBytes: remaining)
                         let decisionLabel: String
                         switch decision {
                         case .hold: decisionLabel = "hold"
