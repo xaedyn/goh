@@ -30,7 +30,6 @@ public struct AddDownloadView: View {
         }
         .padding(16)
         .frame(width: 340)
-        .containerBackground(.thinMaterial, for: .window)
     }
 
     // MARK: URL

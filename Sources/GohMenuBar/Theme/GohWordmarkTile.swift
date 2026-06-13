@@ -1,15 +1,16 @@
 import SwiftUI
 
-/// The `goh` wordmark on a small translucent **Liquid Glass** tile — the one
+/// The `goh` wordmark on a small translucent tile — the one
 /// branded piece of chrome, reused as both the menu-bar status item and the
 /// popover header mark. The serif letters follow the primary label color; the
 /// arrow through the *o* tints by `GohWordmarkState` (idle hides it, active/done
 /// are brand green, paused is a faint green, error is red).
 ///
 /// The tile is a reusable building block: size it via `glyphWidth` (the popover
-/// header uses a larger mark than the menu-bar item). The glass background tints
-/// with the wallpaper in the running app; in static renders it approximates as a
-/// translucent fill.
+/// header uses a larger mark than the menu-bar item). Its fill is a translucent
+/// color, **not** a `.glassEffect`: the tile sits on top of the popover panel's
+/// single Liquid Glass layer, and glass can't sample glass — one glass layer per
+/// surface, with plain fills on the content above it.
 public struct GohWordmarkTile: View {
     public var state: GohWordmarkState
     public var glyphWidth: CGFloat
@@ -28,6 +29,13 @@ public struct GohWordmarkTile: View {
 
     private var glyphHeight: CGFloat { glyphWidth / GohWordmark.aspectRatio }
 
+    /// Translucent tile fill — matches the popover module-card recipe (white @ 6%
+    /// dark / 60% light). Not glass: the tile is content *on* the panel's single
+    /// Liquid Glass layer.
+    private var tileFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.6)
+    }
+
     public var body: some View {
         ZStack {
             Image(nsImage: GohWordmark.letters)
@@ -45,7 +53,7 @@ public struct GohWordmarkTile: View {
         .frame(width: glyphWidth, height: glyphHeight)
         .padding(.horizontal, glyphWidth * 0.22)
         .padding(.vertical, glyphWidth * 0.18)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: GohTheme.Metrics.tileRadius, style: .continuous))
+        .background(tileFill, in: RoundedRectangle(cornerRadius: GohTheme.Metrics.tileRadius, style: .continuous))
         .overlay(
             // Soft bright top highlight — the Liquid Glass edge.
             RoundedRectangle(cornerRadius: GohTheme.Metrics.tileRadius, style: .continuous)

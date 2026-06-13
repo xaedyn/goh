@@ -42,7 +42,6 @@ public struct GohMenuPreferencesView: View {
         }
         .padding(16)
         .frame(width: 380)
-        .containerBackground(.thinMaterial, for: .window)
         .onAppear {
             // Refresh status when the window opens (user may have approved in Settings).
             loginItemStatus = loginItem.status()

@@ -32,7 +32,6 @@ public struct TrustWindowView: View {
             footer
         }
         .frame(minWidth: 740, minHeight: 460)
-        .containerBackground(.thinMaterial, for: .window)
         .task {
             await viewModel.loadOverview()
             selectDefault()

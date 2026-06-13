@@ -25,7 +25,6 @@ public struct DownloadsWindowView: View {
             footer
         }
         .frame(minWidth: 540, minHeight: 440)
-        .containerBackground(.thinMaterial, for: .window)
     }
 
     // MARK: Toolbar
