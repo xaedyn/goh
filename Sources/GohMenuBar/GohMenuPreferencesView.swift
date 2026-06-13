@@ -3,12 +3,10 @@ import SwiftUI
 /// The Settings window. Binds the injected `GohMenuPreferences` + `GohMenuLoginItem`
 /// (never touches UserDefaults / SMAppService directly — unit-test-safe).
 ///
-/// Only the **General** tab has real, backed settings today (launch-at-login,
-/// completion notifications, and the icon-progress pref). The redesign's
-/// Downloads / Trust / Advanced tabs would each require new persisted state +
-/// engine behavior, so they are intentionally not shown (an empty tab reads as
-/// unfinished). The window title ("goh Settings") + traffic lights come from the
-/// hosting `Window` scene.
+/// Only **General** settings are backed today (launch-at-login, completion
+/// notifications, the icon-progress pref), so the window is a single native
+/// grouped `Form` — no tab bar (one pane needs none). The window title
+/// ("goh Settings") + traffic lights come from the hosting `Window` scene.
 public struct GohMenuPreferencesView: View {
     private let preferences: any GohMenuPreferences
     private let loginItem: any GohMenuLoginItem
@@ -35,13 +33,51 @@ public struct GohMenuPreferencesView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 14) {
-            tabBar
-            generalCard
-            footer
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    Toggle("Launch at login", isOn: $launchAtLoginEnabled)
+                        .tint(GohTheme.accent)
+                        .disabled(loginItemStatus == .unsupported)
+                        .onChange(of: launchAtLoginEnabled) { _, newValue in applyLoginItemToggle(newValue) }
+                        .accessibilityLabel("Launch at login")
+                    if loginItemStatus == .unsupported {
+                        caption("Not available in this build.", color: .secondary)
+                    }
+                    if loginItemStatus == .requiresApproval {
+                        caption("Enabled — approve in System Settings → General → Login Items.", color: .secondary)
+                    }
+                    if let loginItemError {
+                        caption(loginItemError, color: GohTheme.error)
+                    }
+                }
+
+                Section {
+                    Toggle(isOn: $showProgressOnIcon) {
+                        Text("Show progress on the icon")
+                        Text("Brighten the arrow as a download completes")
+                    }
+                    .tint(GohTheme.accent)
+                    .onChange(of: showProgressOnIcon) { _, newValue in preferences.showProgressOnIcon = newValue }
+                    .accessibilityLabel("Show download progress on the menu-bar icon")
+
+                    Toggle("Notify when downloads finish", isOn: $notificationsEnabled)
+                        .tint(GohTheme.accent)
+                        .onChange(of: notificationsEnabled) { _, newValue in preferences.notificationsEnabled = newValue }
+                        .accessibilityLabel("Enable completion notifications")
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            Text(buildLine)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity)
+                .padding(8)
         }
-        .padding(16)
-        .frame(width: 380)
+        .frame(width: 440, height: 360)
         .onAppear {
             // Refresh status when the window opens (user may have approved in Settings).
             loginItemStatus = loginItem.status()
@@ -49,120 +85,11 @@ public struct GohMenuPreferencesView: View {
         }
     }
 
-    // MARK: Tab bar
-
-    /// Only the real tab is shown. More tabs appear if/when backed settings exist.
-    private var tabBar: some View {
-        HStack(spacing: 22) {
-            tabItem("General", systemImage: "gearshape", active: true)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func tabItem(_ title: String, systemImage: String, active: Bool) -> some View {
-        VStack(spacing: 3) {
-            Image(systemName: systemImage).font(.system(size: 16))
-            Text(title).font(GohTheme.Typography.secondary)
-        }
-        .foregroundStyle(active ? AnyShapeStyle(GohTheme.accent) : AnyShapeStyle(.secondary))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-    }
-
-    // MARK: General
-
-    private var generalCard: some View {
-        GohModuleCard(padding: 0) {
-            VStack(spacing: 0) {
-                settingRow {
-                    toggleRow(
-                        "Launch at login",
-                        subtitle: loginItemStatus == .unsupported ? "Not available in this build" : nil,
-                        isOn: $launchAtLoginEnabled,
-                        disabled: loginItemStatus == .unsupported,
-                        accessibility: "Launch at login")
-                        .onChange(of: launchAtLoginEnabled) { _, newValue in applyLoginItemToggle(newValue) }
-                    if loginItemStatus == .requiresApproval {
-                        captionLine("Enabled — approve in System Settings → General → Login Items.", color: .secondary)
-                    }
-                    if let loginItemError {
-                        captionLine(loginItemError, color: GohTheme.error)
-                    }
-                }
-
-                hairline
-
-                settingRow {
-                    toggleRow(
-                        "Show progress on the icon",
-                        subtitle: "Brighten the arrow as a download completes",
-                        isOn: $showProgressOnIcon,
-                        accessibility: "Show download progress on the menu-bar icon")
-                        .onChange(of: showProgressOnIcon) { _, newValue in preferences.showProgressOnIcon = newValue }
-                }
-
-                hairline
-
-                settingRow {
-                    toggleRow(
-                        "Notify when downloads finish",
-                        subtitle: nil,
-                        isOn: $notificationsEnabled,
-                        accessibility: "Enable completion notifications")
-                        .onChange(of: notificationsEnabled) { _, newValue in preferences.notificationsEnabled = newValue }
-                }
-            }
-        }
-    }
-
-    // MARK: Building blocks
-
-    private func settingRow<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 4) { content() }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-    }
-
-    private func toggleRow(
-        _ title: String,
-        subtitle: String?,
-        isOn: Binding<Bool>,
-        disabled: Bool = false,
-        accessibility: String
-    ) -> some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(GohTheme.Typography.rowTitle).foregroundStyle(.primary)
-                if let subtitle {
-                    Text(subtitle).font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 8)
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .tint(GohTheme.accent)
-                .disabled(disabled)
-                .accessibilityLabel(accessibility)
-        }
-    }
-
-    private func captionLine(_ text: String, color: Color) -> some View {
+    private func caption(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(GohTheme.Typography.secondary)
+            .font(.caption)
             .foregroundStyle(color)
             .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var hairline: some View {
-        Rectangle().fill(GohTheme.separator).frame(height: GohTheme.Metrics.hairline)
-    }
-
-    private var footer: some View {
-        Text(buildLine)
-            .font(GohTheme.Typography.secondary)
-            .foregroundStyle(.tertiary)
-            .frame(maxWidth: .infinity)
     }
 
     private var buildLine: String {

@@ -789,7 +789,9 @@ struct GohMenuApp: App {
                     probe: LiveFileStatProbe(),
                     client: appDelegate.menuClientForTrust))  // shared stored let
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 820, height: 520)
+        .windowToolbarStyle(.unified)
         .defaultPosition(.center)
         .defaultLaunchBehavior(.suppressed)
 
@@ -797,7 +799,8 @@ struct GohMenuApp: App {
             DownloadsWindowRoot(model: appDelegate.model)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 600, height: 400)
+        .defaultSize(width: 640, height: 440)
+        .windowToolbarStyle(.unified)
         .defaultPosition(.center)
         .defaultLaunchBehavior(.suppressed)
 

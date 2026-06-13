@@ -17,116 +17,79 @@ public struct DownloadsWindowView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            Divider().opacity(0.5)
-            content
-            Divider().opacity(0.5)
-            footer
+        NavigationStack {
+            downloadsList
+                .navigationTitle("Downloads")
+                .searchable(text: $search, prompt: "Search downloads")
+                .toolbar { downloadsToolbar }
+                .safeAreaInset(edge: .bottom) { statusBar }
         }
         .frame(minWidth: 540, minHeight: 440)
     }
 
-    // MARK: Toolbar
+    // MARK: List (native — sections + system separators)
 
-    private var toolbar: some View {
-        HStack(spacing: 12) {
+    @ViewBuilder
+    private var downloadsList: some View {
+        if model.state.rows.isEmpty {
+            ContentUnavailableView(
+                "No Downloads Yet", systemImage: "arrow.down.circle",
+                description: Text("Downloads you start with goh appear here."))
+        } else if visibleInProgress.isEmpty && visibleTerminal.isEmpty {
+            ContentUnavailableView.search(text: search)
+        } else {
+            List {
+                if !visibleInProgress.isEmpty {
+                    Section("Downloading") {
+                        ForEach(visibleInProgress, id: \.id) { row in
+                            DownloadsActiveRow(row: row, model: model)
+                                .listRowInsets(EdgeInsets())
+                        }
+                    }
+                }
+                if !visibleTerminal.isEmpty {
+                    Section("Recent") {
+                        ForEach(visibleTerminal, id: \.id) { row in
+                            DownloadsRecentRow(row: row, model: model, openTrust: openTrust)
+                                .listRowInsets(EdgeInsets())
+                        }
+                    }
+                }
+            }
+            .listStyle(.inset)
+        }
+    }
+
+    // MARK: Toolbar (native — filter + actions get Liquid Glass automatically)
+
+    @ToolbarContentBuilder
+    private var downloadsToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
             Picker("Filter", selection: $filter) {
                 ForEach(DownloadsFilter.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .fixedSize()
-
-            Spacer(minLength: 8)
-
-            HStack(spacing: 5) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                TextField("Search downloads", text: $search)
-                    .textFieldStyle(.plain)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .frame(width: 200)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-
-    // MARK: Body
-
-    @ViewBuilder
-    private var content: some View {
-        if visibleInProgress.isEmpty && visibleTerminal.isEmpty {
-            Text(model.state.rows.isEmpty ? "No downloads yet." : "Nothing matches.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if !visibleInProgress.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            GohSectionHeader("Downloading") {
-                                Text("\(model.state.activeCount) active")
-                                    .font(GohTheme.Typography.secondary)
-                                    .foregroundStyle(.secondary)
-                            }
-                            card(visibleInProgress) { row in
-                                DownloadsActiveRow(row: row, model: model)
-                            }
-                        }
-                    }
-                    if !visibleTerminal.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            GohSectionHeader("Recent") {
-                                Text("\(model.state.rows.filter(\.isTerminal).count) total")
-                                    .font(GohTheme.Typography.secondary)
-                                    .foregroundStyle(.secondary)
-                            }
-                            card(visibleTerminal) { row in
-                                DownloadsRecentRow(row: row, model: model, openTrust: openTrust)
-                            }
-                        }
-                    }
-                }
-                .padding(14)
-            }
-        }
-    }
-
-    private func card<Row: View>(_ rows: [GohMenuJobRow], @ViewBuilder row: @escaping (GohMenuJobRow) -> Row) -> some View {
-        GohModuleCard(padding: 0) {
-            VStack(spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, jobRow in
-                    if index > 0 {
-                        Rectangle().fill(GohTheme.separator)
-                            .frame(height: GohTheme.Metrics.hairline)
-                            .padding(.leading, 50)
-                    }
-                    row(jobRow)
-                }
-            }
-        }
-    }
-
-    // MARK: Footer
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Text(summaryText)
-                .font(GohTheme.Typography.secondary)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
+        ToolbarItemGroup(placement: .primaryAction) {
             Button { openDownloadsFolder() } label: { Label("Open Folder", systemImage: "folder") }
             Button("Clear Completed") { clearCompleted() }
                 .disabled(!model.state.rows.contains { $0.displayState == .completed })
         }
+    }
+
+    // MARK: Status bar (native bottom bar — totals)
+
+    private var statusBar: some View {
+        HStack {
+            Text(summaryText)
+                .font(GohTheme.Typography.secondary)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
+        .background(.bar)
     }
 
     private var summaryText: String {

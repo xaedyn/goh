@@ -20,18 +20,14 @@ public struct TrustWindowView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            summaryToolbar
-            Divider().opacity(0.5)
-            HStack(spacing: 0) {
-                entryList.frame(width: 250)
-                Divider()
-                inspector.frame(maxWidth: .infinity)
-            }
-            Divider().opacity(0.5)
-            footer
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            inspector
         }
-        .frame(minWidth: 740, minHeight: 460)
+        .frame(minWidth: 760, minHeight: 460)
+        .toolbar { trustToolbar }
+        .safeAreaInset(edge: .bottom) { statusBar }
         .task {
             await viewModel.loadOverview()
             selectDefault()
@@ -41,65 +37,78 @@ public struct TrustWindowView: View {
         .onDisappear { viewModel.reset() }
     }
 
-    // MARK: Summary toolbar
+    // MARK: Sidebar (native NavigationSplitView master list)
 
-    private var summaryToolbar: some View {
+    private var sidebar: some View {
+        List(selection: $selection) {
+            ForEach(filteredRows, id: \.displayPath) { row in
+                // selected:false — the native List draws the selection highlight.
+                TrustListRow(row: row, status: status(for: row), selected: false)
+                    .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                    .tag(row.displayPath)
+            }
+        }
+        .listStyle(.sidebar)
+        .searchable(text: $search, placement: .sidebar, prompt: "Search files")
+        .frame(minWidth: 240)
+        .overlay {
+            if viewModel.overview == .unavailable {
+                ContentUnavailableView("Trust Data Unavailable", systemImage: "lock.slash")
+            } else if viewModel.rows.isEmpty {
+                ContentUnavailableView(
+                    "No Recorded Downloads", systemImage: "checkmark.shield",
+                    description: Text("Files you download with goh are recorded here."))
+            } else if filteredRows.isEmpty {
+                ContentUnavailableView.search(text: search)
+            }
+        }
+    }
+
+    // MARK: Toolbar (native — actions get Liquid Glass automatically)
+
+    @ToolbarContentBuilder
+    private var trustToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if case .running = viewModel.runState {
+                Button("Cancel") { viewModel.cancelVerify() }
+            } else {
+                Button { onAttest() } label: { Label("Attest…", systemImage: "checkmark.seal") }
+                Button { viewModel.startVerify() } label: { Label("Verify All", systemImage: "checkmark.shield") }
+                    .disabled(viewModel.rows.isEmpty || viewModel.overview == .unavailable)
+            }
+        }
+    }
+
+    // MARK: Status bar (native bottom bar — counts + verify status)
+
+    private var statusBar: some View {
         HStack(spacing: 0) {
             if case .summary(let s) = viewModel.overview {
                 count(s.tracked, "tracked", .primary)
                 separator
                 count(s.verified, "verified", GohTheme.accent)
-                separator
-                count(s.downloadOnly, "download-only", .secondary)
                 if changedCount > 0 {
                     separator
                     count(changedCount, "changed", GohTheme.error)
                 }
-            } else if viewModel.overview == .unavailable {
-                Text("Trust data unavailable").font(GohTheme.Typography.rowTitle).foregroundStyle(.orange)
-            } else {
-                Text("No downloads recorded yet").font(GohTheme.Typography.rowTitle).foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
-            searchField
+            footerStatus
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
+        .background(.bar)
     }
 
     private func count(_ value: Int, _ label: String, _ color: Color) -> some View {
         HStack(spacing: 4) {
-            Text("\(value)").font(GohTheme.Typography.rowTitle.weight(.semibold)).foregroundStyle(color).monospacedDigit()
-            Text(label).font(GohTheme.Typography.rowTitle).foregroundStyle(.secondary)
+            Text("\(value)").font(GohTheme.Typography.secondary.weight(.semibold)).foregroundStyle(color).monospacedDigit()
+            Text(label).font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
         }
     }
 
     private var separator: some View {
-        Text("·").font(GohTheme.Typography.rowTitle).foregroundStyle(.tertiary).padding(.horizontal, 8)
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondary)
-            TextField("Search", text: $search).textFieldStyle(.plain)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .frame(width: 180)
-    }
-
-    // MARK: List
-
-    private var entryList: some View {
-        ScrollView {
-            LazyVStack(spacing: 2) {
-                ForEach(filteredRows, id: \.displayPath) { row in
-                    TrustListRow(row: row, status: status(for: row), selected: selection == row.displayPath)
-                        .onTapGesture { selection = row.displayPath }
-                }
-            }
-            .padding(8)
-        }
+        Text("·").font(GohTheme.Typography.secondary).foregroundStyle(.tertiary).padding(.horizontal, 8)
     }
 
     // MARK: Inspector
@@ -136,32 +145,13 @@ public struct TrustWindowView: View {
                     Text("Removes the saved download record for \(URL(fileURLWithPath: path).lastPathComponent). The file is already missing; this does not delete anything from disk.")
                 }
         } else {
-            Text("Select a file to inspect its provenance.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ContentUnavailableView(
+                "No File Selected", systemImage: "sidebar.squares.left",
+                description: Text("Select a file to inspect its provenance."))
         }
     }
 
-    // MARK: Footer
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            footerStatus
-            Spacer(minLength: 8)
-            if case .running = viewModel.runState {
-                Button("Cancel") { viewModel.cancelVerify() }
-            } else {
-                Button { onAttest() } label: { Label("Attest…", systemImage: "checkmark.seal") }
-                Button { viewModel.startVerify() } label: { Label("Verify All", systemImage: "checkmark.shield") }
-                    .buttonStyle(.borderedProminent)
-                    .tint(GohTheme.accent)
-                    .disabled(viewModel.rows.isEmpty || viewModel.overview == .unavailable)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
+    // MARK: Verify status (shown in the bottom status bar)
 
     @ViewBuilder
     private var footerStatus: some View {
