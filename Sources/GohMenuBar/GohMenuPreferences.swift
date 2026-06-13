@@ -5,7 +5,7 @@ import Foundation
 /// The injectable interface uses UserDefaults directly; @AppStorage is confined
 /// to the SwiftUI view layer (spec §7.1).
 public protocol GohMenuPreferences: AnyObject, Sendable {
-    /// Whether completion/failure notifications are enabled. Defaults to false when absent.
+    /// Whether completion/failure notifications are enabled. Defaults to true when absent.
     var notificationsEnabled: Bool { get set }
     /// Whether the tray app registers as a login item. Defaults to false when absent.
     var launchAtLoginEnabled: Bool { get set }
@@ -47,8 +47,10 @@ nonisolated public final class UserDefaultsMenuPreferences: GohMenuPreferences, 
         self.defaults = defaults
     }
 
+    /// Defaults to `true` when absent — completion notifications are a core
+    /// affordance; users opt out, not in.
     public nonisolated var notificationsEnabled: Bool {
-        get { defaults.bool(forKey: Key.notificationsEnabled) }
+        get { defaults.object(forKey: Key.notificationsEnabled) == nil ? true : defaults.bool(forKey: Key.notificationsEnabled) }
         set { defaults.set(newValue, forKey: Key.notificationsEnabled) }
     }
 

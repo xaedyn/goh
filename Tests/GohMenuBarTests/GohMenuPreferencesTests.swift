@@ -6,12 +6,14 @@ import Testing
 @Suite("GohMenuPreferences")
 struct GohMenuPreferencesTests {
 
-    // AC4: absent key reads as false (default OFF for both toggles)
-    @Test func defaultsFalseWhenAbsent() {
+    // Defaults when absent: notifications ON (core affordance, opt-out),
+    // launch-at-login OFF, show-progress-on-icon ON.
+    @Test func defaultsWhenAbsent() {
         let suite = "dev.goh.test.prefs.\(UUID().uuidString)"
         let store = UserDefaultsMenuPreferences(suiteName: suite)
-        #expect(store.notificationsEnabled == false)
+        #expect(store.notificationsEnabled == true)
         #expect(store.launchAtLoginEnabled == false)
+        #expect(store.showProgressOnIcon == true)
     }
 
     // AC4: values survive a round-trip through the store

@@ -435,6 +435,12 @@ final class GohStatusItemController: NSObject {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            // Re-check the clipboard on every open. The popover's SwiftUI `.task`
+            // does not reliably re-fire across NSPopover show/hide (the hosting
+            // view isn't re-created), so drive the refresh from the show path —
+            // this is the on-open clipboard detection that used to hang off the
+            // MenuBarExtra menu's lifecycle.
+            Task { await model.refreshClipboard() }
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }

@@ -526,6 +526,45 @@ func notificationBoard() -> some View {
     return banner
 }
 
+// MARK: - Row controls (hover affordances) — regression fix #2
+
+@MainActor
+func popoverRowsBoard() -> some View {
+    func mk(_ id: UInt64, _ title: String, _ state: GohMenuJobDisplayState,
+            frac: Double? = nil, size: String = "", speed: String = "", eta: String? = nil,
+            completed: String? = nil, failure: String? = nil) -> GohMenuJobRow {
+        GohMenuJobRow(
+            id: id, title: title, subtitle: title, stateText: "", displayState: state,
+            progressText: "", speedText: speed, destination: "/Users/me/Downloads/\(title)",
+            url: "https://huggingface.co/\(title)", controls: [],
+            progressFraction: frac, sizeText: size, etaText: eta,
+            completedDateText: completed, failureReason: failure)
+    }
+    let actions = PopoverActions()
+    return VStack(alignment: .leading, spacing: 14) {
+        Text("Row controls — revealed on hover").font(GohTheme.Typography.groupLabel).foregroundStyle(.secondary)
+        ActiveDownloadRow(
+            row: mk(1, "mistral-7b-v0.3.safetensors", .active, frac: 0.92, size: "13.4 of 14.5 GB", speed: "7.2 MB/s", eta: "1s"),
+            prominent: true, actions: actions, forceHover: true)
+        GohModuleCard(padding: 11) {
+            ActiveDownloadRow(
+                row: mk(2, "dataset-shard-00007.parquet", .active, frac: 0.10, size: "5.01 of 512 MB", speed: "3.4 MB/s"),
+                prominent: false, actions: actions, forceHover: true)
+        }
+        GohModuleCard(padding: 0) {
+            VStack(spacing: 0) {
+                RecentRow(row: mk(3, "imagenet-val.tar.zst", .completed, completed: "now"), actions: actions, forceHover: true)
+                    .padding(.horizontal, 11).padding(.vertical, 9)
+                Rectangle().fill(GohTheme.separator).frame(height: 0.5).padding(.leading, 11)
+                RecentRow(row: mk(4, "broken.bin", .failed, failure: "Couldn't connect — 503"), actions: actions, forceHover: true)
+                    .padding(.horizontal, 11).padding(.vertical, 9)
+            }
+        }
+    }
+    .frame(width: 320)
+    .padding(20)
+}
+
 @MainActor
 func main() {
     let args = CommandLine.arguments
@@ -559,6 +598,9 @@ func main() {
 
     render("notification", scheme: .dark, into: dir, notificationBoard())
     render("notification", scheme: .light, into: dir, notificationBoard())
+
+    render("popover-rows", scheme: .dark, into: dir, popoverRowsBoard())
+    render("popover-rows", scheme: .light, into: dir, popoverRowsBoard())
 }
 
 MainActor.assumeIsolated { main() }

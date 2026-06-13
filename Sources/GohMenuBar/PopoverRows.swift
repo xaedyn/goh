@@ -49,16 +49,46 @@ struct ClipboardCTA: View {
     }
 }
 
+/// A borderless glyph button revealed on row hover (Safari-style).
+struct RowGlyphButton: View {
+    let systemName: String
+    let help: String
+    var destructive = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12))
+                .foregroundStyle(destructive ? AnyShapeStyle(GohTheme.error) : AnyShapeStyle(.secondary))
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
 /// An in-progress download row — the foremost active download as the prominent
 /// "hero" card, or a compact row inside the "Downloading" group. Name, static
-/// accent progress bar, detail line (size — speed — ETA), and a circular
-/// pause/resume control.
-struct ActiveDownloadRow: View {
+/// accent progress bar, detail line (size — speed — ETA), a circular pause/resume
+/// control (always visible), and Copy URL / Remove glyphs revealed on hover.
+public struct ActiveDownloadRow: View {
     let row: GohMenuJobRow
     let prominent: Bool
     let actions: PopoverActions
+    /// Forces the hover controls visible — for previews/snapshots only.
+    var forceHover = false
+    @State private var hovering = false
 
-    var body: some View {
+    public init(row: GohMenuJobRow, prominent: Bool, actions: PopoverActions, forceHover: Bool = false) {
+        self.row = row
+        self.prominent = prominent
+        self.actions = actions
+        self.forceHover = forceHover
+    }
+
+    public var body: some View {
         Group {
             if prominent {
                 GohModuleCard(padding: 12) { content }
@@ -66,20 +96,24 @@ struct ActiveDownloadRow: View {
                 content
             }
         }
+        .onHover { hovering = $0 }
         .contextMenu { ActiveRowMenu(row: row, actions: actions) }
     }
 
     @ViewBuilder
     private var content: some View {
         VStack(alignment: .leading, spacing: prominent ? 9 : 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(row.title)
                     .font(GohTheme.Typography.rowTitle)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
-                if prominent, let pct = percentText {
+                if hovering || forceHover {
+                    RowGlyphButton(systemName: "link", help: "Copy URL") { actions.copy(row.url) }
+                    RowGlyphButton(systemName: "trash", help: "Remove", destructive: true) { actions.remove(row) }
+                } else if prominent, let pct = percentText {
                     Text(pct)
                         .font(GohTheme.Typography.secondary)
                         .foregroundStyle(.secondary)
@@ -138,13 +172,21 @@ struct ActiveDownloadRow: View {
 
 /// A terminal row in the "Recent" group — completed shows a green checkmark +
 /// date; failed shows a red exclamation + "Failed".
-struct RecentRow: View {
+public struct RecentRow: View {
     let row: GohMenuJobRow
     let actions: PopoverActions
+    var forceHover = false
+    @State private var hovering = false
+
+    public init(row: GohMenuJobRow, actions: PopoverActions, forceHover: Bool = false) {
+        self.row = row
+        self.actions = actions
+        self.forceHover = forceHover
+    }
 
     private var failed: Bool { row.displayState == .failed }
 
-    var body: some View {
+    public var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
@@ -162,8 +204,17 @@ struct RecentRow: View {
                 }
             }
             Spacer(minLength: 8)
-            if failed {
-                GohCircularControl(systemName: "arrow.clockwise", help: "Retry") { actions.retry(row) }
+            if hovering || forceHover {
+                if failed {
+                    RowGlyphButton(systemName: "arrow.clockwise", help: "Retry") { actions.retry(row) }
+                } else {
+                    RowGlyphButton(systemName: "folder", help: "Reveal in Finder") { actions.reveal(row.destination) }
+                }
+                RowGlyphButton(systemName: "trash", help: "Remove", destructive: true) { actions.remove(row) }
+            } else if failed {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(GohTheme.error)
             } else {
                 Text(trailingText)
                     .font(GohTheme.Typography.secondary)
@@ -175,6 +226,7 @@ struct RecentRow: View {
                     .foregroundStyle(GohTheme.accent)
             }
         }
+        .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .contextMenu {
             if failed {
