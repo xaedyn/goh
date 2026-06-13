@@ -366,26 +366,121 @@ struct DownloadsWindowRoot: View {
     }
 }
 
-/// Owns the menu-bar `NSStatusItem` and the popover. The `goh` wordmark is drawn
-/// as the status button's *image* — driven by the view-model's download lifecycle
-/// — and a click toggles a transient `NSPopover` hosting the existing
-/// `GohMenuView`.
-///
-/// Why an image and not a hosted SwiftUI view: an `NSHostingView` placed on the
-/// status button consumes the mouse event before it reaches the button's action,
-/// so the click never registers (confirmed empirically). Drawing the icon as
-/// `button.image` keeps the standard, reliable click path. (Drag-a-URL-onto-the-
-/// icon is deferred for the same reason — it needs a drag overlay that doesn't
-/// intercept the click — and the completion bloom animation is likewise a
-/// follow-up; the icon currently updates per steady state.)
+/// The status item's content view: it **draws** the wordmark icon itself (an
+/// NSImage rendered per state by the controller) and handles both the click
+/// (`mouseDown` → toggle) and the URL drop target. A plain drawing NSView — unlike
+/// an `NSHostingView` (SwiftUI), which consumes the mouse event before AppKit
+/// dispatch — receives `mouseDown` normally as the hit-test target, so it can own
+/// clicks *and* be a drag destination (a transparent overlay can't: a `hitTest`-nil
+/// view receives neither clicks nor drags).
+@MainActor
+final class GohStatusItemView: NSView {
+    var onClick: () -> Void = {}
+    var onDropURL: (URL) -> Void = { _ in }
+    private var iconImage: NSImage?
+    private var dragTargeted = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        toolTip = "goh"
+        registerForDraggedTypes([.URL, .string])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setIcon(_ image: NSImage) {
+        iconImage = image
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if dragTargeted {
+            NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 3), xRadius: 5, yRadius: 5).fill()
+        }
+        guard let iconImage else { return }
+        let s = iconImage.size
+        iconImage.draw(in: NSRect(
+            x: ((bounds.width - s.width) / 2).rounded(),
+            y: ((bounds.height - s.height) / 2).rounded(),
+            width: s.width, height: s.height))
+    }
+
+    override func mouseDown(with event: NSEvent) { onClick() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard droppedURL(from: sender) != nil else { return [] }
+        dragTargeted = true
+        toolTip = "Drop to download with goh"
+        needsDisplay = true
+        return .copy
+    }
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) { resetDrag() }
+    override func draggingEnded(_ sender: any NSDraggingInfo) { resetDrag() }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        resetDrag()
+        guard let url = droppedURL(from: sender) else { return false }
+        onDropURL(url)
+        return true
+    }
+
+    private func resetDrag() {
+        dragTargeted = false
+        toolTip = "goh"
+        needsDisplay = true
+    }
+
+    /// The first HTTP(S) URL on the drag pasteboard (NSURL or a string that parses).
+    private func droppedURL(from sender: any NSDraggingInfo) -> URL? {
+        let pasteboard = sender.draggingPasteboard
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
+           let url = urls.first(where: { $0.scheme == "http" || $0.scheme == "https" }) {
+            return url
+        }
+        if let string = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let url = URL(string: string), url.scheme == "http" || url.scheme == "https" {
+            return url
+        }
+        return nil
+    }
+}
+
+/// A borderless, non-activating floating panel for the menu-bar content — the
+/// macOS 26 Control-Center look (detached rounded rectangle below the bar, no
+/// NSPopover beak). Borderless windows can't become key by default; we override
+/// so the panel can receive keyboard input (Esc to dismiss) and SwiftUI clicks.
+final class GohMenuPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+/// Owns the menu-bar `NSStatusItem` and the floating panel. The `goh` wordmark is
+/// drawn by a custom `GohStatusItemView` (so it owns clicks *and* a URL drop
+/// target), driven by the view-model's download lifecycle; a click toggles a
+/// borderless `GohMenuPanel` (no beak) hosting the existing `GohMenuView`,
+/// dismissed by click-outside / Esc / app-deactivate. (Completion bloom is next.)
 @MainActor
 final class GohStatusItemController: NSObject {
     private let statusItem: NSStatusItem
-    private let popover: NSPopover
+    private var panel: GohMenuPanel!
     private let model: GohMenuViewModel
     private let preferences: any GohMenuPreferences
+    private let statusView = GohStatusItemView(frame: .zero)
     private var cancellable: AnyCancellable?
     private var appearanceObservation: NSKeyValueObservation?
+    /// Local + global event monitors for click-outside / Esc dismissal (installed
+    /// while the panel is open). The borderless panel has no NSPopover transient
+    /// auto-dismiss, so we drive it ourselves.
+    private var eventMonitors: [Any] = []
+    /// The popover content, built once and re-parented between the glass and solid
+    /// surfaces as the system reduce-transparency setting toggles.
+    private let contentHost: NSHostingView<GohMenuView>
+    /// The live Liquid Glass surface, or nil while the reduce-transparency solid
+    /// fallback is installed. Held for the on-show backdrop-refresh nudge.
+    private var glassView: NSGlassEffectView?
+    /// Observes system reduce-transparency changes so the panel swaps its surface
+    /// live (no relaunch needed). Retained for the controller's (app-)lifetime —
+    /// the status item lives until quit, so the observation needs no teardown.
+    private var reduceTransparencyObserver: NSObjectProtocol?
 
     init(
         model: GohMenuViewModel,
@@ -396,21 +491,39 @@ final class GohStatusItemController: NSObject {
         self.model = model
         self.preferences = preferences
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-
-        popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = NSHostingController(
-            rootView: GohMenuView(
-                model: model,
-                preferences: preferences,
-                loginItem: loginItem,
-                quitApplication: quit))
+        contentHost = NSHostingView(rootView: GohMenuView(
+            model: model,
+            preferences: preferences,
+            loginItem: loginItem,
+            quitApplication: quit))
 
         super.init()
 
+        panel = Self.makePanel()
+        installContentSurface()
+        reduceTransparencyObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.installContentSurface() }
+        }
+
         if let button = statusItem.button {
-            button.imagePosition = .imageOnly
+            statusView.onClick = { [weak self] in self?.togglePopover() }
+            statusView.onDropURL = { [weak self] url in
+                guard let self else { return }
+                Task { await self.model.addDownload(url: url.absoluteString) }
+            }
+            button.addSubview(statusView)
+            statusView.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                statusView.leadingAnchor.constraint(equalTo: button.leadingAnchor),
+                statusView.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+                statusView.topAnchor.constraint(equalTo: button.topAnchor),
+                statusView.bottomAnchor.constraint(equalTo: button.bottomAnchor),
+            ])
+            // Fallback in case AppKit routes the click to the button rather than the view.
             button.target = self
             button.action = #selector(togglePopover)
         }
@@ -430,27 +543,164 @@ final class GohStatusItemController: NSObject {
         Task { @MainActor [weak self] in self?.updateIcon() }
     }
 
-    @objc private func togglePopover() {
-        guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
+    /// Builds the borderless floating panel window — clear background so its glass
+    /// surface can sample the desktop, continuous rounded corners, soft shadow. The
+    /// content surface itself is installed by `installContentSurface()`.
+    private static func makePanel() -> GohMenuPanel {
+        // A titled window with a hidden/transparent titlebar + full-size content —
+        // NOT `.borderless`, which composites unreliably (isVisible true, correct
+        // frame, but no pixels) with an NSHostingController.
+        let panel = GohMenuPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 400),
+            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false)
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.isFloatingPanel = true
+        panel.level = .popUpMenu
+        // NOT hidesOnDeactivate: an accessory app doesn't reliably stay active after
+        // the panel shows, so it would hide immediately. Dismissal is driven by the
+        // click-outside / Esc event monitors instead.
+        panel.hidesOnDeactivate = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isMovable = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.animationBehavior = .utilityWindow
+        return panel
+    }
+
+    /// Installs the popover content on the panel's surface, honoring the system
+    /// **Reduce Transparency** setting: real macOS 26 Liquid Glass
+    /// (`NSGlassEffectView`, which lenses/refracts the desktop behind the clear
+    /// panel — a frosted NSVisualEffectView can't) when transparency is allowed, or
+    /// a solid opaque surface when the user has reduced it. Re-invoked live when the
+    /// setting toggles. The content view is set directly (NOT via
+    /// contentViewController, which collapses a no-intrinsic-size view to 0×0).
+    private func installContentSurface() {
+        contentHost.removeFromSuperview()
+        let surface: NSView
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+            let solid = NSView()
+            solid.wantsLayer = true
+            solid.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            solid.layer?.cornerRadius = 14
+            solid.layer?.cornerCurve = .continuous
+            solid.layer?.masksToBounds = true
+            contentHost.translatesAutoresizingMaskIntoConstraints = false
+            solid.addSubview(contentHost)
+            NSLayoutConstraint.activate([
+                contentHost.leadingAnchor.constraint(equalTo: solid.leadingAnchor),
+                contentHost.trailingAnchor.constraint(equalTo: solid.trailingAnchor),
+                contentHost.topAnchor.constraint(equalTo: solid.topAnchor),
+                contentHost.bottomAnchor.constraint(equalTo: solid.bottomAnchor),
+            ])
+            glassView = nil
+            surface = solid
         } else {
-            // Re-check the clipboard on every open. The popover's SwiftUI `.task`
-            // does not reliably re-fire across NSPopover show/hide (the hosting
-            // view isn't re-created), so drive the refresh from the show path —
-            // this is the on-open clipboard detection that used to hang off the
-            // MenuBarExtra menu's lifecycle.
-            Task { await model.refreshClipboard() }
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = 14
+            glass.style = .regular
+            contentHost.translatesAutoresizingMaskIntoConstraints = true
+            glass.contentView = contentHost
+            glassView = glass
+            surface = glass
         }
+        panel.contentView = surface
+    }
+
+    @objc private func togglePopover() {
+        if panel.isVisible { hidePanel() } else { showPanel() }
+    }
+
+    private func showPanel() {
+        guard let button = statusItem.button, let buttonWindow = button.window else { return }
+
+        // Re-check the clipboard on every open (the on-open detection that used to
+        // hang off the MenuBarExtra menu's lifecycle).
+        Task { await model.refreshClipboard() }
+
+        // Size the panel to the SwiftUI content.
+        panel.layoutIfNeeded()
+        let size = panel.contentView?.fittingSize ?? NSSize(width: 346, height: 400)
+        panel.setContentSize(size)
+
+        // Detached, right-aligned under the status item, ~7px below the bar,
+        // clamped on-screen.
+        let buttonFrame = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let gap: CGFloat = 7
+        var origin = NSPoint(x: buttonFrame.maxX - size.width, y: buttonFrame.minY - gap - size.height)
+        if let visible = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame {
+            origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
+        }
+        panel.setFrameOrigin(origin)
+
+        // Activate the app so the window server composites the panel onto the
+        // active space (an inactive accessory app's panel isn't displayed).
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        // macOS 26.2: a non-movable borderless window's NSGlassEffectView can cache
+        // its backdrop and fail to re-sample when content moves beneath it (Apple
+        // Forums 810314). Nudge a redisplay on show so the glass re-samples the
+        // current desktop. (If stale glass persists on 26.2, the heavier fix is a
+        // movable window or a frame jitter — escalate only if observed live.)
+        glassView?.needsDisplay = true
+        glassView?.displayIfNeeded()
+        installEventMonitors()
+    }
+
+    private func hidePanel() {
+        guard panel.isVisible else { return }
+        panel.orderOut(nil)
+        removeEventMonitors()
+    }
+
+    /// Click-outside / Esc dismissal — the borderless panel has no NSPopover
+    /// transient behavior, so we monitor events while it's open.
+    private func installEventMonitors() {
+        removeEventMonitors()
+        let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53 { self.hidePanel(); return nil }   // Esc
+                return event
+            }
+            // Mouse down inside the panel or on the status item → not a dismiss
+            // (the status item's own click toggles).
+            let point = NSEvent.mouseLocation
+            if self.panel.frame.contains(point) { return event }
+            if let button = self.statusItem.button, let window = button.window,
+               window.convertToScreen(button.convert(button.bounds, to: nil)).contains(point) {
+                return event
+            }
+            self.hidePanel()
+            return event
+        }
+        let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.hidePanel()
+        }
+        eventMonitors = [local, global].compactMap { $0 }
+    }
+
+    private func removeEventMonitors() {
+        for monitor in eventMonitors { NSEvent.removeMonitor(monitor) }
+        eventMonitors = []
     }
 
     // MARK: Icon
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        button.image = Self.wordmarkImage(for: currentState(), appearance: button.effectiveAppearance)
+        let image = Self.wordmarkImage(for: currentState(), appearance: button.effectiveAppearance)
+        statusView.setIcon(image)
+        // Size the status item to the icon so the custom view (and its click/drop
+        // area) has a defined width.
+        statusItem.length = image.size.width + 14
     }
 
     private func currentState() -> GohWordmarkState {
