@@ -42,19 +42,23 @@ nonisolated public struct GohTrustEntryRow: Sendable, Equatable {
     public let downloadedAt: Date
     /// entry.verifiedAt (nil = downloaded-only; non-nil = last-verified date).
     public let verifiedAt: Date?
+    /// entry.size in bytes — the recorded file size.
+    public let size: Int
 
     public init(
         displayPath: String,
         sanitizedURL: String,
         sha256: String,
         downloadedAt: Date,
-        verifiedAt: Date?
+        verifiedAt: Date?,
+        size: Int = 0
     ) {
         self.displayPath = displayPath
         self.sanitizedURL = sanitizedURL
         self.sha256 = sha256
         self.downloadedAt = downloadedAt
         self.verifiedAt = verifiedAt
+        self.size = size
     }
 }
 

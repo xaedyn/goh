@@ -350,7 +350,7 @@ struct TrustWindowRoot: View {
     }
 
     var body: some View {
-        TrustWindowView(viewModel: viewModel)
+        TrustWindowView(viewModel: viewModel, onAttest: { openAttestInTerminal() })
     }
 }
 
@@ -557,6 +557,10 @@ private func openTopInTerminal() {
 
 private func openDoctorInTerminal() {
     openGohCommandInTerminal(.doctor)
+}
+
+private func openAttestInTerminal() {
+    openGohCommandInTerminal(.attest)
 }
 
 private func openGohCommandInTerminal(_ terminalCommand: GohTerminalCommand) {

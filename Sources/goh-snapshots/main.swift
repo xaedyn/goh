@@ -351,6 +351,102 @@ func downloadsBoard() -> some View {
     return body
 }
 
+// MARK: - Step 6: Trust window
+
+@MainActor
+func countPair(_ value: String, _ label: String, _ color: Color) -> some View {
+    HStack(spacing: 3) {
+        Text(value).fontWeight(.semibold).foregroundStyle(color).monospacedDigit()
+        Text(label).foregroundStyle(.secondary)
+    }
+}
+
+@MainActor
+func trustBoard(liveCurrentHash: String?) -> some View {
+    func entry(_ path: String, _ url: String, _ sha: String, _ size: Int, verified: Bool) -> GohTrustEntryRow {
+        GohTrustEntryRow(
+            displayPath: "/Users/me/Downloads/\(path)", sanitizedURL: url, sha256: sha,
+            downloadedAt: Date(timeIntervalSince1970: 1_748_600_000),
+            verifiedAt: verified ? Date(timeIntervalSince1970: 1_749_370_000) : nil, size: size)
+    }
+
+    let rows: [(GohTrustEntryRow, TrustDisplayStatus)] = [
+        (entry("llama-3.1-70b-instruct.safetensors", "huggingface.co/meta/llama", "sha256:11aa…", 66_400_000_000, verified: true), .verified(at: Date(timeIntervalSince1970: 1_749_370_000))),
+        (entry("sd-xl-base-1.0.safetensors", "huggingface.co/stabilityai/sdxl", "sha256:22bb…", 6_940_000_000, verified: true), .verified(at: Date(timeIntervalSince1970: 1_749_370_000))),
+        (entry("imagenet-val.tar.zst", "academictorrents.com/imagenet", "sha256:33cc…", 6_400_000_000, verified: true), .verified(at: Date(timeIntervalSince1970: 1_749_370_000))),
+        (entry("tokenizer.model", "huggingface.co/meta/llama", "sha256:44dd…", 2_100_000, verified: false), .recordedOnly),
+        (entry("vocab.bpe", "cdn.example.com/gpt2/vocab.bpe", "sha256:80aa559f31b1c2774aae478c285c1f0a77b2b82877be8201da55985d9a11ee47", 1_000_000, verified: false), .changed(.size)),
+    ]
+    let changed = rows.last!.0
+
+    let body = VStack(spacing: 0) {
+        // faux title bar
+        ZStack {
+            Text("Trust").font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 8) {
+                Circle().fill(Color(red: 1, green: 0.37, blue: 0.34)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 1, green: 0.74, blue: 0.18)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.25)).frame(width: 12, height: 12)
+                Spacer()
+            }.padding(.horizontal, 13)
+        }.frame(height: 38)
+        // summary toolbar
+        HStack(spacing: 7) {
+            countPair("48", "tracked", .primary)
+            Text("·").foregroundStyle(.tertiary)
+            countPair("41", "verified", GohTheme.accent)
+            Text("·").foregroundStyle(.tertiary)
+            countPair("6", "download-only", .secondary)
+            Text("·").foregroundStyle(.tertiary)
+            countPair("1", "changed", GohTheme.error)
+            Spacer()
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.tertiary)
+                Text("Search").font(.system(size: 12)).foregroundStyle(.tertiary)
+            }.padding(.horizontal, 8).padding(.vertical, 5)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 7)).frame(width: 150)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        Divider().opacity(0.5)
+
+        HStack(spacing: 0) {
+            // list
+            VStack(spacing: 2) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
+                    TrustListRow(row: item.0, status: item.1, selected: item.0.displayPath == changed.displayPath)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8).frame(width: 250)
+            Divider()
+            // inspector (changed file with the hash diff)
+            TrustInspector(
+                row: changed,
+                status: .changed(.size),
+                currentHash: liveCurrentHash,
+                changeReason: "The file's size differs from the recorded 1.0 MB.")
+                .frame(maxWidth: .infinity)
+        }
+        .frame(height: 470)
+
+        Divider().opacity(0.5)
+        HStack {
+            Text("Last check: 47 OK · 1 changed").font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
+            Spacer()
+            Label("Attest…", systemImage: "checkmark.seal").font(.system(size: 12))
+            Label("Verify All", systemImage: "checkmark.shield").font(.system(size: 12)).foregroundStyle(GohTheme.accent)
+        }.padding(.horizontal, 14).padding(.vertical, 10)
+    }
+    .frame(width: 760)
+    .background(.regularMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+    .padding(34)
+
+    return body
+}
+
 @MainActor
 func main() {
     let args = CommandLine.arguments
@@ -371,6 +467,13 @@ func main() {
 
     render("downloads", scheme: .dark, into: dir, downloadsBoard())
     render("downloads", scheme: .light, into: dir, downloadsBoard())
+
+    let sampleCurrent = "80aa559f31b1c2774a978a9382be81779c28a1f3c8a24b7d8f9123ac77be8281"
+    render("trust", scheme: .dark, into: dir, trustBoard(liveCurrentHash: sampleCurrent))
+    render("trust", scheme: .light, into: dir, trustBoard(liveCurrentHash: sampleCurrent))
+    // The live shipping state (no on-disk hash computed yet) — must still read alarming.
+    render("trust-live", scheme: .dark, into: dir, trustBoard(liveCurrentHash: nil))
+    render("trust-live", scheme: .light, into: dir, trustBoard(liveCurrentHash: nil))
 }
 
 MainActor.assumeIsolated { main() }

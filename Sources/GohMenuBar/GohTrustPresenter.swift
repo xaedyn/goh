@@ -93,6 +93,7 @@ nonisolated public struct GohTrustPresenter: Sendable {
             sanitizedURL: URLDisplay.sanitized(entry.url),
             sha256: entry.sha256,
             downloadedAt: entry.downloadedAt,
-            verifiedAt: entry.verifiedAt)
+            verifiedAt: entry.verifiedAt,
+            size: entry.size)
     }
 }
