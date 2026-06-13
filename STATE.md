@@ -5,7 +5,7 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
-### 2026-06-13 (menu-bar Liquid Glass redesign) — **All 8 surfaces rebuilt on `redesign/menubar-liquid-glass` (9 commits, pushed); snapshot-verified; running-app verification pass PENDING; NO PR yet**
+### 2026-06-13 (menu-bar Liquid Glass redesign) — **All 8 surfaces rebuilt on `redesign/menubar-liquid-glass` (pushed); running-app verification pass PASSED (user, GUI end-to-end); NO PR yet — polish by value next**
 
 Full HIG / Liquid Glass redesign of the menu-bar app from `design/menubar-redesign/`
 (binding spec + reference screenshots). **Binds the existing view-models only — `GohCore`
@@ -31,10 +31,10 @@ is untouched** (`git diff main -- Sources/GohCore` empty; no wire/protocolVersio
 - **Verified live so far:** only the Step-3 host (icon legible, click→popover, window buttons
   open, no stray window). Everything else is **snapshot-verified, not yet GUI-verified.**
 
-**NEXT — user runs the running-app verification pass first (no new code), then polish by value:**
-1. **Running-app verification (user, items 7–9):** Liquid Glass blur-through over a real
-   wallpaper; Downloads filter tabs + search live; overall build holds together. *Gate before
-   any polish coding.* PR held (not even draft) until this passes.
+**NEXT — running-app verification PASSED (2026-06-13, GUI end-to-end: glass blur-through,
+Downloads filter/search, stability all confirmed). Polish by value:**
+1. ~~Running-app verification (user, items 7–9)~~ — **DONE, all good.** PR can now go up
+   (held pending user's call on timing).
 2. **Live Trust hash-diff (#3 — highest value):** on-demand single-file re-hash of the selected
    changed file (concurrency-sensitive — mirror the verify off-main pattern, mind the
    cooperative-pool deadlock). Live changed inspector already reads alarming without it.
