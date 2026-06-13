@@ -186,6 +186,57 @@ struct StatusItemBoard: View {
     }
 }
 
+// MARK: - Step 4: Add Download window
+
+/// No-op stubs — the snapshot renders a static form, so these are never called.
+@MainActor
+final class SnapshotMenuClient: GohMenuClient {
+    func progressSnapshots() -> AsyncThrowingStream<[ProgressSnapshot], any Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+    func add(_ request: AddRequest) async throws -> JobSummary { throw CancellationError() }
+    func pause(jobID: UInt64) async throws {}
+    func resume(jobID: UInt64) async throws {}
+    func remove(jobID: UInt64, keepPartialFile: Bool) async throws {}
+    func recordVerifiedProvenance(_ entries: [VerifiedProvenanceEntry]) async throws {}
+    func ls() async throws -> LsReply { throw CancellationError() }
+    func forget(paths: [String]) async throws {}
+}
+
+struct SnapshotFolderPicker: FolderPicker {
+    func chooseFolder() async -> String? { nil }
+}
+
+/// The Add Download content inside a faux window chrome (title bar + traffic
+/// lights) so the snapshot reads like the real window.
+@MainActor
+func addDownloadBoard() -> some View {
+    let vm = AddDownloadViewModel(
+        initialURL: "https://huggingface.co/org/model-00003.safetensors",
+        client: SnapshotMenuClient(),
+        folderPicker: SnapshotFolderPicker())
+
+    return VStack(spacing: 0) {
+        ZStack {
+            Text("Add Download").font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 8) {
+                Circle().fill(Color(red: 1, green: 0.37, blue: 0.34)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 1, green: 0.74, blue: 0.18)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.25)).frame(width: 12, height: 12)
+                Spacer()
+            }
+            .padding(.horizontal, 13)
+        }
+        .frame(width: 340, height: 38)
+
+        AddDownloadView(vm: vm)
+    }
+    .background(.regularMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+    .padding(34)
+}
+
 @MainActor
 func main() {
     let args = CommandLine.arguments
@@ -200,6 +251,9 @@ func main() {
 
     render("status-item", scheme: .dark, into: dir, StatusItemBoard())
     render("status-item", scheme: .light, into: dir, StatusItemBoard())
+
+    render("add-download", scheme: .dark, into: dir, addDownloadBoard())
+    render("add-download", scheme: .light, into: dir, addDownloadBoard())
 }
 
 MainActor.assumeIsolated { main() }
