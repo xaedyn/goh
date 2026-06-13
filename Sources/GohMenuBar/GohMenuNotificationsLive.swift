@@ -46,6 +46,7 @@ public final class LiveNotificationService: GohMenuNotificationService {
 
         let notifContent = UNMutableNotificationContent()
         notifContent.title = content.title
+        if !content.subtitle.isEmpty { notifContent.subtitle = content.subtitle }
         notifContent.body = content.body
         notifContent.sound = .default
         // Stable thread groups goh's completion banners together in Notification

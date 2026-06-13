@@ -482,6 +482,50 @@ func settingsBoard() -> some View {
     return body
 }
 
+// MARK: - Step 8: Completion notification (mockup of the system-drawn banner)
+
+@MainActor
+func notificationBoard() -> some View {
+    let appIcon = ZStack {
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .fill(Color(red: 0x0C / 255, green: 0x0E / 255, blue: 0x14 / 255))
+        ZStack {
+            Image(nsImage: GohWordmark.letters).resizable().renderingMode(.template).scaledToFit()
+                .foregroundStyle(Color(red: 0xF4 / 255, green: 0xED / 255, blue: 0xE0 / 255))
+            Image(nsImage: GohWordmark.arrow).resizable().renderingMode(.template).scaledToFit()
+                .foregroundStyle(Color(red: 0x6B / 255, green: 0xFA / 255, blue: 0x9B / 255))
+        }
+        .frame(width: 30)
+    }
+    .frame(width: 42, height: 42)
+
+    let banner = HStack(alignment: .top, spacing: 11) {
+        appIcon
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Download Complete").font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                Spacer()
+                Text("now").font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+            Text("sd-xl-base-1.0.safetensors")
+                .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.seal.fill").font(.system(size: 11)).foregroundStyle(GohTheme.accent)
+                Text("Verified · 6.94 GB").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        }
+    }
+    .padding(13)
+    .frame(width: 350)
+    .background(.regularMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
+    .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
+    .padding(40)
+
+    return banner
+}
+
 @MainActor
 func main() {
     let args = CommandLine.arguments
@@ -512,6 +556,9 @@ func main() {
 
     render("settings", scheme: .dark, into: dir, settingsBoard())
     render("settings", scheme: .light, into: dir, settingsBoard())
+
+    render("notification", scheme: .dark, into: dir, notificationBoard())
+    render("notification", scheme: .light, into: dir, notificationBoard())
 }
 
 MainActor.assumeIsolated { main() }
