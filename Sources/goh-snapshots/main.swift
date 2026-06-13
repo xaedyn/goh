@@ -447,6 +447,41 @@ func trustBoard(liveCurrentHash: String?) -> some View {
     return body
 }
 
+// MARK: - Step 7: Settings window
+
+/// Stub login item + preferences for the static Settings render.
+struct SnapshotLoginItem: GohMenuLoginItem {
+    func status() -> GohLoginItemStatus { .enabled }
+    func register() throws {}
+    func unregister() throws {}
+}
+
+@MainActor
+func settingsBoard() -> some View {
+    let body = VStack(spacing: 0) {
+        ZStack {
+            Text("goh Settings").font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 8) {
+                Circle().fill(Color(red: 1, green: 0.37, blue: 0.34)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 1, green: 0.74, blue: 0.18)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.25)).frame(width: 12, height: 12)
+                Spacer()
+            }.padding(.horizontal, 13)
+        }.frame(height: 38)
+
+        GohMenuPreferencesView(
+            preferences: UserDefaultsMenuPreferences(suiteName: "goh.snapshot.settings"),
+            loginItem: SnapshotLoginItem())
+    }
+    .frame(width: 380)
+    .background(.regularMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+    .padding(34)
+
+    return body
+}
+
 @MainActor
 func main() {
     let args = CommandLine.arguments
@@ -474,6 +509,9 @@ func main() {
     // The live shipping state (no on-disk hash computed yet) — must still read alarming.
     render("trust-live", scheme: .dark, into: dir, trustBoard(liveCurrentHash: nil))
     render("trust-live", scheme: .light, into: dir, trustBoard(liveCurrentHash: nil))
+
+    render("settings", scheme: .dark, into: dir, settingsBoard())
+    render("settings", scheme: .light, into: dir, settingsBoard())
 }
 
 MainActor.assumeIsolated { main() }

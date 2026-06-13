@@ -9,6 +9,9 @@ public protocol GohMenuPreferences: AnyObject, Sendable {
     var notificationsEnabled: Bool { get set }
     /// Whether the tray app registers as a login item. Defaults to false when absent.
     var launchAtLoginEnabled: Bool { get set }
+    /// Whether the menu-bar icon reflects download progress (green-when-active +
+    /// the completion bloom). Defaults to true when absent.
+    var showProgressOnIcon: Bool { get set }
 }
 
 /// Live implementation backed by UserDefaults.
@@ -22,6 +25,7 @@ nonisolated public final class UserDefaultsMenuPreferences: GohMenuPreferences, 
     private enum Key {
         static let notificationsEnabled = "GohMenuNotificationsEnabled"
         static let launchAtLoginEnabled = "GohMenuLaunchAtLoginEnabled"
+        static let showProgressOnIcon = "GohMenuShowProgressOnIcon"
     }
 
     /// Production initializer: uses standard UserDefaults (keyed by bundle ID).
@@ -51,5 +55,11 @@ nonisolated public final class UserDefaultsMenuPreferences: GohMenuPreferences, 
     public nonisolated var launchAtLoginEnabled: Bool {
         get { defaults.bool(forKey: Key.launchAtLoginEnabled) }
         set { defaults.set(newValue, forKey: Key.launchAtLoginEnabled) }
+    }
+
+    /// Defaults to `true` when absent (most users want the icon to reflect activity).
+    public nonisolated var showProgressOnIcon: Bool {
+        get { defaults.object(forKey: Key.showProgressOnIcon) == nil ? true : defaults.bool(forKey: Key.showProgressOnIcon) }
+        set { defaults.set(newValue, forKey: Key.showProgressOnIcon) }
     }
 }

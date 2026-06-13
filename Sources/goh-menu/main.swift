@@ -383,6 +383,7 @@ final class GohStatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let model: GohMenuViewModel
+    private let preferences: any GohMenuPreferences
     private var cancellable: AnyCancellable?
     private var appearanceObservation: NSKeyValueObservation?
 
@@ -393,6 +394,7 @@ final class GohStatusItemController: NSObject {
         quit: @escaping () -> Void
     ) {
         self.model = model
+        self.preferences = preferences
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         popover = NSPopover()
@@ -447,6 +449,9 @@ final class GohStatusItemController: NSObject {
 
     private func currentState() -> GohWordmarkState {
         if case .failed = model.state.health { return .error }
+        // "Show progress on the icon" pref: when off, the icon stays neutral
+        // regardless of activity (errors still surface).
+        guard preferences.showProgressOnIcon else { return .idle }
         if model.state.activeCount > 0 { return .active }
         if model.state.rows.contains(where: { $0.displayState == .paused }) { return .paused }
         return .idle
@@ -540,7 +545,7 @@ struct GohMenuApp: App {
         .defaultPosition(.center)
         .defaultLaunchBehavior(.suppressed)
 
-        Window("Preferences", id: "preferences") {
+        Window("goh Settings", id: "preferences") {
             GohMenuPreferencesView(
                 preferences: appDelegate.preferences,
                 loginItem: appDelegate.loginItem)
