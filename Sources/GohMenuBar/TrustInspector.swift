@@ -9,6 +9,7 @@ public struct TrustInspector: View {
     let row: GohTrustEntryRow
     let status: TrustDisplayStatus
     let currentHash: String?
+    let isComputingHash: Bool
     let changeReason: String?
     let onReveal: () -> Void
     let onForget: (() -> Void)?
@@ -17,6 +18,7 @@ public struct TrustInspector: View {
         row: GohTrustEntryRow,
         status: TrustDisplayStatus,
         currentHash: String? = nil,
+        isComputingHash: Bool = false,
         changeReason: String? = nil,
         onReveal: @escaping () -> Void = {},
         onForget: (() -> Void)? = nil
@@ -24,6 +26,7 @@ public struct TrustInspector: View {
         self.row = row
         self.status = status
         self.currentHash = currentHash
+        self.isComputingHash = isComputingHash
         self.changeReason = changeReason
         self.onReveal = onReveal
         self.onForget = onForget
@@ -136,10 +139,19 @@ public struct TrustInspector: View {
         if case .changed = status {
             section("Integrity — SHA-256 mismatch") {
                 if let currentHash {
+                    // The real recorded-vs-on-disk byte-diff.
                     TrustHashDiff(recorded: row.sha256, current: currentHash)
+                } else if isComputingHash {
+                    // Alarm is already in the banner above; the diff populates when
+                    // the on-demand hash finishes.
+                    TrustHashDiff(recorded: row.sha256, current: nil)
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Computing on-disk hash…")
+                            .font(GohTheme.Typography.secondary)
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
-                    // The alarm + reason live in the banner above; here we show the
-                    // recorded hash and the mechanism to compute the on-disk hash.
                     TrustHashDiff(recorded: row.sha256, current: nil)
                     Text("Run Verify All to compute the on-disk hash.")
                         .font(GohTheme.Typography.secondary)

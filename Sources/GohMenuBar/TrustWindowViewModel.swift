@@ -68,6 +68,14 @@ public final class TrustWindowViewModel: ObservableObject {
     /// after `loadOverview()` reads the ledger — before the view re-renders.
     @Published public private(set) var fastStatuses: [String: FastCheckStatus] = [:]
 
+    /// On-disk SHA-256 of a CHANGED file, keyed by `destinationPath`, computed on
+    /// demand when its row is selected. Powers the inspector's recorded-vs-current
+    /// byte-diff. Empty until the selected changed file's hash completes.
+    @Published public private(set) var currentHashes: [String: String] = [:]
+    /// The path whose on-disk hash is currently being computed (for the
+    /// "Computing on-disk hash…" inspector state); nil when idle.
+    @Published public private(set) var hashingPath: String?
+
     private let reader: any ProvenanceReading
     private let provenanceStorePath: String
     private let presenter: GohTrustPresenter
@@ -75,6 +83,8 @@ public final class TrustWindowViewModel: ObservableObject {
     /// a stub in tests.
     private let probe: any FileStatProbing
     private var cancellationBox: CancellationBox?
+    /// Cancellation for the in-flight on-demand hash (separate from verify).
+    private var hashCancellationBox: CancellationBox?
     /// Injected client for best-effort baseline sends after a verify run.
     /// Nil in test contexts that do not exercise backfill.
     private let menuClient: (any GohMenuClient)?
@@ -120,6 +130,43 @@ public final class TrustWindowViewModel: ObservableObject {
         overview = ov
         rows = rs
         fastStatuses = statuses
+    }
+
+    // MARK: - On-demand current hash (the changed-file byte-diff)
+
+    /// Computes the on-disk SHA-256 of a changed file on demand, so the inspector
+    /// can show the real recorded-vs-current byte-diff. Idempotent per path (cached
+    /// once computed); cancels any other in-flight hash. Runs on a real GCD thread
+    /// (NOT `Task.detached`, which would stay on the cooperative pool and could
+    /// starve it on a multi-GB file — same hazard the verify path avoids).
+    ///
+    /// Best-effort: a read failure (or cancellation) leaves the path unhashed and
+    /// the inspector falls back to "Run Verify All to compute the on-disk hash."
+    public func computeCurrentHash(forPath path: String) {
+        if currentHashes[path] != nil || hashingPath == path { return }
+        hashCancellationBox?.cancel()
+        let box = CancellationBox()
+        hashCancellationBox = box
+        hashingPath = path
+
+        let weakSelf = WeakRef(self)
+        DispatchQueue.global(qos: .userInitiated).async { [box, path] in
+            let hash = try? FileDigest.sha256WithSize(path: path, isCancelled: { box.isCancelled() }).0
+            Task { @MainActor in
+                guard let vm = weakSelf.value else { return }
+                // Apply only if this is still the path we were hashing and not cancelled.
+                guard vm.hashingPath == path, !box.isCancelled() else { return }
+                vm.hashingPath = nil
+                if let hash { vm.currentHashes[path] = hash }
+            }
+        }
+    }
+
+    /// Cancels any in-flight on-demand hash (e.g. selection changed / window closed).
+    public func cancelHashing() {
+        hashCancellationBox?.cancel()
+        hashCancellationBox = nil
+        hashingPath = nil
     }
 
     // MARK: - Forget (AC5)
@@ -250,6 +297,7 @@ public final class TrustWindowViewModel: ObservableObject {
     public func reset() {
         cancellationBox?.cancel()
         cancellationBox = nil
+        cancelHashing()
         verifyStartedAt = nil
         runState = .idle
     }

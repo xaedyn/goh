@@ -38,6 +38,7 @@ public struct TrustWindowView: View {
             selectDefault()
         }
         .onChange(of: viewModel.rows.map(\.displayPath)) { _, _ in selectDefault() }
+        .onChange(of: selection) { _, _ in hashSelectedIfChanged() }
         .onDisappear { viewModel.reset() }
     }
 
@@ -111,7 +112,8 @@ public struct TrustWindowView: View {
                 TrustInspector(
                     row: selectedRow,
                     status: status(for: selectedRow),
-                    currentHash: nil,                   // read-only model: not computed live (follow-up)
+                    currentHash: viewModel.currentHashes[selectedRow.displayPath],
+                    isComputingHash: viewModel.hashingPath == selectedRow.displayPath,
                     changeReason: changeReason(for: selectedRow),
                     onReveal: { reveal(selectedRow) },
                     onForget: viewModel.isForgettable(path: selectedRow.displayPath)
@@ -233,5 +235,12 @@ public struct TrustWindowView: View {
 
     private func reveal(_ row: GohTrustEntryRow) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.displayPath)])
+    }
+
+    /// When a CHANGED file is selected, kick off the on-demand on-disk re-hash so
+    /// the inspector can show the real byte-diff. Other states need no hash.
+    private func hashSelectedIfChanged() {
+        guard let row = selectedRow, case .changed = status(for: row) else { return }
+        viewModel.computeCurrentHash(forPath: row.displayPath)
     }
 }
