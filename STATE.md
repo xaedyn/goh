@@ -65,12 +65,27 @@ verification PENDING):** swapped the last hand-rolled materials for the system m
   Clear Completed), `.searchable`, `.bar` status, `ContentUnavailableView`. **Add + Settings → grouped
   `Form`** (`.formStyle(.grouped)`; Settings drops its 1-item tab bar). Popover live-confirmed good by
   user. No view-model/wire/daemon change.
-- 987 tests green; `swift build -warnings-as-errors` clean. **NEXT: user live-verifies the 4 rebuilt
-  windows in the running app (`Scripts/dev-app.sh`) — glass toolbars/sidebar, legible content, search,
-  Trust master-detail selection — light + dark over a busy wallpaper. Then push + PR.** Not pushed yet.
-  Optional brand-green panel `tintColor` left off (accent is carried by the arrow/controls).
-  Snapshot caveat: the `goh-snapshots` ImageRenderer harness renders Add/Settings directly; grouped
-  `Form`s may render thin/blank there (no window context) — cosmetic, the live app is the source of truth.
+- **Discoverable Forget + fixes (`197e3fe`,`1c23c69`,`53c1f7b`,`62b6e42`):** Trust Forget surfaced as a
+  right-click context menu + Delete key on MISSING rows (was a buried inspector button); the confirmation
+  dialog moved to the window root. Forget failures no longer swallowed — a `try?` hid them; now surfaced
+  with a **featureLevel-aware message** (reads daemon `ls().featureLevel` vs `GohFeatureLevel.current` →
+  "your daemon is too old, update it" instead of a misleading "unreachable"). Toolbar `.help` tooltips
+  (Attest/Verify/Cancel). `Scripts/dev-app.sh` now stages+signs the `goh` CLI in the dev bundle (Open in
+  Terminal / Doctor / Attest were hitting a missing `Contents/MacOS/goh`).
+- **`Scripts/dev-daemon.sh` (`1100319`) + the dev-loop lesson:** the dev menu `.app` talks to the
+  INSTALLED `/usr/local/bin/gohd`; building the menu doesn't update the daemon, so a stale daemon (the
+  live one was a featureLevel-1 June-9 tester build) rejects new commands like `forget`. New script
+  builds+signs+swaps+kickstarts the daemon in one step. **Critical:** sign the dev `gohd` WITHOUT hardened
+  runtime — `--options runtime` on a debug binary → kernel SIGKILL (`OS_REASON_CODESIGNING`), a silent
+  crash-loop; Developer-ID-without-hardened-runtime keeps the Team ID for same-team XPC validation and
+  launches. See [[dev-daemon-refresh-and-signing]].
+- **Live-confirmed by user:** popover glass (good); Trust window loads + Forget works end-to-end after the
+  daemon was updated to featureLevel 2. 987 tests green; `swift build -warnings-as-errors` clean.
+- **NEXT:** stack-aware code review of the whole branch (`dc65f15..HEAD`) RUNNING (2026-06-13). User still
+  to live-verify the **Downloads / Add / Settings** windows in light+dark over a busy wallpaper. Then
+  **push + open the PR** (not pushed yet; push-only-when-asked). Optional brand-green panel `tintColor`
+  left off. Snapshot caveat: `goh-snapshots` renders Add/Settings directly; grouped `Form`s may render
+  thin/blank there (no window context) — cosmetic, the live app is the source of truth.
 
 ### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases — all MERGED (PRs #115–119); `main` green, 976 tests**
 
