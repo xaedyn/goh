@@ -182,6 +182,22 @@ public final class GohMenuViewModel: ObservableObject {
         }
     }
 
+    /// Starts a download for an arbitrary URL via the existing add path — used by
+    /// the drag-a-URL-onto-the-status-item drop target. Surfaces a failed health
+    /// state if the daemon rejects it.
+    public func addDownload(url: String) async {
+        do {
+            _ = try await client.add(AddRequest(url: url))
+        } catch {
+            render(health: .failed(menuError(from: error)))
+        }
+    }
+
+    /// Re-submits a failed transfer by re-adding its URL. Same path as a fresh add.
+    public func retry(url: String) async {
+        await addDownload(url: url)
+    }
+
     public func reveal(destination: String) {
         revealInFinder(destination)
     }

@@ -106,6 +106,22 @@ nonisolated public struct GohMenuPresenter: Sendable {
             verifyStatus = nil
         }
 
+        // Short relative completion date for terminal rows ("now" / "Jun 5").
+        let completedDateText: String?
+        if job.state == .completed || job.state == .failed, let completedAt = job.completedAt {
+            completedDateText = Self.relativeDateText(completedAt)
+        } else {
+            completedDateText = nil
+        }
+
+        // Human-readable failure reason for failed rows (the transfer-error signal).
+        let failureReason: String?
+        if job.state == .failed, let error = job.error {
+            failureReason = error.message ?? error.code.rawValue
+        } else {
+            failureReason = nil
+        }
+
         return GohMenuJobRow(
             id: job.id,
             title: destinationURL.lastPathComponent.isEmpty
@@ -113,7 +129,7 @@ nonisolated public struct GohMenuPresenter: Sendable {
                 : destinationURL.lastPathComponent,
             subtitle: job.destination,
             stateText: stateDisplay(for: job.state),
-            isPaused: job.state == .paused,
+            displayState: displayState(for: job.state),
             progressText: JobDisplayFormatter.progressText(job.progress),
             speedText: JobDisplayFormatter.formatBytes(job.progress.bytesPerSecond) + "/s",
             destination: job.destination,
@@ -124,7 +140,15 @@ nonisolated public struct GohMenuPresenter: Sendable {
             etaText: etaText,
             elapsedText: elapsedText,
             connectionText: connectionText,
-            verifyStatus: verifyStatus)
+            verifyStatus: verifyStatus,
+            completedDateText: completedDateText,
+            failureReason: failureReason)
+    }
+
+    /// "now" within the last minute, otherwise a short localized date ("Jun 5").
+    private static func relativeDateText(_ date: Date) -> String {
+        if Date().timeIntervalSince(date) < 60 { return "now" }
+        return DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .none)
     }
 
     /// Canonicalize a filesystem path for ledger-key matching, mirroring the
@@ -145,6 +169,16 @@ nonisolated public struct GohMenuPresenter: Sendable {
             return "Completed"
         case .failed:
             return "Failed"
+        }
+    }
+
+    private func displayState(for state: JobState) -> GohMenuJobDisplayState {
+        switch state {
+        case .queued: return .queued
+        case .active: return .active
+        case .paused: return .paused
+        case .completed: return .completed
+        case .failed: return .failed
         }
     }
 

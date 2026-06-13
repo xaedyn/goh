@@ -39,6 +39,18 @@ nonisolated public enum GohMenuControl: Sendable, Hashable {
     case copyDestination
 }
 
+/// A row's lifecycle state, mirrored from `GohCore.JobState` so the presentation
+/// layer can group rows (hero / Downloading / Recent) and pick per-state context
+/// menus without string-comparing `stateText`. Derived presentation data, not new
+/// app state — the same role `isPaused` already played, generalized.
+nonisolated public enum GohMenuJobDisplayState: Sendable, Equatable {
+    case queued
+    case active
+    case paused
+    case completed
+    case failed
+}
+
 nonisolated public enum GohMenuPrimaryAction: Sendable, Equatable {
     case addClipboardURL(URL)
     case pasteURL
@@ -55,9 +67,8 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
     public var title: String
     public var subtitle: String
     public var stateText: String
-    /// True when the job is paused. Drives paused-specific display without an
-    /// English-string compare against `stateText`.
-    public var isPaused: Bool
+    /// Lifecycle state mirrored from `JobState`; drives grouping + context menus.
+    public var displayState: GohMenuJobDisplayState
     public var progressText: String
     public var speedText: String
     public var destination: String
@@ -78,13 +89,19 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
     /// Verify/provenance status for completed rows; nil for other states or when
     /// the ledger entry is absent/unreadable.
     public var verifyStatus: String?
+    /// Short relative completion date for terminal rows ("now", "Jun 5"); nil
+    /// while the job is in progress.
+    public var completedDateText: String?
+    /// Human-readable failure reason for failed rows (from the job's error); nil
+    /// otherwise. Drives the red reason line + Retry affordance.
+    public var failureReason: String?
 
     public init(
         id: UInt64,
         title: String,
         subtitle: String,
         stateText: String,
-        isPaused: Bool = false,
+        displayState: GohMenuJobDisplayState,
         progressText: String,
         speedText: String,
         destination: String,
@@ -95,13 +112,15 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         etaText: String? = nil,
         elapsedText: String? = nil,
         connectionText: String? = nil,
-        verifyStatus: String? = nil
+        verifyStatus: String? = nil,
+        completedDateText: String? = nil,
+        failureReason: String? = nil
     ) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.stateText = stateText
-        self.isPaused = isPaused
+        self.displayState = displayState
         self.progressText = progressText
         self.speedText = speedText
         self.destination = destination
@@ -113,10 +132,33 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         self.elapsedText = elapsedText
         self.connectionText = connectionText
         self.verifyStatus = verifyStatus
+        self.completedDateText = completedDateText
+        self.failureReason = failureReason
     }
 }
 
 extension GohMenuJobRow {
+    /// True when the job is paused. Preserved as a convenience over `displayState`
+    /// so existing call sites keep working.
+    public var isPaused: Bool { displayState == .paused }
+
+    /// In-progress rows — queued, active, or paused — that belong in the hero +
+    /// "Downloading" region of the popover.
+    public var isInProgress: Bool {
+        switch displayState {
+        case .queued, .active, .paused: return true
+        case .completed, .failed: return false
+        }
+    }
+
+    /// Terminal rows — completed or failed — that belong in "Recent".
+    public var isTerminal: Bool {
+        switch displayState {
+        case .completed, .failed: return true
+        case .queued, .active, .paused: return false
+        }
+    }
+
     /// Controls ordered for display: pause/resume first, then utility controls, remove last.
     var orderedControls: [GohMenuControl] {
         [

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import ServiceManagement
 import SwiftUI
@@ -240,6 +241,8 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
     let notificationService: LiveNotificationService = LiveNotificationService()
     let loginItem: any GohMenuLoginItem = GohMenuAppDelegate.makeLoginItem()
     private lazy var coordinator = GohNotificationCoordinator(preferences: preferences)
+    /// Owns the menu-bar status item + popover (created at launch).
+    private var statusItemController: GohStatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -258,6 +261,13 @@ final class GohMenuAppDelegate: NSObject, NSApplicationDelegate {
         Task { await notificationService.requestAuthorization() }
 
         model.start()
+
+        // The menu-bar status item (wordmark icon + popover).
+        statusItemController = GohStatusItemController(
+            model: model,
+            preferences: preferences,
+            loginItem: loginItem,
+            quit: { NSApplication.shared.terminate(nil) })
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -356,21 +366,150 @@ struct DownloadsWindowRoot: View {
     }
 }
 
+/// Owns the menu-bar `NSStatusItem` and the popover. The `goh` wordmark is drawn
+/// as the status button's *image* — driven by the view-model's download lifecycle
+/// — and a click toggles a transient `NSPopover` hosting the existing
+/// `GohMenuView`.
+///
+/// Why an image and not a hosted SwiftUI view: an `NSHostingView` placed on the
+/// status button consumes the mouse event before it reaches the button's action,
+/// so the click never registers (confirmed empirically). Drawing the icon as
+/// `button.image` keeps the standard, reliable click path. (Drag-a-URL-onto-the-
+/// icon is deferred for the same reason — it needs a drag overlay that doesn't
+/// intercept the click — and the completion bloom animation is likewise a
+/// follow-up; the icon currently updates per steady state.)
+@MainActor
+final class GohStatusItemController: NSObject {
+    private let statusItem: NSStatusItem
+    private let popover: NSPopover
+    private let model: GohMenuViewModel
+    private var cancellable: AnyCancellable?
+    private var appearanceObservation: NSKeyValueObservation?
+
+    init(
+        model: GohMenuViewModel,
+        preferences: any GohMenuPreferences,
+        loginItem: any GohMenuLoginItem,
+        quit: @escaping () -> Void
+    ) {
+        self.model = model
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(
+            rootView: GohMenuView(
+                model: model,
+                preferences: preferences,
+                loginItem: loginItem,
+                quitApplication: quit))
+
+        super.init()
+
+        if let button = statusItem.button {
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = #selector(togglePopover)
+        }
+        updateIcon()
+
+        // Re-render the icon whenever the view-model changes (active count, health).
+        cancellable = model.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateIcon() }
+
+        // The button's effectiveAppearance isn't final until it settles into the
+        // menu bar; re-render then (and on any light/dark change) so the first
+        // paint isn't a low-contrast render against the wrong appearance.
+        appearanceObservation = statusItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateIcon() }
+        }
+        Task { @MainActor [weak self] in self?.updateIcon() }
+    }
+
+    @objc private func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    // MARK: Icon
+
+    private func updateIcon() {
+        guard let button = statusItem.button else { return }
+        button.image = Self.wordmarkImage(for: currentState(), appearance: button.effectiveAppearance)
+    }
+
+    private func currentState() -> GohWordmarkState {
+        if case .failed = model.state.health { return .error }
+        if model.state.activeCount > 0 { return .active }
+        if model.state.rows.contains(where: { $0.displayState == .paused }) { return .paused }
+        return .idle
+    }
+
+    /// Renders the `goh` wordmark (letters in the menu-bar label color + a
+    /// state-tinted arrow) to a colored, menu-bar-sized image. Non-template so the
+    /// arrow keeps its brand green.
+    private static func wordmarkImage(for state: GohWordmarkState, appearance: NSAppearance) -> NSImage {
+        let height: CGFloat = 15
+        let size = NSSize(width: (height * GohWordmark.aspectRatio).rounded(), height: height)
+
+        // Resolve the dynamic colors against the menu bar's appearance.
+        var lettersColor = NSColor.labelColor
+        var arrowColor: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            lettersColor = NSColor.labelColor.usingColorSpace(.sRGB) ?? .white
+            switch state {
+            case .idle:
+                arrowColor = nil
+            case .active, .done:
+                arrowColor = GohTheme.accentNSColor.usingColorSpace(.sRGB)
+            case .paused:
+                arrowColor = GohTheme.accentNSColor.usingColorSpace(.sRGB)?.withAlphaComponent(0.45)
+            case .error:
+                arrowColor = NSColor.systemRed.usingColorSpace(.sRGB)
+            }
+        }
+
+        let lettersImage = tinted(GohWordmark.letters, lettersColor, size)
+        let arrowImage = arrowColor.map { tinted(GohWordmark.arrow, $0, size) }
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        lettersImage.draw(in: NSRect(origin: .zero, size: size))
+        arrowImage?.draw(in: NSRect(origin: .zero, size: size))
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+
+    /// Tints a template image with a solid color (the glyph shape in `color`).
+    private static func tinted(_ template: NSImage, _ color: NSColor, _ size: NSSize) -> NSImage {
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let rect = NSRect(origin: .zero, size: size)
+        template.draw(in: rect)
+        color.set()
+        rect.fill(using: .sourceAtop)
+        image.unlockFocus()
+        return image
+    }
+}
+
 @main
 struct GohMenuApp: App {
     @NSApplicationDelegateAdaptor(GohMenuAppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            GohMenuView(
-                model: appDelegate.model,
-                preferences: appDelegate.preferences,
-                loginItem: appDelegate.loginItem,
-                quitApplication: { NSApplication.shared.terminate(nil) })
-        } label: {
-            Label("goh", systemImage: "arrow.down.circle")
-        }
-        .menuBarExtraStyle(.window)
+        // The menu-bar status item itself is an AppKit NSStatusItem owned by the
+        // app delegate (see GohStatusItemController) — it needs a colored/animated
+        // icon and a drag destination, which MenuBarExtra's label cannot provide.
+        // These Window scenes remain SwiftUI; the popover opens them via openWindow.
 
         Window("Add Download", id: "add-download") {
             AddDownloadWindowRoot(
@@ -379,6 +518,7 @@ struct GohMenuApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+        .defaultLaunchBehavior(.suppressed)
 
         Window("Trust", id: "trust") {
             TrustWindowRoot(
@@ -390,6 +530,7 @@ struct GohMenuApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+        .defaultLaunchBehavior(.suppressed)
 
         Window("Downloads", id: "downloads") {
             DownloadsWindowRoot(model: appDelegate.model)
@@ -397,6 +538,7 @@ struct GohMenuApp: App {
         .windowResizability(.contentMinSize)
         .defaultSize(width: 600, height: 400)
         .defaultPosition(.center)
+        .defaultLaunchBehavior(.suppressed)
 
         Window("Preferences", id: "preferences") {
             GohMenuPreferencesView(
@@ -405,6 +547,7 @@ struct GohMenuApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+        .defaultLaunchBehavior(.suppressed)
     }
 }
 
