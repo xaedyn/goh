@@ -56,10 +56,21 @@ verification PENDING):** swapped the last hand-rolled materials for the system m
   correction to the original brief; avoids the dense-list readability regression macOS 27's
   transparency slider exists to fix). Wordmark tile `.regularMaterial` → a translucent color fill
   (content on the panel's single glass layer — no glass-on-glass; glass can't sample glass).
-- 987 tests green; `swift build -warnings-as-errors` clean. **NEXT: user live-verifies lensing over a
-  busy wallpaper in light + dark, on the panel + all 4 windows (only renders in the running app —
-  `Scripts/dev-app.sh`). Then push + PR.** Not pushed yet. Optional brand-green panel `tintColor`
-  deliberately left off (the accent is carried by the arrow/controls; a tinted glass slab reads off).
+- **Native window chrome (`064fe16`):** the "let native controls inherit glass" half — replaced the
+  hand-rolled window chrome with native SwiftUI containers so macOS 26 puts glass on toolbars/sidebars
+  while content stays legible. **Trust → `NavigationSplitView`** (real glass sidebar `List(selection:)`,
+  `.searchable(.sidebar)`, `.toolbar` actions, `.bar` bottom status, `ContentUnavailableView` empty
+  states; window now resizable + `.windowToolbarStyle(.unified)`). **Downloads → `NavigationStack` +
+  `List(.inset)`** with Downloading/Recent `Section`s, unified `.toolbar` (filter Picker + Open Folder /
+  Clear Completed), `.searchable`, `.bar` status, `ContentUnavailableView`. **Add + Settings → grouped
+  `Form`** (`.formStyle(.grouped)`; Settings drops its 1-item tab bar). Popover live-confirmed good by
+  user. No view-model/wire/daemon change.
+- 987 tests green; `swift build -warnings-as-errors` clean. **NEXT: user live-verifies the 4 rebuilt
+  windows in the running app (`Scripts/dev-app.sh`) — glass toolbars/sidebar, legible content, search,
+  Trust master-detail selection — light + dark over a busy wallpaper. Then push + PR.** Not pushed yet.
+  Optional brand-green panel `tintColor` left off (accent is carried by the arrow/controls).
+  Snapshot caveat: the `goh-snapshots` ImageRenderer harness renders Add/Settings directly; grouped
+  `Form`s may render thin/blank there (no window context) — cosmetic, the live app is the source of truth.
 
 ### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases — all MERGED (PRs #115–119); `main` green, 976 tests**
 
