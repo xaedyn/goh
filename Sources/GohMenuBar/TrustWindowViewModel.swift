@@ -182,12 +182,35 @@ public final class TrustWindowViewModel: ObservableObject {
         fastStatuses[path] == .missing
     }
 
+    /// A user-facing message when a Forget did not take effect — a daemon error, or
+    /// the record was not removed (e.g. an installed daemon too old to support the
+    /// Forget command). Shown as an alert; cleared on dismiss. Unlike the
+    /// best-effort baseline send, Forget is an explicit user action, so its failure
+    /// must NOT be silent.
+    @Published public private(set) var forgetError: String?
+
+    public func clearForgetError() { forgetError = nil }
+
     /// Removes the given path's provenance entry via the daemon, then refreshes the
-    /// overview so the row disappears. Best-effort: a send error is swallowed (never
-    /// surfaced as an error state), matching the `recordVerifiedProvenance` idiom.
+    /// overview so the row disappears. Surfaces a message if the daemon errors or if
+    /// the row is still present after the refresh (the command matched nothing —
+    /// most often a daemon that predates Forget).
     public func forgetRow(path: String) async {
-        try? await menuClient?.forget(paths: [path])
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        guard let menuClient else {
+            forgetError = "Forget is unavailable — there is no connection to the goh daemon."
+            return
+        }
+        do {
+            try await menuClient.forget(paths: [path])
+        } catch {
+            forgetError = "Couldn’t forget “\(name)”: \(GohMenuErrorMapper.map(error).userFacingMessage)"
+            return
+        }
         await loadOverview()
+        if rows.contains(where: { $0.displayPath == path }) {
+            forgetError = "“\(name)” couldn’t be removed. Your goh daemon may be an older version without Forget support — restart it (use Restart Daemon in the menu, or run `goh daemon restart`) and try again."
+        }
     }
 
     // MARK: - Verify now

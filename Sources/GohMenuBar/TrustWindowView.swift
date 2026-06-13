@@ -51,6 +51,16 @@ public struct TrustWindowView: View {
         } message: { path in
             Text("Removes the saved download record for \(URL(fileURLWithPath: path).lastPathComponent). The file is already missing; this does not delete anything from disk.")
         }
+        .alert(
+            "Couldn’t Forget",
+            isPresented: Binding(
+                get: { viewModel.forgetError != nil },
+                set: { if !$0 { viewModel.clearForgetError() } })
+        ) {
+            Button("OK", role: .cancel) { viewModel.clearForgetError() }
+        } message: {
+            Text(viewModel.forgetError ?? "")
+        }
     }
 
     // MARK: Sidebar (native NavigationSplitView master list)
@@ -97,10 +107,13 @@ public struct TrustWindowView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             if case .running = viewModel.runState {
                 Button("Cancel") { viewModel.cancelVerify() }
+                    .help("Stop the verification in progress")
             } else {
                 Button { onAttest() } label: { Label("Attest…", systemImage: "checkmark.seal") }
+                    .help("Attest your download records with a Secure Enclave signature (opens Terminal)")
                 Button { viewModel.startVerify() } label: { Label("Verify All", systemImage: "checkmark.shield") }
                     .disabled(viewModel.rows.isEmpty || viewModel.overview == .unavailable)
+                    .help("Re-hash every recorded file and check it against its recorded SHA-256")
             }
         }
     }
