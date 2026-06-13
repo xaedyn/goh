@@ -35,6 +35,22 @@ public struct TrustWindowView: View {
         .onChange(of: viewModel.rows.map(\.displayPath)) { _, _ in selectDefault() }
         .onChange(of: selection) { _, _ in hashSelectedIfChanged() }
         .onDisappear { viewModel.reset() }
+        .confirmationDialog(
+            "Forget this download's provenance?",
+            isPresented: Binding(
+                get: { confirmForgetPath != nil },
+                set: { if !$0 { confirmForgetPath = nil } }),
+            titleVisibility: .visible,
+            presenting: confirmForgetPath
+        ) { path in
+            Button("Forget", role: .destructive) {
+                confirmForgetPath = nil
+                Task { await viewModel.forgetRow(path: path) }
+            }
+            Button("Cancel", role: .cancel) { confirmForgetPath = nil }
+        } message: { path in
+            Text("Removes the saved download record for \(URL(fileURLWithPath: path).lastPathComponent). The file is already missing; this does not delete anything from disk.")
+        }
     }
 
     // MARK: Sidebar (native NavigationSplitView master list)
@@ -46,10 +62,20 @@ public struct TrustWindowView: View {
                 TrustListRow(row: row, status: status(for: row), selected: false)
                     .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                     .tag(row.displayPath)
+                    .contextMenu {
+                        Button { reveal(row) } label: { Label("Reveal in Finder", systemImage: "folder") }
+                        if viewModel.isForgettable(path: row.displayPath) {
+                            Divider()
+                            Button(role: .destructive) {
+                                confirmForgetPath = row.displayPath
+                            } label: { Label("Forget Download…", systemImage: "trash") }
+                        }
+                    }
             }
         }
         .listStyle(.sidebar)
         .searchable(text: $search, placement: .sidebar, prompt: "Search files")
+        .onDeleteCommand { forgetSelectedIfMissing() }
         .frame(minWidth: 240)
         .overlay {
             if viewModel.overview == .unavailable {
@@ -128,22 +154,6 @@ public struct TrustWindowView: View {
                         ? { confirmForgetPath = selectedRow.displayPath }
                         : nil)
             }
-                .confirmationDialog(
-                    "Forget this download's provenance?",
-                    isPresented: Binding(
-                        get: { confirmForgetPath != nil },
-                        set: { if !$0 { confirmForgetPath = nil } }),
-                    titleVisibility: .visible,
-                    presenting: confirmForgetPath
-                ) { path in
-                    Button("Forget", role: .destructive) {
-                        confirmForgetPath = nil
-                        Task { await viewModel.forgetRow(path: path) }
-                    }
-                    Button("Cancel", role: .cancel) { confirmForgetPath = nil }
-                } message: { path in
-                    Text("Removes the saved download record for \(URL(fileURLWithPath: path).lastPathComponent). The file is already missing; this does not delete anything from disk.")
-                }
         } else {
             ContentUnavailableView(
                 "No File Selected", systemImage: "sidebar.squares.left",
@@ -224,6 +234,13 @@ public struct TrustWindowView: View {
 
     private func reveal(_ row: GohTrustEntryRow) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.displayPath)])
+    }
+
+    /// Delete-key forget for the selected row. Only missing (deleted-on-disk)
+    /// entries are forgettable — a present file's provenance record is kept.
+    private func forgetSelectedIfMissing() {
+        guard let selection, viewModel.isForgettable(path: selection) else { return }
+        confirmForgetPath = selection
     }
 
     /// When a CHANGED file is selected, kick off the on-demand on-disk re-hash so
