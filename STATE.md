@@ -44,6 +44,23 @@ Downloads filter/search, stability all confirmed). Polish by value:**
    decision; need persisted prefs + engine wiring.
    Notification inline-check (#9) is NOT a fix — the banner is system-drawn.
 
+**2026-06-13 (cont.) — real Liquid Glass migration COMMITTED (2 commits on the branch; live
+verification PENDING):** swapped the last hand-rolled materials for the system macOS 26 glass APIs.
+- **Panel (`431fb63`):** NSPopover → borderless `GohMenuPanel` on a real `NSGlassEffectView` (folds
+  in the prior-session WIP: custom `GohStatusItemView` owning click + URL-drop). Added the
+  `accessibilityReduceTransparency` fallback (solid surface; swaps live via an NSWorkspace
+  `accessibilityDisplayOptionsDidChange` observer) and a 26.2 stale-backdrop redisplay nudge on show
+  (Apple Forums 810314 — non-movable borderless windows cache the glass backdrop).
+- **Surfaces (`05e8ef2`):** dropped `.containerBackground(.thinMaterial)` from the 4 windows — they
+  get native chrome glass + a legible content surface, NOT floating glass slabs (the agreed
+  correction to the original brief; avoids the dense-list readability regression macOS 27's
+  transparency slider exists to fix). Wordmark tile `.regularMaterial` → a translucent color fill
+  (content on the panel's single glass layer — no glass-on-glass; glass can't sample glass).
+- 987 tests green; `swift build -warnings-as-errors` clean. **NEXT: user live-verifies lensing over a
+  busy wallpaper in light + dark, on the panel + all 4 windows (only renders in the running app —
+  `Scripts/dev-app.sh`). Then push + PR.** Not pushed yet. Optional brand-green panel `tintColor`
+  deliberately left off (the accent is carried by the arrow/controls; a tinted glass slab reads off).
+
 ### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases — all MERGED (PRs #115–119); `main` green, 976 tests**
 
 Worked the remaining code-quality review backlog as 5 independent PRs off `main` (disjoint
