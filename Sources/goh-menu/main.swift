@@ -472,11 +472,15 @@ final class GohStatusItemController: NSObject {
     /// auto-dismiss, so we drive it ourselves.
     private var eventMonitors: [Any] = []
     /// The popover content, built once and re-parented between the glass and solid
-    /// surfaces as the system reduce-transparency setting toggles.
-    private let contentHost: NSHostingView<GohMenuView>
+    /// surfaces as the system reduce-transparency setting toggles. Assigned in init
+    /// after `super.init()` so its `dismissPanel` closure can capture `self`.
+    private var contentHost: NSHostingView<GohMenuView>!
     /// The live Liquid Glass surface, or nil while the reduce-transparency solid
     /// fallback is installed. Held for the on-show backdrop-refresh nudge.
     private var glassView: NSGlassEffectView?
+    /// The reduce-transparency value the current surface was built for. Lets the
+    /// a11y observer skip a rebuild when an *unrelated* display setting changes.
+    private var reduceTransparencyApplied: Bool?
     /// Observes system reduce-transparency changes so the panel swaps its surface
     /// live (no relaunch needed). Retained for the controller's (app-)lifetime —
     /// the status item lives until quit, so the observation needs no teardown.
@@ -491,13 +495,15 @@ final class GohStatusItemController: NSObject {
         self.model = model
         self.preferences = preferences
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+        super.init()
+
         contentHost = NSHostingView(rootView: GohMenuView(
             model: model,
             preferences: preferences,
             loginItem: loginItem,
-            quitApplication: quit))
-
-        super.init()
+            quitApplication: quit,
+            dismissPanel: { [weak self] in self?.hidePanel() }))
 
         panel = Self.makePanel()
         installContentSurface()
@@ -506,7 +512,7 @@ final class GohStatusItemController: NSObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.installContentSurface() }
+            MainActor.assumeIsolated { self?.reduceTransparencyDidChangeIfNeeded() }
         }
 
         if let button = statusItem.button {
@@ -583,9 +589,11 @@ final class GohStatusItemController: NSObject {
     /// setting toggles. The content view is set directly (NOT via
     /// contentViewController, which collapses a no-intrinsic-size view to 0×0).
     private func installContentSurface() {
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        reduceTransparencyApplied = reduce
         contentHost.removeFromSuperview()
         let surface: NSView
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+        if reduce {
             let solid = NSView()
             solid.wantsLayer = true
             solid.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -612,6 +620,16 @@ final class GohStatusItemController: NSObject {
             surface = glass
         }
         panel.contentView = surface
+    }
+
+    /// The a11y observer fires for ALL display changes (increase contrast,
+    /// reduce-motion, invert colors…), not just Reduce Transparency. Only rebuild
+    /// the surface when the transparency state actually flips — an unrelated a11y
+    /// toggle shouldn't tear down and rebuild the glass.
+    private func reduceTransparencyDidChangeIfNeeded() {
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        guard reduce != reduceTransparencyApplied else { return }
+        installContentSurface()
     }
 
     @objc private func togglePopover() {

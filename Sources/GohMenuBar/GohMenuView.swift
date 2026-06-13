@@ -11,18 +11,24 @@ public struct GohMenuView: View {
     private let preferences: any GohMenuPreferences
     private let loginItem: any GohMenuLoginItem
     private let quitApplication: () -> Void
+    /// Dismisses the floating menu-bar panel that hosts this view. Called before
+    /// the popover navigates away (opening a managed window), so the panel doesn't
+    /// linger behind it. No-op by default (e.g. the snapshot harness has no panel).
+    private let dismissPanel: () -> Void
     @Environment(\.openWindow) private var openWindow
 
     public init(
         model: GohMenuViewModel,
         preferences: any GohMenuPreferences = UserDefaultsMenuPreferences(),
         loginItem: any GohMenuLoginItem = UnsupportedLoginItem(),
-        quitApplication: @escaping () -> Void
+        quitApplication: @escaping () -> Void,
+        dismissPanel: @escaping () -> Void = {}
     ) {
         self.model = model
         self.preferences = preferences
         self.loginItem = loginItem
         self.quitApplication = quitApplication
+        self.dismissPanel = dismissPanel
     }
 
     public var body: some View {
@@ -63,6 +69,9 @@ public struct GohMenuView: View {
     }
 
     private func openManagedWindow(_ id: String) {
+        // Dismiss the floating panel first — otherwise it lingers (with its event
+        // monitors still armed) behind the window the popover just opened.
+        dismissPanel()
         NSApp.activate(ignoringOtherApps: true)
         openWindow(id: id)
     }
