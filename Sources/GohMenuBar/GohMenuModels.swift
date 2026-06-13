@@ -95,6 +95,12 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
     /// Human-readable failure reason for failed rows (from the job's error); nil
     /// otherwise. Drives the red reason line + Retry affordance.
     public var failureReason: String?
+    /// Total file size in bytes when known; drives the Downloads-window size
+    /// column + the footer total.
+    public var bytesTotal: UInt64?
+    /// Abbreviated recorded SHA-256 ("a1f3…9c20") for completed rows with a ledger
+    /// entry; nil otherwise.
+    public var sha256Short: String?
 
     public init(
         id: UInt64,
@@ -114,7 +120,9 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         connectionText: String? = nil,
         verifyStatus: String? = nil,
         completedDateText: String? = nil,
-        failureReason: String? = nil
+        failureReason: String? = nil,
+        bytesTotal: UInt64? = nil,
+        sha256Short: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -134,6 +142,8 @@ nonisolated public struct GohMenuJobRow: Sendable, Equatable, Identifiable {
         self.verifyStatus = verifyStatus
         self.completedDateText = completedDateText
         self.failureReason = failureReason
+        self.bytesTotal = bytesTotal
+        self.sha256Short = sha256Short
     }
 }
 

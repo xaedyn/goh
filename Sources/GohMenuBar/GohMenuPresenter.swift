@@ -94,8 +94,10 @@ nonisolated public struct GohMenuPresenter: Sendable {
             ? "\(job.actualConnectionCount) connection\(job.actualConnectionCount == 1 ? "" : "s")"
             : nil
 
+        let ledgerEntry = ledgerMap[Self.canonicalPath(job.destination)]
+
         let verifyStatus: String?
-        if job.state == .completed, let entry = ledgerMap[Self.canonicalPath(job.destination)] {
+        if job.state == .completed, let entry = ledgerEntry {
             if let verifiedAt = entry.verifiedAt {
                 let formatted = DateFormatter.localizedString(from: verifiedAt, dateStyle: .short, timeStyle: .none)
                 verifyStatus = "verified \(formatted)"
@@ -104,6 +106,14 @@ nonisolated public struct GohMenuPresenter: Sendable {
             }
         } else {
             verifyStatus = nil
+        }
+
+        // Abbreviated recorded hash for completed rows ("a1f3…9c20").
+        let sha256Short: String?
+        if job.state == .completed, let sha = ledgerEntry?.sha256, sha.count >= 8 {
+            sha256Short = "\(sha.prefix(4))…\(sha.suffix(4))"
+        } else {
+            sha256Short = nil
         }
 
         // Short relative completion date for terminal rows ("now" / "Jun 5").
@@ -142,7 +152,9 @@ nonisolated public struct GohMenuPresenter: Sendable {
             connectionText: connectionText,
             verifyStatus: verifyStatus,
             completedDateText: completedDateText,
-            failureReason: failureReason)
+            failureReason: failureReason,
+            bytesTotal: job.progress.bytesTotal,
+            sha256Short: sha256Short)
     }
 
     /// "now" within the last minute, otherwise a short localized date ("Jun 5").

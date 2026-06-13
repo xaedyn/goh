@@ -237,6 +237,120 @@ func addDownloadBoard() -> some View {
     .padding(34)
 }
 
+// MARK: - Step 5: Downloads window
+
+@MainActor
+func downloadsBoard() -> some View {
+    let vm = GohMenuViewModel(
+        client: SnapshotMenuClient(),
+        pasteboardText: { nil }, revealInFinder: { _ in },
+        openTerminalDashboard: {}, copyText: { _ in })
+
+    func active(_ id: UInt64, _ title: String, _ state: GohMenuJobDisplayState,
+                _ frac: Double?, _ size: String, _ speed: String = "", _ eta: String? = nil) -> GohMenuJobRow {
+        GohMenuJobRow(
+            id: id, title: title, subtitle: title, stateText: "", displayState: state,
+            progressText: "", speedText: speed, destination: "/Users/me/Downloads/\(title)",
+            url: "https://huggingface.co/org/\(title)", controls: [],
+            progressFraction: frac, sizeText: size, etaText: eta)
+    }
+    func recent(_ id: UInt64, _ title: String, _ bytes: UInt64, _ sha: String, _ date: String) -> GohMenuJobRow {
+        GohMenuJobRow(
+            id: id, title: title, subtitle: title, stateText: "", displayState: .completed,
+            progressText: "", speedText: "", destination: "/Users/me/Downloads/\(title)",
+            url: "https://huggingface.co/org/\(title)", controls: [],
+            completedDateText: date, bytesTotal: bytes, sha256Short: sha)
+    }
+
+    let downloading = [
+        active(1, "llama-3.1-70b-instruct.safetensors", .active, 0.66, "43.6 of 66.4 GB", "5.1 MB/s", "1m 12s"),
+        active(2, "imagenet-val.tar.zst", .active, 0.28, "1.79 of 6.40 GB", "1.3 MB/s", "4m 03s"),
+        active(3, "dataset-shard-00007.parquet", .queued, 0, ""),
+    ]
+    let recents = [
+        recent(4, "sd-xl-base-1.0.safetensors", 6_940_000_000, "a1f3…9c20", "Today"),
+        recent(5, "config.json", 4_200, "773e…01de", "Today"),
+        recent(6, "tokenizer.model", 2_100_000, "6820…1a4c", "Today"),
+    ]
+
+    func sectionCard<R: View>(_ rows: [GohMenuJobRow], @ViewBuilder row: @escaping (GohMenuJobRow) -> R) -> some View {
+        GohModuleCard(padding: 0) {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { i, r in
+                    if i > 0 {
+                        Rectangle().fill(GohTheme.separator).frame(height: 0.5).padding(.leading, 50)
+                    }
+                    row(r)
+                }
+            }
+        }
+    }
+
+    let body = VStack(spacing: 0) {
+        // faux title bar
+        ZStack {
+            Text("Downloads").font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 8) {
+                Circle().fill(Color(red: 1, green: 0.37, blue: 0.34)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 1, green: 0.74, blue: 0.18)).frame(width: 12, height: 12)
+                Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.25)).frame(width: 12, height: 12)
+                Spacer()
+            }.padding(.horizontal, 13)
+        }.frame(height: 38)
+        // faux toolbar (the real segmented/search controls don't render in ImageRenderer)
+        HStack(spacing: 8) {
+            ForEach(["All", "Downloading", "Completed", "Failed"], id: \.self) { label in
+                Text(label).font(.system(size: 12, weight: label == "All" ? .semibold : .regular))
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(label == "All" ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
+                                in: Capsule())
+                    .foregroundStyle(label == "All" ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            }
+            Spacer()
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.tertiary)
+                Text("Search downloads").font(.system(size: 12)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7)).frame(width: 180)
+        }.padding(.horizontal, 14).padding(.vertical, 9)
+
+        // Plain VStack (not ScrollView): ImageRenderer doesn't lay out ScrollView
+        // content. The real DownloadsWindowView keeps its ScrollView.
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                GohSectionHeader("Downloading") {
+                    Text("2 active").font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
+                }
+                sectionCard(downloading) { DownloadsActiveRow(row: $0, model: vm) }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                GohSectionHeader("Recent") {
+                    Text("46 total").font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
+                }
+                sectionCard(recents) { DownloadsRecentRow(row: $0, model: vm, openTrust: {}) }
+            }
+            Spacer(minLength: 0)
+        }.padding(14)
+
+        // faux footer
+        HStack {
+            Text("46 downloads · 3 active · 109 GB total")
+                .font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
+            Spacer()
+            Label("Open Folder", systemImage: "folder").font(.system(size: 12))
+            Text("Clear Completed").font(.system(size: 12))
+        }.padding(.horizontal, 14).padding(.vertical, 10)
+    }
+    .frame(width: 540, height: 560)
+    .background(.regularMaterial)
+    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+    .padding(34)
+
+    return body
+}
+
 @MainActor
 func main() {
     let args = CommandLine.arguments
@@ -254,6 +368,9 @@ func main() {
 
     render("add-download", scheme: .dark, into: dir, addDownloadBoard())
     render("add-download", scheme: .light, into: dir, addDownloadBoard())
+
+    render("downloads", scheme: .dark, into: dir, downloadsBoard())
+    render("downloads", scheme: .light, into: dir, downloadsBoard())
 }
 
 MainActor.assumeIsolated { main() }
