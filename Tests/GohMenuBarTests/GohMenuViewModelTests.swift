@@ -52,6 +52,34 @@ struct GohMenuViewModelTests {
         #expect(client.addedRequests.isEmpty)
     }
 
+    @Test func addDownloadSubmitsURLThroughClient() async throws {
+        let client = FakeMenuClient()
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+
+        await model.addDownload(url: "https://example.com/drag.iso")
+
+        #expect(client.addedRequests == [AddRequest(url: "https://example.com/drag.iso")])
+    }
+
+    @Test func retryResubmitsURLThroughAddPath() async throws {
+        let client = FakeMenuClient()
+        let model = GohMenuViewModel(
+            client: client,
+            pasteboardText: { nil },
+            revealInFinder: { _ in },
+            openTerminalDashboard: {},
+            copyText: { _ in })
+
+        await model.retry(url: "https://example.com/failed.iso")
+
+        #expect(client.addedRequests == [AddRequest(url: "https://example.com/failed.iso")])
+    }
+
     @Test func pastePrimaryActionRefreshesClipboardCandidate() async throws {
         var pasteboardText: String? = "https://example.com/fresh.iso"
         let model = GohMenuViewModel(

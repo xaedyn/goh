@@ -40,6 +40,19 @@ private struct StubProvenanceReader: ProvenanceReading {
     func read() -> ProvenanceReadOutcome { outcome }
 }
 
+// A reader that returns the entry on the first read and an empty ledger after —
+// models a forget that actually removed the row, so the post-forget refresh drops
+// it (and `forgetRow` therefore surfaces NO error).
+private final class VanishingReader: ProvenanceReading, @unchecked Sendable {
+    private let entry: ProvenanceEntry
+    private var reads = 0
+    init(entry: ProvenanceEntry) { self.entry = entry }
+    func read() -> ProvenanceReadOutcome {
+        reads += 1
+        return reads == 1 ? .entries([entry]) : .entries([])
+    }
+}
+
 // ── Stub file-stat probe ────────────────────────────────────────────────────────
 //
 // Returns a fixed `FileProbeResult` for every path. `.notFound` models a deleted
@@ -124,11 +137,12 @@ struct TrustWindowViewModelForgetTests {
 
     // MARK: - forgetRow behaviour
 
-    @Test("AC5: forgetRow sends exactly the row's path to the client, verbatim")
+    @Test("AC5: forgetRow sends the row's path verbatim, and a successful prune surfaces no error")
     func forgetRowSendsPathVerbatim() async throws {
         let spy = ForgetSpyClient()
-        let reader = StubProvenanceReader(
-            outcome: .entries([baselinedEntry(path: "/tmp/gone.bin")]))
+        // VanishingReader drops the row on the post-forget refresh, modelling a
+        // prune that actually removed the ledger entry → the happy path.
+        let reader = VanishingReader(entry: baselinedEntry(path: "/tmp/gone.bin"))
         let vm = TrustWindowViewModel(
             reader: reader,
             provenanceStorePath: "/tmp/x.plist",
@@ -137,10 +151,11 @@ struct TrustWindowViewModelForgetTests {
         await vm.loadOverview()
         await vm.forgetRow(path: "/tmp/gone.bin")
         #expect(spy.forgotPaths == [["/tmp/gone.bin"]])   // verbatim, single path
+        #expect(vm.forgetError == nil)                    // row removed → success, no error surfaced
     }
 
-    @Test("AC5: a client error is swallowed — no crash, no error surfaced")
-    func forgetRowSwallowsClientError() async throws {
+    @Test("AC5: a client (daemon) error is surfaced via forgetError, not swallowed")
+    func forgetRowSurfacesClientError() async throws {
         let spy = ForgetSpyClient()
         spy.forgetShouldThrow = true
         let reader = StubProvenanceReader(
@@ -153,12 +168,28 @@ struct TrustWindowViewModelForgetTests {
         await vm.loadOverview()
         await vm.forgetRow(path: "/tmp/gone.bin")   // must not throw
         #expect(spy.forgotPaths.isEmpty)            // threw before recording
-        // runState must not have flipped to a failure/error state.
-        #expect(vm.runState == .idle)
+        #expect(vm.forgetError != nil)              // failure surfaced to the user, not swallowed
+        #expect(vm.runState == .idle)               // the verify run-state is untouched
     }
 
-    @Test("forgetRow with a nil client is a no-op that still refreshes")
-    func forgetRowNilClientNoOp() async throws {
+    @Test("AC5: a forget that removes nothing (row still present after refresh) surfaces an error")
+    func forgetRowNoOpMatchSurfacesError() async throws {
+        let spy = ForgetSpyClient()   // forget succeeds, but the static reader keeps returning the row
+        let reader = StubProvenanceReader(
+            outcome: .entries([baselinedEntry(path: "/tmp/gone.bin")]))
+        let vm = TrustWindowViewModel(
+            reader: reader,
+            provenanceStorePath: "/tmp/x.plist",
+            probe: StubProbe(result: .notFound),
+            client: spy)
+        await vm.loadOverview()
+        await vm.forgetRow(path: "/tmp/gone.bin")
+        #expect(spy.forgotPaths == [["/tmp/gone.bin"]])   // the send happened
+        #expect(vm.forgetError != nil)                    // but nothing was removed → surfaced
+    }
+
+    @Test("forgetRow with a nil client surfaces an 'unavailable' error (does not refresh)")
+    func forgetRowNilClientSurfacesError() async throws {
         let reader = StubProvenanceReader(
             outcome: .entries([baselinedEntry(path: "/tmp/gone.bin")]))
         let vm = TrustWindowViewModel(
@@ -168,7 +199,9 @@ struct TrustWindowViewModelForgetTests {
             client: nil)
         await vm.loadOverview()
         await vm.forgetRow(path: "/tmp/gone.bin")   // no client → no send, no crash
-        // Refresh ran: fast-check still reports the (still-missing) row.
+        #expect(vm.forgetError != nil)              // "Forget is unavailable …" surfaced
+        // fastStatuses stays populated from setup's loadOverview — the nil-client
+        // path returns before re-refreshing (it does not call loadOverview again).
         #expect(vm.fastStatuses["/tmp/gone.bin"] == .missing)
         #expect(vm.runState == .idle)
     }

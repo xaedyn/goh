@@ -7,6 +7,7 @@ import GohCore
     final class StubPreferences: GohMenuPreferences, @unchecked Sendable {
         var notificationsEnabled: Bool
         var launchAtLoginEnabled: Bool = false
+        var showProgressOnIcon: Bool = true
         init(notificationsEnabled: Bool) { self.notificationsEnabled = notificationsEnabled }
     }
 

@@ -5,10 +5,13 @@ import Foundation
 /// The injectable interface uses UserDefaults directly; @AppStorage is confined
 /// to the SwiftUI view layer (spec §7.1).
 public protocol GohMenuPreferences: AnyObject, Sendable {
-    /// Whether completion/failure notifications are enabled. Defaults to false when absent.
+    /// Whether completion/failure notifications are enabled. Defaults to true when absent.
     var notificationsEnabled: Bool { get set }
     /// Whether the tray app registers as a login item. Defaults to false when absent.
     var launchAtLoginEnabled: Bool { get set }
+    /// Whether the menu-bar icon reflects download progress (green-when-active +
+    /// the completion bloom). Defaults to true when absent.
+    var showProgressOnIcon: Bool { get set }
 }
 
 /// Live implementation backed by UserDefaults.
@@ -22,6 +25,7 @@ nonisolated public final class UserDefaultsMenuPreferences: GohMenuPreferences, 
     private enum Key {
         static let notificationsEnabled = "GohMenuNotificationsEnabled"
         static let launchAtLoginEnabled = "GohMenuLaunchAtLoginEnabled"
+        static let showProgressOnIcon = "GohMenuShowProgressOnIcon"
     }
 
     /// Production initializer: uses standard UserDefaults (keyed by bundle ID).
@@ -43,13 +47,21 @@ nonisolated public final class UserDefaultsMenuPreferences: GohMenuPreferences, 
         self.defaults = defaults
     }
 
+    /// Defaults to `true` when absent — completion notifications are a core
+    /// affordance; users opt out, not in.
     public nonisolated var notificationsEnabled: Bool {
-        get { defaults.bool(forKey: Key.notificationsEnabled) }
+        get { defaults.object(forKey: Key.notificationsEnabled) == nil ? true : defaults.bool(forKey: Key.notificationsEnabled) }
         set { defaults.set(newValue, forKey: Key.notificationsEnabled) }
     }
 
     public nonisolated var launchAtLoginEnabled: Bool {
         get { defaults.bool(forKey: Key.launchAtLoginEnabled) }
         set { defaults.set(newValue, forKey: Key.launchAtLoginEnabled) }
+    }
+
+    /// Defaults to `true` when absent (most users want the icon to reflect activity).
+    public nonisolated var showProgressOnIcon: Bool {
+        get { defaults.object(forKey: Key.showProgressOnIcon) == nil ? true : defaults.bool(forKey: Key.showProgressOnIcon) }
+        set { defaults.set(newValue, forKey: Key.showProgressOnIcon) }
     }
 }

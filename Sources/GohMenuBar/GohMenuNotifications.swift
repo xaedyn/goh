@@ -10,14 +10,18 @@ nonisolated public enum GohNotificationAuthorization: Sendable {
 }
 
 nonisolated public struct GohNotificationContent: Sendable, Equatable {
-    /// Short title, e.g. "Download complete" or "Download failed".
+    /// Short title, e.g. "Download Complete" or "Download Failed".
     public let title: String
-    /// Sanitized body: file name + outcome. Any host/URL component must pass
-    /// through URLDisplay.sanitized before inclusion (spec §5 PII rule).
+    /// Secondary line — the file name (filename only; never a full path, per the
+    /// §5 PII rule).
+    public let subtitle: String
+    /// Body line — outcome + size for completes ("Verified · 6.94 GB"), or the
+    /// failure reason for failures.
     public let body: String
 
-    public nonisolated init(title: String, body: String) {
+    public nonisolated init(title: String, subtitle: String = "", body: String) {
         self.title = title
+        self.subtitle = subtitle
         self.body = body
     }
 }
@@ -84,13 +88,18 @@ nonisolated public struct GohNotificationTransitionDetector: Sendable {
             let content: GohNotificationContent
             switch currentState {
             case .completed:
+                // The bytes were SHA-256-hashed in-flight and recorded to the
+                // ledger at completion, so "Verified" is the origin-trust claim.
+                let sizeSuffix = job.progress.bytesTotal.map { " · \(JobDisplayFormatter.formatBytes($0))" } ?? ""
                 content = GohNotificationContent(
-                    title: "Download complete",
-                    body: displayName)
+                    title: "Download Complete",
+                    subtitle: displayName,
+                    body: "Verified\(sizeSuffix)")
             case .failed:
                 content = GohNotificationContent(
-                    title: "Download failed",
-                    body: displayName)
+                    title: "Download Failed",
+                    subtitle: displayName,
+                    body: job.error?.message ?? "The download couldn't be completed.")
             default:
                 // Should not reach here due to isTerminal guard above.
                 continue

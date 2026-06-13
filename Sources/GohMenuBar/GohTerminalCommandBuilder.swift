@@ -4,6 +4,7 @@ import GohCore
 nonisolated public enum GohTerminalCommand: Sendable, Equatable {
     case top
     case doctor
+    case attest
 
     var arguments: [String] {
         switch self {
@@ -11,6 +12,8 @@ nonisolated public enum GohTerminalCommand: Sendable, Equatable {
             return ["top"]
         case .doctor:
             return ["doctor"]
+        case .attest:
+            return ["attest"]
         }
     }
 }

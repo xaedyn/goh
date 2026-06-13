@@ -5,6 +5,94 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-13 (menu-bar Liquid Glass redesign) — **All 8 surfaces rebuilt on `redesign/menubar-liquid-glass` (pushed); running-app verification pass PASSED (user, GUI end-to-end); NO PR yet — polish by value next**
+
+Full HIG / Liquid Glass redesign of the menu-bar app from `design/menubar-redesign/`
+(binding spec + reference screenshots). **Binds the existing view-models only — `GohCore`
+is untouched** (`git diff main -- Sources/GohCore` empty; no wire/protocolVersion change).
+984 tests green; `swift build -warnings-as-errors` clean.
+
+- **Step 1–3 (`d5dfff4`):** `Theme/` tokens (brand-green accent, semantic colors, geometry,
+  type) + `GohWordmark` (SVG split into independently tintable letter/arrow templates) +
+  `GohWordmarkTile`; redesigned popover (pure `PopoverContent`/`PopoverRows`); **menu-bar host
+  migrated `MenuBarExtra` → AppKit `NSStatusItem`** (`GohStatusItemController`, icon as
+  `button.image`, popover via `NSPopover`, windows `.defaultLaunchBehavior(.suppressed)`).
+- **Step 4 (`9e423d1`):** Add Download. **Step 5 (`552fb44`):** Downloads (filter+search,
+  grouped cards, host·size·sha256). **Step 6 (`502cebb`):** Trust (master-detail + the
+  changed-hash diff component). **Step 7 (`931cb2e`):** Settings (General-only — the one real
+  tab; new wired `showProgressOnIcon` pref). **Step 8 (`36d8bd6`):** richer completion
+  notification.
+- **Tooling:** `Scripts/dev-app.sh` (signed local `.app` for GUI testing — bare binary aborts:
+  `UNUserNotificationCenter` needs a bundle); `Scripts/package-app.sh` now ships the wordmark
+  resource bundle (was missing → blank wordmark in prod). `goh-snapshots` ImageRenderer harness
+  renders every surface light+dark. Presentation-only model fields added in presenters
+  (`displayState`, `completedDateText`, `failureReason`, `bytesTotal`, `sha256Short`, trust
+  `size`) — no new app state.
+- **Verified live so far:** only the Step-3 host (icon legible, click→popover, window buttons
+  open, no stray window). Everything else is **snapshot-verified, not yet GUI-verified.**
+
+**NEXT — running-app verification PASSED (2026-06-13, GUI end-to-end: glass blur-through,
+Downloads filter/search, stability all confirmed). Polish by value:**
+1. ~~Running-app verification (user, items 7–9)~~ — **DONE, all good.** PR can now go up
+   (held pending user's call on timing).
+2. **Live Trust hash-diff (#3 — highest value):** on-demand single-file re-hash of the selected
+   changed file (concurrency-sensitive — mirror the verify off-main pattern, mind the
+   cooperative-pool deadlock). Live changed inspector already reads alarming without it.
+3. **Status-item bloom + drag (#1, #2):** focused AppKit event-layer pass (both blocked by the
+   status-button swallowing interactive layers — see the statusitem gotchas memory).
+4. **New-state batches (#5 settings prefs, #6 edge banners):** each a deliberate user-authorized
+   decision; need persisted prefs + engine wiring.
+   Notification inline-check (#9) is NOT a fix — the banner is system-drawn.
+
+**2026-06-13 (cont.) — real Liquid Glass migration COMMITTED (2 commits on the branch; live
+verification PENDING):** swapped the last hand-rolled materials for the system macOS 26 glass APIs.
+- **Panel (`431fb63`):** NSPopover → borderless `GohMenuPanel` on a real `NSGlassEffectView` (folds
+  in the prior-session WIP: custom `GohStatusItemView` owning click + URL-drop). Added the
+  `accessibilityReduceTransparency` fallback (solid surface; swaps live via an NSWorkspace
+  `accessibilityDisplayOptionsDidChange` observer) and a 26.2 stale-backdrop redisplay nudge on show
+  (Apple Forums 810314 — non-movable borderless windows cache the glass backdrop).
+- **Surfaces (`05e8ef2`):** dropped `.containerBackground(.thinMaterial)` from the 4 windows — they
+  get native chrome glass + a legible content surface, NOT floating glass slabs (the agreed
+  correction to the original brief; avoids the dense-list readability regression macOS 27's
+  transparency slider exists to fix). Wordmark tile `.regularMaterial` → a translucent color fill
+  (content on the panel's single glass layer — no glass-on-glass; glass can't sample glass).
+- **Native window chrome (`064fe16`):** the "let native controls inherit glass" half — replaced the
+  hand-rolled window chrome with native SwiftUI containers so macOS 26 puts glass on toolbars/sidebars
+  while content stays legible. **Trust → `NavigationSplitView`** (real glass sidebar `List(selection:)`,
+  `.searchable(.sidebar)`, `.toolbar` actions, `.bar` bottom status, `ContentUnavailableView` empty
+  states; window now resizable + `.windowToolbarStyle(.unified)`). **Downloads → `NavigationStack` +
+  `List(.inset)`** with Downloading/Recent `Section`s, unified `.toolbar` (filter Picker + Open Folder /
+  Clear Completed), `.searchable`, `.bar` status, `ContentUnavailableView`. **Add + Settings → grouped
+  `Form`** (`.formStyle(.grouped)`; Settings drops its 1-item tab bar). Popover live-confirmed good by
+  user. No view-model/wire/daemon change.
+- **Discoverable Forget + fixes (`197e3fe`,`1c23c69`,`53c1f7b`,`62b6e42`):** Trust Forget surfaced as a
+  right-click context menu + Delete key on MISSING rows (was a buried inspector button); the confirmation
+  dialog moved to the window root. Forget failures no longer swallowed — a `try?` hid them; now surfaced
+  with a **featureLevel-aware message** (reads daemon `ls().featureLevel` vs `GohFeatureLevel.current` →
+  "your daemon is too old, update it" instead of a misleading "unreachable"). Toolbar `.help` tooltips
+  (Attest/Verify/Cancel). `Scripts/dev-app.sh` now stages+signs the `goh` CLI in the dev bundle (Open in
+  Terminal / Doctor / Attest were hitting a missing `Contents/MacOS/goh`).
+- **`Scripts/dev-daemon.sh` (`1100319`) + the dev-loop lesson:** the dev menu `.app` talks to the
+  INSTALLED `/usr/local/bin/gohd`; building the menu doesn't update the daemon, so a stale daemon (the
+  live one was a featureLevel-1 June-9 tester build) rejects new commands like `forget`. New script
+  builds+signs+swaps+kickstarts the daemon in one step. **Critical:** sign the dev `gohd` WITHOUT hardened
+  runtime — `--options runtime` on a debug binary → kernel SIGKILL (`OS_REASON_CODESIGNING`), a silent
+  crash-loop; Developer-ID-without-hardened-runtime keeps the Team ID for same-team XPC validation and
+  launches. See [[dev-daemon-refresh-and-signing]].
+- **Live-confirmed by user:** popover glass (good); Trust window loads + Forget works end-to-end after the
+  daemon was updated to featureLevel 2. 987 tests green; `swift build -warnings-as-errors` clean.
+- **Code review (stack-aware, Opus, whole branch `dc65f15..HEAD`) — PASSED** after one fix: 9/10
+  categories clean (build `-warnings-as-errors` green, 988 tests, frozen GohCore diff empty, conventions/
+  concurrency/security/error-handling all PASS); the one block was Test Quality — the new `forgetError`
+  surfacing had zero coverage + 2 stale tests asserted the old swallow contract. Fixed in `67ffc57`
+  (4 forget tests: client-error/no-op-match/nil-client surface an error, happy path stays nil). Advisories
+  (non-blocking, deferred): `installContentSurface()` could guard against rebuilding the same surface kind;
+  the `level == nil` Forget message wording; `goh-snapshots` force-unwraps (dev-only tool).
+- **NEXT:** user to live-verify the **Downloads / Add / Settings** windows in light+dark over a busy
+  wallpaper. Then **push + open the PR** (not pushed yet; push-only-when-asked). Optional brand-green panel `tintColor`
+  left off. Snapshot caveat: `goh-snapshots` renders Add/Settings directly; grouped `Form`s may render
+  thin/blank there (no window context) — cosmetic, the live app is the source of truth.
+
 ### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases — all MERGED (PRs #115–119); `main` green, 976 tests**
 
 Worked the remaining code-quality review backlog as 5 independent PRs off `main` (disjoint

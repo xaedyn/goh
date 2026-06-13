@@ -1,324 +1,265 @@
-import SwiftUI
+import AppKit
 import GohCore
+import SwiftUI
 
-/// The Trust window — per-file provenance list + background verify.
+/// The Trust window — a master-detail view of recorded provenance with an
+/// on-demand background verify. Binds the existing `TrustWindowViewModel`
+/// (overview, rows, fast-check statuses, verify run state, forget). The redesign
+/// only re-presents what the view-model already publishes.
 public struct TrustWindowView: View {
     @ObservedObject private var viewModel: TrustWindowViewModel
+    private let onAttest: () -> Void
 
-    /// Path whose Forget confirmation dialog is currently presented (nil = none).
+    @State private var selection: String?
+    @State private var search = ""
     @State private var confirmForgetPath: String?
 
-    public init(viewModel: TrustWindowViewModel) {
+    public init(viewModel: TrustWindowViewModel, onAttest: @escaping () -> Void = {}) {
         self.viewModel = viewModel
+        self.onAttest = onAttest
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            entryList
-            Divider()
-            verifySection
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            inspector
         }
-        .frame(minWidth: 480, minHeight: 300)
-        .padding(16)
-        .task { await viewModel.loadOverview() }
+        .frame(minWidth: 760, minHeight: 460)
+        .toolbar { trustToolbar }
+        .safeAreaInset(edge: .bottom) { statusBar }
+        .task {
+            await viewModel.loadOverview()
+            selectDefault()
+        }
+        .onChange(of: viewModel.rows.map(\.displayPath)) { _, _ in selectDefault() }
+        .onChange(of: selection) { _, _ in hashSelectedIfChanged() }
         .onDisappear { viewModel.reset() }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Trust")
-                .font(.title2)
-                .bold()
-            overviewLine
+        .confirmationDialog(
+            "Forget this download's provenance?",
+            isPresented: Binding(
+                get: { confirmForgetPath != nil },
+                set: { if !$0 { confirmForgetPath = nil } }),
+            titleVisibility: .visible,
+            presenting: confirmForgetPath
+        ) { path in
+            Button("Forget", role: .destructive) {
+                confirmForgetPath = nil
+                Task { await viewModel.forgetRow(path: path) }
+            }
+            Button("Cancel", role: .cancel) { confirmForgetPath = nil }
+        } message: { path in
+            Text("Removes the saved download record for \(URL(fileURLWithPath: path).lastPathComponent). The file is already missing; this does not delete anything from disk.")
+        }
+        .alert(
+            "Couldn’t Forget",
+            isPresented: Binding(
+                get: { viewModel.forgetError != nil },
+                set: { if !$0 { viewModel.clearForgetError() } })
+        ) {
+            Button("OK", role: .cancel) { viewModel.clearForgetError() }
+        } message: {
+            Text(viewModel.forgetError ?? "")
         }
     }
 
-    @ViewBuilder
-    private var overviewLine: some View {
-        switch viewModel.overview {
-        case .empty:
-            Text("No downloads recorded yet")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        case .unavailable:
-            Text("Trust data unavailable")
-                .font(.subheadline)
-                .foregroundStyle(.orange)
-        case .summary(let s):
-            // AC1: explicitly labelled "last recorded" — NOT a live check
-            Text("\(s.tracked) files tracked · last recorded: \(s.verified) verified · \(s.downloadOnly) download-only")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-    }
+    // MARK: Sidebar (native NavigationSplitView master list)
 
-    // MARK: - Entry list
-
-    @ViewBuilder
-    private var entryList: some View {
-        if viewModel.rows.isEmpty {
-            Text("No entries to display.")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(viewModel.rows, id: \.displayPath) { row in
-                        HStack(alignment: .top, spacing: 8) {
-                            TrustEntryRowView(
-                                row: row,
-                                liveResult: liveResult(for: row),
-                                displayStatus: GohTrustPresenter.displayStatus(
-                                    verifiedAt: row.verifiedAt,
-                                    fastStatus: viewModel.fastStatuses[row.displayPath]))
-                            // AC5: a visible (discoverable) Forget affordance — ONLY on rows
-                            // whose file is MISSING on disk (ENOENT). Gated on the tested
-                            // `isForgettable` predicate (fast-check truth), NOT displayStatus,
-                            // so a verified-then-deleted file still exposes Forget while a
-                            // present / present-but-unreadable file exposes none.
-                            if viewModel.isForgettable(path: row.displayPath) {
-                                Button {
-                                    confirmForgetPath = row.displayPath     // VERBATIM canonical destinationPath
-                                } label: {
-                                    Label("Forget", systemImage: "trash")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Remove this missing file's saved provenance record")
-                            }
+    private var sidebar: some View {
+        List(selection: $selection) {
+            ForEach(filteredRows, id: \.displayPath) { row in
+                // selected:false — the native List draws the selection highlight.
+                TrustListRow(row: row, status: status(for: row), selected: false)
+                    .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                    .tag(row.displayPath)
+                    .contextMenu {
+                        Button { reveal(row) } label: { Label("Reveal in Finder", systemImage: "folder") }
+                        if viewModel.isForgettable(path: row.displayPath) {
+                            Divider()
+                            Button(role: .destructive) {
+                                confirmForgetPath = row.displayPath
+                            } label: { Label("Forget Download…", systemImage: "trash") }
                         }
                     }
-                }
             }
-            .frame(maxHeight: 320)
-            .confirmationDialog(
-                "Forget this download's provenance?",
-                isPresented: Binding(
-                    get: { confirmForgetPath != nil },
-                    set: { if !$0 { confirmForgetPath = nil } }),
-                titleVisibility: .visible,
-                presenting: confirmForgetPath
-            ) { path in
-                Button("Forget", role: .destructive) {
-                    confirmForgetPath = nil
-                    Task { await viewModel.forgetRow(path: path) }
-                }
-                Button("Cancel", role: .cancel) { confirmForgetPath = nil }
-            } message: { path in
-                Text("Removes the saved download record for \(URL(fileURLWithPath: path).lastPathComponent). The file is already missing; this does not delete anything from disk.")
+        }
+        .listStyle(.sidebar)
+        .searchable(text: $search, placement: .sidebar, prompt: "Search files")
+        .onDeleteCommand { forgetSelectedIfMissing() }
+        .frame(minWidth: 240)
+        .overlay {
+            if viewModel.overview == .unavailable {
+                ContentUnavailableView("Trust Data Unavailable", systemImage: "lock.slash")
+            } else if viewModel.rows.isEmpty {
+                ContentUnavailableView(
+                    "No Recorded Downloads", systemImage: "checkmark.shield",
+                    description: Text("Files you download with goh are recorded here."))
+            } else if filteredRows.isEmpty {
+                ContentUnavailableView.search(text: search)
             }
         }
     }
 
-    /// Look up the live verify result for a row (nil if no completed run yet).
-    private func liveResult(for row: GohTrustEntryRow) -> VerifyStatus? {
-        switch viewModel.runState {
-        case .finished(let report), .cancelled(let report):
-            return report.entries.first { $0.path == row.displayPath }?.status
-        default:
-            return nil
+    // MARK: Toolbar (native — actions get Liquid Glass automatically)
+
+    @ToolbarContentBuilder
+    private var trustToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if case .running = viewModel.runState {
+                Button("Cancel") { viewModel.cancelVerify() }
+                    .help("Stop the verification in progress")
+            } else {
+                Button { onAttest() } label: { Label("Attest…", systemImage: "checkmark.seal") }
+                    .help("Attest your download records with a Secure Enclave signature (opens Terminal)")
+                Button { viewModel.startVerify() } label: { Label("Verify All", systemImage: "checkmark.shield") }
+                    .disabled(viewModel.rows.isEmpty || viewModel.overview == .unavailable)
+                    .help("Re-hash every recorded file and check it against its recorded SHA-256")
+            }
         }
     }
 
-    // MARK: - Verify section
+    // MARK: Status bar (native bottom bar — counts + verify status)
+
+    private var statusBar: some View {
+        HStack(spacing: 0) {
+            if case .summary(let s) = viewModel.overview {
+                count(s.tracked, "tracked", .primary)
+                separator
+                count(s.verified, "verified", GohTheme.accent)
+                if changedCount > 0 {
+                    separator
+                    count(changedCount, "changed", GohTheme.error)
+                }
+            }
+            Spacer(minLength: 12)
+            footerStatus
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(.bar)
+    }
+
+    private func count(_ value: Int, _ label: String, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            Text("\(value)").font(GohTheme.Typography.secondary.weight(.semibold)).foregroundStyle(color).monospacedDigit()
+            Text(label).font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
+        }
+    }
+
+    private var separator: some View {
+        Text("·").font(GohTheme.Typography.secondary).foregroundStyle(.tertiary).padding(.horizontal, 8)
+    }
+
+    // MARK: Inspector
 
     @ViewBuilder
-    private var verifySection: some View {
+    private var inspector: some View {
+        if let selectedRow {
+            ScrollView {
+                TrustInspector(
+                    row: selectedRow,
+                    status: status(for: selectedRow),
+                    currentHash: viewModel.currentHashes[selectedRow.displayPath],
+                    isComputingHash: viewModel.hashingPath == selectedRow.displayPath,
+                    changeReason: changeReason(for: selectedRow),
+                    onReveal: { reveal(selectedRow) },
+                    onForget: viewModel.isForgettable(path: selectedRow.displayPath)
+                        ? { confirmForgetPath = selectedRow.displayPath }
+                        : nil)
+            }
+        } else {
+            ContentUnavailableView(
+                "No File Selected", systemImage: "sidebar.squares.left",
+                description: Text("Select a file to inspect its provenance."))
+        }
+    }
+
+    // MARK: Verify status (shown in the bottom status bar)
+
+    @ViewBuilder
+    private var footerStatus: some View {
         switch viewModel.runState {
         case .idle:
-            Button {
-                viewModel.startVerify()
-            } label: {
-                Label("Verify now", systemImage: "checkmark.shield")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.rows.isEmpty || viewModel.overview == .unavailable)
-            .accessibilityLabel("Start integrity verification of all recorded files")
-
+            Text(changedCount > 0 ? "\(changedCount) changed since recorded" : "Not yet checked this session")
+                .font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
         case .running(let progress):
             let stats = viewModel.liveStats(for: progress)
-            VStack(alignment: .leading, spacing: 6) {
-                if let path = progress.currentPath {
-                    Text("Verifying \(URL(fileURLWithPath: path).lastPathComponent)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                HStack(spacing: 10) {
-                    if progress.totalBytes > 0 {
-                        ProgressView(value: stats.fraction)
-                            .frame(maxWidth: 220)
-                            .accessibilityLabel(
-                                "Verification progress \(Int(stats.fraction * 100)) percent")
-                    } else {
-                        ProgressView(
-                            value: Double(progress.completed),
-                            total: Double(max(progress.total, 1)))
-                            .frame(maxWidth: 220)
-                            .accessibilityLabel(
-                                "Verification progress, file \(progress.completed) of \(progress.total)")
-                    }
-                    Spacer()
-                    Button("Cancel") {
-                        viewModel.cancelVerify()
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("Cancel verify run")
-                }
-                HStack(spacing: 8) {
-                    Text("\(progress.completed) / \(progress.total) files")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if !stats.byteText.isEmpty {
-                        Text("·").font(.caption).foregroundStyle(.secondary)
-                        Text(stats.byteText).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if let eta = stats.etaText {
-                        Text("·").font(.caption).foregroundStyle(.secondary)
-                        Text(eta).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
+            HStack(spacing: 8) {
+                ProgressView(value: stats.fraction).frame(width: 140)
+                Text("\(progress.completed) / \(progress.total) files")
+                    .font(GohTheme.Typography.secondary).foregroundStyle(.secondary).monospacedDigit()
             }
-
-        case .finished(let report):
-            liveResultSummary(report: report, cancelled: false)
-
-        case .cancelled(let report):
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Cancelled (partial result)")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                liveResultSummary(report: report, cancelled: true)
-            }
-
+        case .finished(let report), .cancelled(let report):
+            Text(reportSummary(report))
+                .font(GohTheme.Typography.secondary).foregroundStyle(.secondary)
         case .failed(let message):
-            HStack {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(GohTheme.Typography.secondary).foregroundStyle(GohTheme.error).lineLimit(1)
         }
     }
 
-    @ViewBuilder
-    private func liveResultSummary(report: VerifyAllReport, cancelled: Bool) -> some View {
-        HStack(spacing: 12) {
-            Label("\(report.summary.ok) OK", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            if report.summary.failed > 0 {
-                Label("\(report.summary.failed) FAILED", systemImage: "xmark.circle.fill")
-                    .foregroundStyle(.red)
-            }
-            if report.summary.missing > 0 {
-                Label("\(report.summary.missing) MISSING", systemImage: "questionmark.circle.fill")
-                    .foregroundStyle(.orange)
-            }
-            Spacer()
-            Button {
-                viewModel.startVerify()
-            } label: {
-                Label("Verify again", systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(viewModel.rows.isEmpty)
-            .accessibilityLabel("Run verification again")
-        }
-        .font(.subheadline)
-    }
-}
-
-// MARK: - Per-entry row
-
-private struct TrustEntryRowView: View {
-    let row: GohTrustEntryRow
-    let liveResult: VerifyStatus?
-    let displayStatus: TrustDisplayStatus   // fast-check or at-rest status (Task 3.1)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(URL(fileURLWithPath: row.displayPath).lastPathComponent)
-                    .font(.callout)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 8)
-                displayStatusChip(displayStatus)
-                if let live = liveResult {
-                    liveStatusChip(live)
-                }
-            }
-            Text(row.sanitizedURL)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text(row.sha256)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.vertical, 3)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityDescription)
+    private func reportSummary(_ report: VerifyAllReport) -> String {
+        var parts = ["Last check: \(report.summary.ok) OK"]
+        if report.summary.failed > 0 { parts.append("\(report.summary.failed) changed") }
+        if report.summary.missing > 0 { parts.append("\(report.summary.missing) missing") }
+        return parts.joined(separator: " · ")
     }
 
-    /// Fast-check / at-rest status chip. Visually distinct from `liveStatusChip`.
-    /// `looksUnchanged` uses teal (heuristic); `verified` uses green (cryptographic proof).
-    @ViewBuilder
-    private func displayStatusChip(_ status: TrustDisplayStatus) -> some View {
-        let (label, bg, fg): (String, Color, Color) = switch status {
-        case .verified:
-            (status.label, Color.green.opacity(0.15), Color.green)
-        case .looksUnchanged:
-            (status.label, Color.teal.opacity(0.12), Color.teal)
-        case .changed:
-            (status.label, Color.orange.opacity(0.15), Color.orange)
-        case .missing:
-            (status.label, Color.red.opacity(0.12), Color.red)
-        case .indeterminate:
-            (status.label, Color.orange.opacity(0.10), Color.orange)
-        case .notBaselined:
-            (status.label, Color.secondary.opacity(0.1), Color.secondary)
-        case .recordedOnly:
-            (status.label, Color.secondary.opacity(0.1), Color.secondary)
+    // MARK: Derived
+
+    private var filteredRows: [GohTrustEntryRow] {
+        guard !search.isEmpty else { return viewModel.rows }
+        return viewModel.rows.filter {
+            URL(fileURLWithPath: $0.displayPath).lastPathComponent.localizedCaseInsensitiveContains(search)
         }
-        Text(label)
-            .font(.caption2)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(bg)
-            .cornerRadius(4)
-            .foregroundStyle(fg)
     }
 
-    /// Live verify status chip — visually distinct from at-rest labels (AC1).
-    @ViewBuilder
-    private func liveStatusChip(_ status: VerifyStatus) -> some View {
-        let (label, color): (String, Color) = switch status {
-        case .ok:      ("OK", .green)
-        case .failed:  ("FAILED", .red)
-        case .missing: ("MISSING", .orange)
-        }
-        Text(label)
-            .font(.caption2)
-            .bold()
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.2))
-            .cornerRadius(4)
-            .foregroundStyle(color)
+    private var selectedRow: GohTrustEntryRow? {
+        viewModel.rows.first { $0.displayPath == selection }
     }
 
-    private var accessibilityDescription: String {
-        let file = URL(fileURLWithPath: row.displayPath).lastPathComponent
-        let live = liveResult.map { "live: \($0.rawValue)" } ?? ""
-        return "\(file), \(displayStatus.label)\(live.isEmpty ? "" : ", \(live)")"
+    private var changedCount: Int {
+        viewModel.fastStatuses.values.filter { if case .changed = $0 { return true } else { return false } }.count
+    }
+
+    private func status(for row: GohTrustEntryRow) -> TrustDisplayStatus {
+        GohTrustPresenter.displayStatus(verifiedAt: row.verifiedAt, fastStatus: viewModel.fastStatuses[row.displayPath])
+    }
+
+    private func changeReason(for row: GohTrustEntryRow) -> String? {
+        guard case .changed(let reason) = status(for: row) else { return nil }
+        switch reason {
+        case .identity: return "The file was replaced (its identity on disk changed)."
+        case .size: return "The file's size differs from the recorded \(TrustFormat.size(row.size))."
+        case .mtime: return "The file was modified after it was recorded."
+        }
+    }
+
+    private func selectDefault() {
+        let paths = viewModel.rows.map(\.displayPath)
+        if let selection, paths.contains(selection) { return }
+        // Prefer a changed/missing row, else the first.
+        selection = viewModel.rows.first { row in
+            if case .changed = status(for: row) { return true }
+            return status(for: row) == .missing
+        }?.displayPath ?? paths.first
+    }
+
+    private func reveal(_ row: GohTrustEntryRow) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.displayPath)])
+    }
+
+    /// Delete-key forget for the selected row. Only missing (deleted-on-disk)
+    /// entries are forgettable — a present file's provenance record is kept.
+    private func forgetSelectedIfMissing() {
+        guard let selection, viewModel.isForgettable(path: selection) else { return }
+        confirmForgetPath = selection
+    }
+
+    /// When a CHANGED file is selected, kick off the on-demand on-disk re-hash so
+    /// the inspector can show the real byte-diff. Other states need no hash.
+    private func hashSelectedIfChanged() {
+        guard let row = selectedRow, case .changed = status(for: row) else { return }
+        viewModel.computeCurrentHash(forPath: row.displayPath)
     }
 }

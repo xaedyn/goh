@@ -54,6 +54,16 @@ mkdir -p "$macos_dir" "$resources_dir" "$output_dir"
 
 install -m 0755 "$repo_root/.build/release/goh-menu" "$macos_dir/goh-menu"
 
+# Copy the GohMenuBar SwiftPM resource bundle (the goh wordmark SVG) into the
+# app's Resources so Bundle.module resolves it at runtime. Without this the
+# packaged app renders a blank wordmark in the status item + popover header.
+menubar_bundle="$repo_root/.build/release/goh_GohMenuBar.bundle"
+if [[ ! -d "$menubar_bundle" ]]; then
+  echo "error: missing resource bundle $menubar_bundle (did the release build run?)" >&2
+  exit 1
+fi
+cp -R "$menubar_bundle" "$resources_dir/"
+
 # Substitute __VERSION__ placeholder with the actual version string.
 sed "s/__VERSION__/$version/g" "$template" > "$info_plist"
 plutil -lint "$info_plist" >/dev/null

@@ -1,108 +1,104 @@
-import SwiftUI
 import GohCore
+import SwiftUI
 
+/// The Add Download window — a native grouped `Form` (the macOS way to present a
+/// short input window). Rebinds the existing `AddDownloadViewModel` (URL,
+/// destination, automatic / connection count, error). The window title + traffic
+/// lights come from the hosting `Window` scene; this view supplies the form +
+/// the Cancel / Add action bar.
 public struct AddDownloadView: View {
     @ObservedObject private var vm: AddDownloadViewModel
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var urlFocused: Bool
 
     public init(vm: AddDownloadViewModel) {
         self.vm = vm
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // URL field
-            VStack(alignment: .leading, spacing: 4) {
-                Text("URL")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("https://", text: $vm.urlText)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Download URL")
-            }
-
-            // Destination row
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Destination")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Button("Choose folder…") {
-                        Task { await vm.chooseFolder() }
-                    }
-                    .accessibilityLabel("Choose destination folder")
-                    if let folder = vm.chosenFolder {
-                        Text(folder)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Button("Use default") {
-                            vm.useDefaultFolder()
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                        .accessibilityLabel("Use default downloads folder")
-                    } else {
-                        Text("Downloads (default)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+        VStack(spacing: 0) {
+            Form {
+                Section("URL") {
+                    TextField("https://", text: $vm.urlText)
+                        .focused($urlFocused)
+                        .accessibilityLabel("Download URL")
                 }
-            }
 
-            // Connections row
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Connections")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Toggle("Automatic", isOn: $vm.automaticConnections)
-                        .accessibilityLabel("Automatic connection count")
+                Section("Destination") {
+                    LabeledContent("Save to") { saveToMenu }
+                }
+
+                Section {
+                    Toggle(isOn: $vm.automaticConnections) {
+                        Text("Automatic connections")
+                        Text("Learns the best count per host")
+                    }
+                    .tint(GohTheme.accent)
+                    .accessibilityLabel("Automatic connection count")
+
                     if !vm.automaticConnections {
-                        Stepper(
-                            value: $vm.connectionCount,
-                            in: 1...16
-                        ) {
-                            Text("\(vm.connectionCount)")
+                        Stepper(value: $vm.connectionCount, in: 1...16) {
+                            LabeledContent("Connections", value: "\(vm.connectionCount)")
                         }
                         .accessibilityLabel("Connection count \(vm.connectionCount)")
-                        .frame(maxWidth: 100)
+                    }
+                } footer: {
+                    Label("Hashed in-flight and recorded to your ledger on completion.",
+                          systemImage: "checkmark.seal")
+                }
+
+                if let errorText = vm.errorText {
+                    Section {
+                        Label(errorText, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(GohTheme.error)
+                            .accessibilityLabel("Error: \(errorText)")
                     }
                 }
             }
+            .formStyle(.grouped)
 
-            // Error text (shown only on failure)
-            if let errorText = vm.errorText {
-                Text(errorText)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Error: \(errorText)")
-            }
+            Divider()
 
-            // Buttons
             HStack {
                 Spacer()
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                .accessibilityLabel("Cancel add download")
-
-                Button("Add") {
-                    Task {
-                        let success = await vm.submit()
-                        if success { dismiss() }
-                    }
+                Button("Cancel") { dismiss() }
+                    .controlSize(.large)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityLabel("Cancel add download")
+                Button {
+                    Task { if await vm.submit() { dismiss() } }
+                } label: {
+                    Label("Add", systemImage: "arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(GohTheme.accent)
+                .controlSize(.large)
                 .disabled(!vm.canAdd)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityLabel("Add download")
             }
+            .padding(14)
         }
-        .padding(20)
-        .frame(width: 440)
+        .frame(width: 400, height: 440)
+    }
+
+    // MARK: Destination chooser
+
+    private var saveToMenu: some View {
+        Menu {
+            Button { vm.useDefaultFolder() } label: { Label("Downloads", systemImage: "folder") }
+            Button { Task { await vm.chooseFolder() } } label: { Label("Choose Folder…", systemImage: "folder.badge.plus") }
+        } label: {
+            Label(folderName, systemImage: "folder")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Choose destination folder")
+    }
+
+    private var folderName: String {
+        guard let folder = vm.chosenFolder else { return "Downloads" }
+        let name = URL(fileURLWithPath: folder).lastPathComponent
+        return name.isEmpty ? folder : name
     }
 }

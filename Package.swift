@@ -76,6 +76,15 @@ let package = Package(
         .target(
             name: "GohMenuBar",
             dependencies: ["GohCore"],
+            resources: [.process("Resources")],
+            swiftSettings: [.defaultIsolation(MainActor.self)]
+        ),
+        // Developer-only render harness for the menu-bar redesign — renders the
+        // real GohMenuBar SwiftUI views to PNG in light + dark via ImageRenderer.
+        // Not a shipped product; binds to no daemon.
+        .executableTarget(
+            name: "goh-snapshots",
+            dependencies: ["GohMenuBar"],
             swiftSettings: [.defaultIsolation(MainActor.self)]
         ),
         .testTarget(

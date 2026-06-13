@@ -68,6 +68,14 @@ public final class TrustWindowViewModel: ObservableObject {
     /// after `loadOverview()` reads the ledger — before the view re-renders.
     @Published public private(set) var fastStatuses: [String: FastCheckStatus] = [:]
 
+    /// On-disk SHA-256 of a CHANGED file, keyed by `destinationPath`, computed on
+    /// demand when its row is selected. Powers the inspector's recorded-vs-current
+    /// byte-diff. Empty until the selected changed file's hash completes.
+    @Published public private(set) var currentHashes: [String: String] = [:]
+    /// The path whose on-disk hash is currently being computed (for the
+    /// "Computing on-disk hash…" inspector state); nil when idle.
+    @Published public private(set) var hashingPath: String?
+
     private let reader: any ProvenanceReading
     private let provenanceStorePath: String
     private let presenter: GohTrustPresenter
@@ -75,6 +83,8 @@ public final class TrustWindowViewModel: ObservableObject {
     /// a stub in tests.
     private let probe: any FileStatProbing
     private var cancellationBox: CancellationBox?
+    /// Cancellation for the in-flight on-demand hash (separate from verify).
+    private var hashCancellationBox: CancellationBox?
     /// Injected client for best-effort baseline sends after a verify run.
     /// Nil in test contexts that do not exercise backfill.
     private let menuClient: (any GohMenuClient)?
@@ -122,6 +132,43 @@ public final class TrustWindowViewModel: ObservableObject {
         fastStatuses = statuses
     }
 
+    // MARK: - On-demand current hash (the changed-file byte-diff)
+
+    /// Computes the on-disk SHA-256 of a changed file on demand, so the inspector
+    /// can show the real recorded-vs-current byte-diff. Idempotent per path (cached
+    /// once computed); cancels any other in-flight hash. Runs on a real GCD thread
+    /// (NOT `Task.detached`, which would stay on the cooperative pool and could
+    /// starve it on a multi-GB file — same hazard the verify path avoids).
+    ///
+    /// Best-effort: a read failure (or cancellation) leaves the path unhashed and
+    /// the inspector falls back to "Run Verify All to compute the on-disk hash."
+    public func computeCurrentHash(forPath path: String) {
+        if currentHashes[path] != nil || hashingPath == path { return }
+        hashCancellationBox?.cancel()
+        let box = CancellationBox()
+        hashCancellationBox = box
+        hashingPath = path
+
+        let weakSelf = WeakRef(self)
+        DispatchQueue.global(qos: .userInitiated).async { [box, path] in
+            let hash = try? FileDigest.sha256WithSize(path: path, isCancelled: { box.isCancelled() }).0
+            Task { @MainActor in
+                guard let vm = weakSelf.value else { return }
+                // Apply only if this is still the path we were hashing and not cancelled.
+                guard vm.hashingPath == path, !box.isCancelled() else { return }
+                vm.hashingPath = nil
+                if let hash { vm.currentHashes[path] = hash }
+            }
+        }
+    }
+
+    /// Cancels any in-flight on-demand hash (e.g. selection changed / window closed).
+    public func cancelHashing() {
+        hashCancellationBox?.cancel()
+        hashCancellationBox = nil
+        hashingPath = nil
+    }
+
     // MARK: - Forget (AC5)
 
     /// Whether a row's file is currently MISSING on disk (ENOENT), making its
@@ -135,12 +182,53 @@ public final class TrustWindowViewModel: ObservableObject {
         fastStatuses[path] == .missing
     }
 
+    /// A user-facing message when a Forget did not take effect — a daemon error, or
+    /// the record was not removed (e.g. an installed daemon too old to support the
+    /// Forget command). Shown as an alert; cleared on dismiss. Unlike the
+    /// best-effort baseline send, Forget is an explicit user action, so its failure
+    /// must NOT be silent.
+    @Published public private(set) var forgetError: String?
+
+    public func clearForgetError() { forgetError = nil }
+
     /// Removes the given path's provenance entry via the daemon, then refreshes the
-    /// overview so the row disappears. Best-effort: a send error is swallowed (never
-    /// surfaced as an error state), matching the `recordVerifiedProvenance` idiom.
+    /// overview so the row disappears. Surfaces a message if the daemon errors or if
+    /// the row is still present after the refresh (the command matched nothing —
+    /// most often a daemon that predates Forget).
     public func forgetRow(path: String) async {
-        try? await menuClient?.forget(paths: [path])
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        guard let menuClient else {
+            forgetError = "Forget is unavailable — there is no connection to the goh daemon."
+            return
+        }
+        do {
+            try await menuClient.forget(paths: [path])
+        } catch {
+            forgetError = await forgetFailureMessage(
+                name: name, detail: GohMenuErrorMapper.map(error).userFacingMessage)
+            return
+        }
         await loadOverview()
+        if rows.contains(where: { $0.displayPath == path }) {
+            forgetError = await forgetFailureMessage(
+                name: name, detail: "the daemon reported that no record was removed")
+        }
+    }
+
+    /// Builds the Forget-failure message. Forget is a newer daemon command, so the
+    /// most common real cause is an installed daemon too old to support it — detect
+    /// that from the level it reports in `ls()` and say "update", not "restart"
+    /// (restarting the same old binary won't help). Falls back to the underlying
+    /// detail when the daemon is current (or its level can't be read).
+    private func forgetFailureMessage(name: String, detail: String) async -> String {
+        let level = (try? await menuClient?.ls())?.featureLevel
+        if let level, level < GohFeatureLevel.current {
+            return "Couldn’t forget “\(name)”. Your installed goh daemon is an older version (feature level \(level), this needs \(GohFeatureLevel.current)) and doesn’t support Forget — update goh and restart its background service, then try again."
+        }
+        if level == nil {
+            return "Couldn’t forget “\(name)”: \(detail) Your daemon may also be out of date — run goh doctor, and update goh if its feature level is low."
+        }
+        return "Couldn’t forget “\(name)”: \(detail)"
     }
 
     // MARK: - Verify now
@@ -250,6 +338,7 @@ public final class TrustWindowViewModel: ObservableObject {
     public func reset() {
         cancellationBox?.cancel()
         cancellationBox = nil
+        cancelHashing()
         verifyStartedAt = nil
         runState = .idle
     }
