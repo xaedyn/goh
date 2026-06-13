@@ -5,6 +5,45 @@ session; update at the start of every PR and at the end of every session.
 
 ## Current state
 
+### 2026-06-13 (menu-bar Liquid Glass redesign) — **All 8 surfaces rebuilt on `redesign/menubar-liquid-glass` (9 commits, pushed); snapshot-verified; running-app verification pass PENDING; NO PR yet**
+
+Full HIG / Liquid Glass redesign of the menu-bar app from `design/menubar-redesign/`
+(binding spec + reference screenshots). **Binds the existing view-models only — `GohCore`
+is untouched** (`git diff main -- Sources/GohCore` empty; no wire/protocolVersion change).
+984 tests green; `swift build -warnings-as-errors` clean.
+
+- **Step 1–3 (`d5dfff4`):** `Theme/` tokens (brand-green accent, semantic colors, geometry,
+  type) + `GohWordmark` (SVG split into independently tintable letter/arrow templates) +
+  `GohWordmarkTile`; redesigned popover (pure `PopoverContent`/`PopoverRows`); **menu-bar host
+  migrated `MenuBarExtra` → AppKit `NSStatusItem`** (`GohStatusItemController`, icon as
+  `button.image`, popover via `NSPopover`, windows `.defaultLaunchBehavior(.suppressed)`).
+- **Step 4 (`9e423d1`):** Add Download. **Step 5 (`552fb44`):** Downloads (filter+search,
+  grouped cards, host·size·sha256). **Step 6 (`502cebb`):** Trust (master-detail + the
+  changed-hash diff component). **Step 7 (`931cb2e`):** Settings (General-only — the one real
+  tab; new wired `showProgressOnIcon` pref). **Step 8 (`36d8bd6`):** richer completion
+  notification.
+- **Tooling:** `Scripts/dev-app.sh` (signed local `.app` for GUI testing — bare binary aborts:
+  `UNUserNotificationCenter` needs a bundle); `Scripts/package-app.sh` now ships the wordmark
+  resource bundle (was missing → blank wordmark in prod). `goh-snapshots` ImageRenderer harness
+  renders every surface light+dark. Presentation-only model fields added in presenters
+  (`displayState`, `completedDateText`, `failureReason`, `bytesTotal`, `sha256Short`, trust
+  `size`) — no new app state.
+- **Verified live so far:** only the Step-3 host (icon legible, click→popover, window buttons
+  open, no stray window). Everything else is **snapshot-verified, not yet GUI-verified.**
+
+**NEXT — user runs the running-app verification pass first (no new code), then polish by value:**
+1. **Running-app verification (user, items 7–9):** Liquid Glass blur-through over a real
+   wallpaper; Downloads filter tabs + search live; overall build holds together. *Gate before
+   any polish coding.* PR held (not even draft) until this passes.
+2. **Live Trust hash-diff (#3 — highest value):** on-demand single-file re-hash of the selected
+   changed file (concurrency-sensitive — mirror the verify off-main pattern, mind the
+   cooperative-pool deadlock). Live changed inspector already reads alarming without it.
+3. **Status-item bloom + drag (#1, #2):** focused AppKit event-layer pass (both blocked by the
+   status-button swallowing interactive layers — see the statusitem gotchas memory).
+4. **New-state batches (#5 settings prefs, #6 edge banners):** each a deliberate user-authorized
+   decision; need persisted prefs + engine wiring.
+   Notification inline-check (#9) is NOT a fix — the banner is system-drawn.
+
 ### 2026-06-11 (code-quality backlog Phases 3–7) — **5 atomic-PR phases — all MERGED (PRs #115–119); `main` green, 976 tests**
 
 Worked the remaining code-quality review backlog as 5 independent PRs off `main` (disjoint
