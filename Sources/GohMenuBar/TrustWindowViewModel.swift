@@ -204,13 +204,31 @@ public final class TrustWindowViewModel: ObservableObject {
         do {
             try await menuClient.forget(paths: [path])
         } catch {
-            forgetError = "Couldn’t forget “\(name)”: \(GohMenuErrorMapper.map(error).userFacingMessage)"
+            forgetError = await forgetFailureMessage(
+                name: name, detail: GohMenuErrorMapper.map(error).userFacingMessage)
             return
         }
         await loadOverview()
         if rows.contains(where: { $0.displayPath == path }) {
-            forgetError = "“\(name)” couldn’t be removed. Your goh daemon may be an older version without Forget support — restart it (use Restart Daemon in the menu, or run `goh daemon restart`) and try again."
+            forgetError = await forgetFailureMessage(
+                name: name, detail: "the daemon reported that no record was removed")
         }
+    }
+
+    /// Builds the Forget-failure message. Forget is a newer daemon command, so the
+    /// most common real cause is an installed daemon too old to support it — detect
+    /// that from the level it reports in `ls()` and say "update", not "restart"
+    /// (restarting the same old binary won't help). Falls back to the underlying
+    /// detail when the daemon is current (or its level can't be read).
+    private func forgetFailureMessage(name: String, detail: String) async -> String {
+        let level = (try? await menuClient?.ls())?.featureLevel
+        if let level, level < GohFeatureLevel.current {
+            return "Couldn’t forget “\(name)”. Your installed goh daemon is an older version (feature level \(level), this needs \(GohFeatureLevel.current)) and doesn’t support Forget — update goh and restart its background service, then try again."
+        }
+        if level == nil {
+            return "Couldn’t forget “\(name)”: \(detail) Your daemon may also be out of date — run goh doctor, and update goh if its feature level is low."
+        }
+        return "Couldn’t forget “\(name)”: \(detail)"
     }
 
     // MARK: - Verify now
