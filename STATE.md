@@ -81,9 +81,15 @@ verification PENDING):** swapped the last hand-rolled materials for the system m
   launches. See [[dev-daemon-refresh-and-signing]].
 - **Live-confirmed by user:** popover glass (good); Trust window loads + Forget works end-to-end after the
   daemon was updated to featureLevel 2. 987 tests green; `swift build -warnings-as-errors` clean.
-- **NEXT:** stack-aware code review of the whole branch (`dc65f15..HEAD`) RUNNING (2026-06-13). User still
-  to live-verify the **Downloads / Add / Settings** windows in light+dark over a busy wallpaper. Then
-  **push + open the PR** (not pushed yet; push-only-when-asked). Optional brand-green panel `tintColor`
+- **Code review (stack-aware, Opus, whole branch `dc65f15..HEAD`) — PASSED** after one fix: 9/10
+  categories clean (build `-warnings-as-errors` green, 988 tests, frozen GohCore diff empty, conventions/
+  concurrency/security/error-handling all PASS); the one block was Test Quality — the new `forgetError`
+  surfacing had zero coverage + 2 stale tests asserted the old swallow contract. Fixed in `67ffc57`
+  (4 forget tests: client-error/no-op-match/nil-client surface an error, happy path stays nil). Advisories
+  (non-blocking, deferred): `installContentSurface()` could guard against rebuilding the same surface kind;
+  the `level == nil` Forget message wording; `goh-snapshots` force-unwraps (dev-only tool).
+- **NEXT:** user to live-verify the **Downloads / Add / Settings** windows in light+dark over a busy
+  wallpaper. Then **push + open the PR** (not pushed yet; push-only-when-asked). Optional brand-green panel `tintColor`
   left off. Snapshot caveat: `goh-snapshots` renders Add/Settings directly; grouped `Form`s may render
   thin/blank there (no window context) — cosmetic, the live app is the source of truth.
 
