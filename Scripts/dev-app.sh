@@ -30,6 +30,10 @@ fi
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources"
 install -m 0755 "$repo_root/.build/debug/goh-menu" "$contents/MacOS/goh-menu"
+# The popover's "Open in Terminal" / Doctor / Attest actions shell out to the
+# sibling `goh` CLI at Contents/MacOS/goh (a packaged build stages it there); the
+# dev bundle needs it too, or those commands hit "No such file or directory".
+install -m 0755 "$repo_root/.build/debug/goh" "$contents/MacOS/goh"
 cp -R "$menubar_bundle" "$contents/Resources/"
 sed 's/__VERSION__/dev/g' "$repo_root/Resources/app-Info.plist" > "$contents/Info.plist"
 plutil -lint "$contents/Info.plist" >/dev/null
@@ -42,6 +46,7 @@ xattr -cr "$app"
 identity="$(security find-identity -p codesigning -v 2>/dev/null \
   | grep -o 'Developer ID Application: [^"]*' | head -1)"
 if [[ -n "$identity" ]]; then
+  codesign --force --options runtime --sign "$identity" "$contents/MacOS/goh"
   codesign --force --options runtime --sign "$identity" "$contents/MacOS/goh-menu"
   codesign --force --options runtime --sign "$identity" "$app"
   cat <<EOF
